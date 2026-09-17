@@ -11,6 +11,7 @@ import (
 func init() {
 	tf := flags.TargetFlags{}
 	rf := flags.RuleInfoFlags{}
+	of := flags.RuleOptionFlags{}
 
 	var ruleDenyCmd = &cobra.Command{
 		Use:     "deny <file-path>",
@@ -25,12 +26,13 @@ func init() {
 			dynamodbClient := dynamodb.GetClient(table, region)
 			time := clock.ConcreteTimeProvider{}
 
-			return applyPolicyForPath(time, dynamodbClient, types.Blocklist, tf, rf)
+			return applyPolicyForPath(time, dynamodbClient, types.Blocklist, tf, rf, of.Options()...)
 		},
 	}
 
 	tf.AddTargetFlags(ruleDenyCmd)
 	rf.AddRuleInfoFlags(ruleDenyCmd)
+	of.AddRuleOptionFlags(ruleDenyCmd)
 
 	RuleCmd.AddCommand(ruleDenyCmd)
 }

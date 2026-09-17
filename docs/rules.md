@@ -1,20 +1,41 @@
 # Composition of a “Rule”
-Santa uses rules stored in the rules database to make decisions. Each rule is composed of:
+Santa uses rules stored in the rules database to make decisions. Rudolph stores each rule with the following fields
+(the numbers are how Rudolph stores the value in DynamoDB):
 
-Shasum — The sha256 hash value to examine
+Identifier — What to match; its format depends on the rule type
 
-## State — Whether or not a binary matching this rule is Allowed or Blocked
+## Type — What the identifier points to
+Listed from most to least specific, which is also the order in which Santa applies them.
+* 5 = CDHASH → The CDHash of a properly signed binary (40 lowercase hex characters)
+* 1 = BINARY → The sha256 hash of a binary file
+* 3 = SIGNINGID → The signing ID prefixed with the Team ID, or `platform` for Apple binaries (e.g. `EQHXZ8M8AV:com.google.Chrome`)
+* 2 = CERTIFICATE → The sha256 hash of the code-signing certificate leaf (the first certificate or Apple developer certificate as used by Gatekeeper)
+* 4 = TEAMID → The 10-character Apple Developer Team ID (e.g. `EQHXZ8M8AV`)
+
+## Policy — What Santa does with a matching binary
 * 1 = ALLOWLIST
 * 2 = BLOCKLIST
-* 3 = SILENT_BLOCKLIST
-* 4 = REMOVE
-* 5 = ALLOWLIST_COMPILER
-* 6 = ALLOWLIST_TRANSITIVE
+* 3 = SILENT_BLOCKLIST → Block without GUI or TTY notifications
+* 4 = REMOVE → Only sent to clients to delete a rule
+* 5 = ALLOWLIST_COMPILER → Allow, and when transitive rules are enabled, allow the files this binary writes
+* 7 = CEL → Allow or block by evaluating the rule's CEL expression (required)
+* 8 = SILENT_GUI_BLOCKLIST → Block without GUI notifications; TTY notifications are still shown
+* 9 = SILENT_TTY_BLOCKLIST → Block without TTY notifications; GUI notifications are still shown
 
-## Type — What the shasum points to; either a binary or a certificate
-* 1 = BINARY → The shasum is a hash of a binary file
-* 2 = CERTIFICATE → The shasum is a hash of the code-signing certificate leaf (the first certificate or Apple developer certificate as used by Gatekeeper)
-Custom Message — A custom message that is displayed to the end user whenever this specific rule triggers a deny
+`ALLOWLIST_TRANSITIVE` (6) is not a policy of the Santa sync protocol: transitive rules are created locally by Santa for
+the files written by `ALLOWLIST_COMPILER` binaries. Rudolph rejects new rules with this policy and never sends rules that
+still have it (from older versions of Rudolph) to clients; remove them with `rudolph rule remove`.
+
+## Optional fields
+* Custom Message (`custom_msg`) — Displayed to the end user instead of the default message whenever this rule blocks
+* Custom URL (`custom_url`) — For block rules, opened from the block dialog instead of `EventDetailURL` (same format values)
+* Event Detail Button Label (`event_detail_button_label`) — For block rules, the label of the block dialog's button
+* Notification App Name (`notification_app_name`) — Santa notifies the user that this application is now allowed (not during clean syncs)
+* CEL Expression (`cel_expr`) — The expression evaluated by `CEL` rules; only allowed on `CEL` rules
+
+From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` accept `--custom-msg`, `--custom-url`,
+`--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
+CDHash rules must be given with `--identifier`.
 
 
 Whenever a new binary is executed, Santa’s system extension gathers information about the binary (via processes similar to `santactl fileinfo {BINARY}`) and looks up any relevant rules. It combines the rules to determine if a binary/application should be allowed/blocked to execute.
@@ -25,7 +46,9 @@ A sample output is provided below:
 
 
 ## Importing or Exporting Rules
-Rudolph comes with a handy CLI tool. One of the useful commands is to import/export rules to/from a csv file.
+Rudolph comes with a handy CLI tool. One of the useful commands is to import/export rules to/from a csv or json file.
+Files have the columns (or json keys) `identifier`, `type`, `policy`, `description` and, optionally, `custom_msg`,
+`custom_url`, `event_detail_button_label`, `notification_app_name` and `cel_expr`; `type` and `policy` use the names above.
 
 You will first need to build the command line utility:
 

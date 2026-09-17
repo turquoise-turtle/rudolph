@@ -70,6 +70,10 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	// Determine the ruleType and rulePolicy and return the following types from RuleInfoFlags
 	ruleType := rf.RuleType.AsRuleType()
 	rulePolicy := ru.RulePolicy.AsRulePolicy()
+	// Updating a rule only changes its policy, so it cannot supply the expression a CEL rule requires
+	if rulePolicy == types.RulePolicyCEL {
+		return errors.New(`a rule cannot be updated to the CEL policy; remove it and create it with "rule cel"`)
+	}
 	var description string
 	var identifier string
 
@@ -101,6 +105,8 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 			identifier = fileInfo.TeamID
 		case types.RuleTypeSigningID:
 			identifier = fileInfo.SigningID
+		case types.RuleTypeCDHash:
+			return fmt.Errorf("CDHash rules cannot be looked up from a filepath; provide the CDHash with --identifier")
 		default:
 			log.Printf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
 			return fmt.Errorf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)

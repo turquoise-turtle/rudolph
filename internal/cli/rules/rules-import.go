@@ -188,10 +188,12 @@ func runCsvImport(
 		if !ok {
 			description = ""
 		}
-		customMsg, ok := line["custom_msg"]
-		if !ok {
-			customMsg = ""
-		}
+		// Optional columns default to empty
+		customMsg := line["custom_msg"]
+		customURL := line["custom_url"]
+		eventDetailButtonLabel := line["event_detail_button_label"]
+		notificationAppName := line["notification_app_name"]
+		celExpr := line["cel_expr"]
 
 		var ruleType types.RuleType
 		err := ruleType.UnmarshalText([]byte(ruleTypeStr))
@@ -205,11 +207,15 @@ func runCsvImport(
 		}
 
 		rules <- fileRule{
-			Identifier:    identifier,
-			RuleType:      ruleType,
-			Policy:        policy,
-			Description:   description,
-			CustomMessage: customMsg,
+			Identifier:             identifier,
+			RuleType:               ruleType,
+			Policy:                 policy,
+			Description:            description,
+			CustomMessage:          customMsg,
+			CustomURL:              customURL,
+			EventDetailButtonLabel: eventDetailButtonLabel,
+			NotificationAppName:    notificationAppName,
+			CELExpr:                celExpr,
 		}
 	}
 	close(rules)
@@ -240,6 +246,8 @@ func ddbWriter(
 			suffix = " (TeamID)"
 		case types.RuleTypeSigningID:
 			suffix = " (SigningID)"
+		case types.RuleTypeCDHash:
+			suffix = " (CDHash)"
 		default:
 			suffix = ""
 		}
@@ -264,6 +272,7 @@ func ddbWriter(
 				rule.RuleType,
 				rule.Policy,
 				rule.Description,
+				rule.options()...,
 			)
 		}
 

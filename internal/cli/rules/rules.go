@@ -112,6 +112,8 @@ func renderRule(item modelrules.SantaRule) string {
 		predicate = "teamID"
 	case types.RuleTypeSigningID:
 		predicate = "signingID"
+	case types.RuleTypeCDHash:
+		predicate = "cdhash"
 	default:
 		predicate = "?"
 	}
@@ -124,12 +126,18 @@ func renderRule(item modelrules.SantaRule) string {
 		verb = "blocks"
 	case types.RulePolicySilentBlocklist:
 		verb = "silent blocks"
+	case types.RulePolicySilentGUIBlocklist:
+		verb = "blocks without GUI notification"
+	case types.RulePolicySilentTTYBlocklist:
+		verb = "blocks without TTY notification"
+	case types.RulePolicyCEL:
+		verb = "evaluates CEL for"
 	case types.RulePolicyRemove:
 		verb = "removes"
 	case types.RulePolicyAllowlistCompiler:
 		verb = "allows compiler of"
 	case types.RulePolicyAllowlistTransitive:
-		verb = "allows transitive of"
+		verb = "(not sent to hosts) allows transitive of"
 	default:
 		verb = "?"
 	}
@@ -139,5 +147,9 @@ func renderRule(item modelrules.SantaRule) string {
 		item.Identifier = item.SHA256
 	}
 
-	return fmt.Sprintf("Rule %v %v (%s)", verb, predicate, item.Identifier)
+	rendered := fmt.Sprintf("Rule %v %v (%s)", verb, predicate, item.Identifier)
+	if item.CELExpr != "" {
+		rendered = fmt.Sprintf("%s with CEL expression %q", rendered, item.CELExpr)
+	}
+	return rendered
 }

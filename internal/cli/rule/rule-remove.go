@@ -24,7 +24,7 @@ func init() {
 		Use:     `remove <rule-name> ex: 'TeamID#1234567'`,
 		Aliases: []string{"delete"},
 		Short:   "Removes/deletes a rule from the backing store",
-		Long:    `<rule-name> | <RuleType: Binary,Certificate,TeamID,SigningID>#<Rule Identifier/SHA256: abcdef12345-12345-12345> | 'TeamID#1234567'`,
+		Long:    `<rule-name> | <RuleType: Binary,Cert,TeamID,SigningID,CDHash>#<Rule Identifier/SHA256: abcdef12345-12345-12345> | 'TeamID#1234567'`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			region, _ := cmd.Flags().GetString("region")
