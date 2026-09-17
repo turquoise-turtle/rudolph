@@ -205,11 +205,15 @@ func allowStatement(env authorizerEnvironment) events.IAMPolicyStatement {
 // denyResponse denies the current request to a client that holds a valid token.
 //
 // The result is cached per token, and the token is typically shared by the whole fleet, so the policy must not lock
-// out other requests: it keeps allowing the sync routes and denies only this exact method ARN. A method ARN that
-// contains IAM wildcard characters cannot be denied precisely, so such a request is rejected as Unauthorized instead.
+// out other requests: it keeps allowing the sync routes and denies only this exact method ARN.
+//
+// A method ARN that contains IAM wildcard characters (or does not belong to this API) cannot be denied precisely: a
+// Deny would match other hosts' requests, and an Unauthorized error may be cached for the whole token as well. Such a
+// request gets the normal Allow policy and the handlers, which validate the machine ID themselves, reject it.
 func denyResponse(env authorizerEnvironment, methodArn string, denyReason string) (*events.APIGatewayCustomAuthorizerResponse, error) {
 	if !strings.HasPrefix(methodArn, env.apiArn()+"/") || strings.ContainsAny(methodArn, "*?") {
-		return nil, errUnauthorized
+		log.Printf("authorizer: cannot deny the request precisely (%s); leaving the rejection to the handler", denyReason)
+		return allowResponse(env), nil
 	}
 
 	return &events.APIGatewayCustomAuthorizerResponse{
