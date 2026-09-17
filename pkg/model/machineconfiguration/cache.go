@@ -6,9 +6,13 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 )
 
+// cacheDuration bounds how long a warm Lambda instance can serve a stale global config after it was changed
+// elsewhere (CLI, web view). Most syncs of a warm instance still skip the DynamoDB read.
+const cacheDuration = time.Minute
+
 func GetCache(timeProvider clock.TimeProvider) Cache {
 	return &ConcreteCache{
-		cacheDuration: time.Hour * 1,
+		cacheDuration: cacheDuration,
 		rules:         make(map[string]concreteCacheEntry),
 		clock:         timeProvider,
 	}

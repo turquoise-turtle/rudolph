@@ -1,9 +1,7 @@
 package machineconfiguration
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -12,11 +10,11 @@ import (
 )
 
 // SetGlobalConfig writes a global configuration to the DynamoDB table via a PutItem API call
-func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, fullSyncInterval int, uploadLogsURL string) (err error) {
+func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, fullSyncInterval int, uploadLogsURL string, opts ...GlobalConfigOption) (err error) {
 	// This is a safety check to prevent the accidental setting of lockdown mode globally via a config set operation
-	// Nothing is preventing this from being manually performed at the DyanmoDB table itself
-	if !allowGlobalLockdown && clientMode == types.Lockdown {
-		return errors.New("global lockdown configuration is disabled right now")
+	err = checkGlobalClientMode(clientMode, opts)
+	if err != nil {
+		return
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
@@ -35,7 +33,7 @@ func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, bl
 
 	_, err = client.PutItem(globalConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		err = fmt.Errorf("setting global config failed: %w", err)
 	}
 
 	return
@@ -62,7 +60,7 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 
 	_, err = client.PutItem(machineConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		err = fmt.Errorf("setting machine config failed: %w", err)
 	}
 
 	return
@@ -70,12 +68,7 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 
 // buildConfig constructs a MachineConfigurationRow which will represent either a global or machineID specific configuration set to be used in a DynamoDB PutItem API call
 func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, isCleanSync bool, fullSyncInterval int, uploadLogsURL string) (configRow *MachineConfigurationRow) {
-	// Check batchsize just to make sure at least a valid value is provided if not a positive int value
-	if batchSize <= 0 {
-		batchSize = 50
-	}
-
-	config := MachineConfiguration{
+	return buildConfigRow(pk, MachineConfiguration{
 		ClientMode:             clientMode,
 		BlockedPathRegex:       blockedPathRegex,
 		AllowedPathRegex:       allowedPathRegex,
@@ -85,6 +78,14 @@ func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string
 		CleanSync:              isCleanSync,
 		FullSyncInterval:       fullSyncInterval,
 		UploadLogsURL:          uploadLogsURL,
+	})
+}
+
+// buildConfigRow constructs a MachineConfigurationRow containing all settings of the given config for the given pk
+func buildConfigRow(pk string, config MachineConfiguration) (configRow *MachineConfigurationRow) {
+	// Check batchsize just to make sure at least a valid value is provided if not a positive int value
+	if config.BatchSize <= 0 {
+		config.BatchSize = 50
 	}
 
 	if strings.Compare(pk, globalConfigurationPK) == 0 {
@@ -101,6 +102,14 @@ func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string
 		config,
 	}
 	return
+}
+
+// validateConfig rejects settings that a Santa client would fail to parse
+func validateConfig(config MachineConfiguration) error {
+	if config.OverrideFileAccessAction != "" && !config.OverrideFileAccessAction.IsValid() {
+		return fmt.Errorf("invalid override file access action %q", config.OverrideFileAccessAction)
+	}
+	return nil
 }
 
 func GetConfigurationSetter(client dynamodb.PutItemAPI, timeProvider clock.TimeProvider) ConcreteConfigurationSetter {
@@ -141,7 +150,7 @@ type ConcreteConfigurationSetter struct {
 
 // GlobalConfigurationSetter
 type GlobalConfigurationSetter interface {
-	setGlobalConfig(config MachineConfiguration) error
+	setGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 }
 
 type ConcreteGlobalConfigurationSetter struct {
@@ -149,32 +158,27 @@ type ConcreteGlobalConfigurationSetter struct {
 	cache  Cache
 }
 
-func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfiguration) error {
-	if !allowGlobalLockdown && config.ClientMode == types.Lockdown {
-		return errors.New("global lockdown configuration is disabled right now")
+func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error {
+	err := checkGlobalClientMode(config.ClientMode, opts)
+	if err != nil {
+		return err
+	}
+
+	err = validateConfig(config)
+	if err != nil {
+		return err
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
-	globalConfigRow := buildConfig(
-		globalConfigurationPK,
-		config.ClientMode,
-		config.BlockedPathRegex,
-		config.AllowedPathRegex,
-		config.BatchSize,
-		config.EnableBundles,
-		config.EnabledTransitiveRules,
-		config.CleanSync,
-		config.FullSyncInterval,
-		config.UploadLogsURL,
-	)
+	globalConfigRow := buildConfigRow(globalConfigurationPK, config)
 
-	_, err := c.setter.PutItem(globalConfigRow)
+	_, err = c.setter.PutItem(globalConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		return fmt.Errorf("setting global config failed: %w", err)
 	}
 
 	// Attempt to set the new global configuration into cache
-	_ = c.cache.Set(CacheKeyGlobal, &config)
+	_ = c.cache.Set(CacheKeyGlobal, &globalConfigRow.MachineConfiguration)
 
 	return nil
 }
@@ -189,26 +193,20 @@ type ConcreteMachineConfigurationSetter struct {
 }
 
 func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, config MachineConfiguration) error {
+	err := validateConfig(config)
+	if err != nil {
+		return err
+	}
+
 	// Create the machineID specific PK
 	machinePK := machineConfigurationPK(machineID)
 
 	// Construct a MachineConfigRow to represent a MachineConfig
-	machineConfigRow := buildConfig(
-		machinePK,
-		config.ClientMode,
-		config.BlockedPathRegex,
-		config.AllowedPathRegex,
-		config.BatchSize,
-		config.EnableBundles,
-		config.EnabledTransitiveRules,
-		config.CleanSync,
-		config.FullSyncInterval,
-		config.UploadLogsURL,
-	)
+	machineConfigRow := buildConfigRow(machinePK, config)
 
-	_, err := c.setter.PutItem(machineConfigRow)
+	_, err = c.setter.PutItem(machineConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting machine config failed: %w", err))
+		return fmt.Errorf("setting machine config failed: %w", err)
 	}
 	return nil
 }

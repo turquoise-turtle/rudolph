@@ -11,9 +11,9 @@ import (
 type MachineConfigurationService interface {
 	GetIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error)
 	GetIntendedGlobalConfig() (intendedConfig MachineConfiguration, isDefaultConfig bool, err error)
-	SetGlobalConfig(config MachineConfiguration) error
+	SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 	SetMachineConfig(machineID string, config MachineConfiguration) error
-	UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest) (*MachineConfiguration, error)
+	UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (*MachineConfiguration, error)
 	UpdateMachineConfig(machineID string, configRequest MachineConfigurationUpdateRequest) (*MachineConfiguration, error)
 	DeleteGlobalConfig() error
 	DeleteMachineConfig(machineID string) error
@@ -27,12 +27,14 @@ type ConcreteMachineConfigurationService struct {
 	deleter  ConcreteConfigurationDeleter
 }
 
+// GetMachineConfigurationService caches the global config for reads. Updates always read the current config
+// uncached, so they never write back a stale copy.
 func GetMachineConfigurationService(dynamodb dynamodb.DynamoDBClient, timeProvider clock.TimeProvider) MachineConfigurationService {
 	return ConcreteMachineConfigurationService{
 		dynamodb: dynamodb,
 		fetcher:  GetConfigurationFetcher(dynamodb, timeProvider),
 		setter:   GetConfigurationSetter(dynamodb, timeProvider),
-		updater:  GetConfigurationUpdater(dynamodb, GetConfigurationFetcher(dynamodb, timeProvider), timeProvider),
+		updater:  GetConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), timeProvider),
 		deleter:  GetConfigurationDeleter(dynamodb),
 	}
 }
@@ -42,7 +44,7 @@ func GetUncachedMachineConfigurationService(dynamodb dynamodb.DynamoDBClient, ti
 		dynamodb: dynamodb,
 		fetcher:  GetUncachedConfigurationFetcher(dynamodb, timeProvider),
 		setter:   GetConfigurationSetter(dynamodb, timeProvider),
-		updater:  GetConfigurationUpdater(dynamodb, GetConfigurationFetcher(dynamodb, timeProvider), timeProvider),
+		updater:  GetConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), timeProvider),
 		deleter:  GetConfigurationDeleter(dynamodb),
 	}
 }
@@ -62,8 +64,9 @@ func (s ConcreteMachineConfigurationService) GetIntendedGlobalConfig() (intended
 // Setter //
 
 // Global
-func (s ConcreteMachineConfigurationService) SetGlobalConfig(config MachineConfiguration) error {
-	return s.setter.global.setGlobalConfig(config)
+// Setting the global client mode to LOCKDOWN requires the ConfirmGlobalLockdown() option.
+func (s ConcreteMachineConfigurationService) SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error {
+	return s.setter.global.setGlobalConfig(config, opts...)
 }
 
 // Machine
@@ -74,8 +77,9 @@ func (s ConcreteMachineConfigurationService) SetMachineConfig(machineID string, 
 // Updater //
 
 // Global
-func (s ConcreteMachineConfigurationService) UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest) (*MachineConfiguration, error) {
-	return s.updater.global.updateConfig(configRequest)
+// Setting the global client mode to LOCKDOWN requires the ConfirmGlobalLockdown() option.
+func (s ConcreteMachineConfigurationService) UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (*MachineConfiguration, error) {
+	return s.updater.global.updateConfig(configRequest, opts...)
 }
 
 // Machine
