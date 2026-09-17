@@ -155,7 +155,7 @@ func (f *santaSettingsFlags) applyTo(cmd *cobra.Command, config *machineconfigur
 }
 
 func addConfirmGlobalLockdownFlag(cmd *cobra.Command, confirm *bool) {
-	cmd.Flags().BoolVar(confirm, flagConfirmGlobalLockdown, false, "Confirm setting the global client mode to lockdown, which applies to every machine without a machine-specific configuration")
+	cmd.Flags().BoolVar(confirm, flagConfirmGlobalLockdown, false, "Confirm setting the global client mode to a mode that blocks unknown executions (lockdown or standalone), which applies to every machine without a machine-specific configuration")
 }
 
 func globalConfigOptions(confirmGlobalLockdown bool) []machineconfiguration.GlobalConfigOption {

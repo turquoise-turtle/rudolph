@@ -12,7 +12,6 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
-	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
 
@@ -27,7 +26,7 @@ func init() {
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor' or 'lockdown'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]...",
+		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]...",
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
@@ -82,8 +81,8 @@ Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 
 	tf.AddTargetFlags(configUpdateClientModeCmd)
 
-	// client-mode should be one of "monitor" or "lockdown"
-	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor" or "lockdown"`)
+	// client-mode should be one of "monitor", "lockdown" or "standalone"
+	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
 	addConfirmGlobalLockdownFlag(configUpdateClientModeCmd, &confirmGlobalLockdown)
 
 	// Flags defining blocked and allowed regex paths
@@ -104,7 +103,7 @@ func updateConfig(
 	var machineID string
 	if tf.IsGlobal {
 		// Fail before asking for confirmation; the service enforces this as well
-		if updateRequest.ClientMode != nil && *updateRequest.ClientMode == types.Lockdown && !confirmGlobalLockdown {
+		if updateRequest.ClientMode != nil && machineconfiguration.RequiresGlobalLockdownConfirmation(*updateRequest.ClientMode) && !confirmGlobalLockdown {
 			return wrapWriteError(machineconfiguration.ErrGlobalLockdownNotConfirmed)
 		}
 		machineID = "(Global)"

@@ -11,7 +11,6 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
-	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +31,7 @@ func init() {
 	tf := flags.TargetFlags{}
 
 	var configSetCmd = &cobra.Command{
-		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor' or 'lockdown'>|--client-mode]",
+		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode]",
 		Short: "Create a configuration and set globally or a specific machine UUID",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,8 +80,8 @@ func init() {
 
 	tf.AddTargetFlags(configSetCmd)
 
-	// client-mode should be one of "monitor" or "lockdown"
-	configSetCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor" or "lockdown"`)
+	// client-mode should be one of "monitor", "lockdown" or "standalone"
+	configSetCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
 	// Mark as a required flag
 	_ = configSetCmd.MarkFlagRequired("client-mode")
 	addConfirmGlobalLockdownFlag(configSetCmd, &confirmGlobalLockdown)
@@ -118,7 +117,7 @@ func applyConfig(
 	var machineID string
 	if tf.IsGlobal {
 		// Fail before asking for confirmation; the service enforces this as well
-		if clientMode == types.Lockdown && !confirmGlobalLockdown {
+		if machineconfiguration.RequiresGlobalLockdownConfirmation(clientMode) && !confirmGlobalLockdown {
 			return wrapWriteError(machineconfiguration.ErrGlobalLockdownNotConfirmed)
 		}
 		machineID = "(Global)"
