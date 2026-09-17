@@ -72,6 +72,13 @@ build: deps
 test:
 	go test -cover -v ./...
 
+# Run unit and integration tests. Integration tests need Java + DynamoDB Local (installed by
+# scripts/setup_test_deps.sh) and terraform on PATH.
+#
+test-integration:
+	@sh -c "'$(CURDIR)/scripts/setup_test_deps.sh'"
+	go test -tags integration -count=1 ./...
+
 # Initializes the environment directory and files
 #
 #

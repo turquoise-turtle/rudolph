@@ -5,3 +5,7 @@ package
 .terraform.lock.hcl
 .terraform.lock
 /rudolph
+
+# Local test tooling
+.dynamodb-local/
+.DS_Store

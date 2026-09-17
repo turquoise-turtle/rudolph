@@ -205,3 +205,29 @@ func Test_timeSinceLastSync_NothingInDB(t *testing.T) {
 		assert.Equal(t, tc.expectation, actual, tc.comment)
 	}
 }
+
+// Shortcoming P3 (upstream #57): every rule type Santa counts must prevent a forced clean sync.
+func Test_determineCleanSyncByRuleCount_AllRuleTypes_P3(t *testing.T) {
+	cases := []struct {
+		name    string
+		request PreflightRequest
+		want    bool
+	}{
+		{"no rules at all", PreflightRequest{}, true},
+		{"binary", PreflightRequest{BinaryRuleCount: 1}, false},
+		{"certificate", PreflightRequest{CertificateRuleCount: 1}, false},
+		{"compiler", PreflightRequest{CompilerRuleCount: 1}, false},
+		{"transitive", PreflightRequest{TransitiveRuleCount: 1}, false},
+		{"teamid only", PreflightRequest{TeamIDRuleCount: 3}, false},
+		{"signingid only", PreflightRequest{SigningIDRuleCount: 2}, false},
+		{"cdhash only", PreflightRequest{CDHashRuleCount: 5}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := tc.request
+			if got := determineCleanSyncByRuleCount(&req); got != tc.want {
+				t.Fatalf("determineCleanSyncByRuleCount(%+v) = %v, want %v", tc.request, got, tc.want)
+			}
+		})
+	}
+}

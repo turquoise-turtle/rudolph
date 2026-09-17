@@ -1,0 +1,2721 @@
+/// Copyright 2014-2022 Google Inc. All rights reserved.
+/// Copyright 2025 North Pole Security, Inc.
+///
+/// Licensed under the Apache License, Version 2.0 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     http://www.apache.org/licenses/LICENSE-2.0
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+
+#import "Source/common/SNTConfigurator.h"
+
+#include <sys/stat.h>
+#include <set>
+#include <string>
+
+#include "Source/common/Pinning.h"
+
+#import "Source/common/NKeyTokenValidator.h"
+#import "Source/common/SNTCELFallbackRule.h"
+#import "Source/common/SNTExportConfiguration.h"
+#import "Source/common/SNTLiteDetector.h"
+#import "Source/common/SNTLogging.h"
+#import "Source/common/SNTModeTransition.h"
+#import "Source/common/SNTRule.h"
+#import "Source/common/SNTStrengthify.h"
+#import "Source/common/SNTSyncConstants.h"
+#import "Source/common/SNTSystemInfo.h"
+#import "Source/common/SNTTemporaryAdminPolicy.h"
+#import "Source/common/faa/WatchItems.h"
+#import "Source/common/ne/SNTSyncNetworkExtensionSettings.h"
+
+// Trusted operators authorized to issue account JWTs for sync v2 features.
+static const std::set<std::string> kTrustedNKeys = {
+    "ODMPJXU2TN4ECFQMZZN4AQYXX3XPS5BQSGOZX2F3OGGKNRGGAV6HNOKF",
+    "OAETVI6QW7WZTFUWJFZKIN2YCAEVDMINFIG4S5Y5YOCGSJYSPTNZZJSW",
+};
+
+// Ensures the given object is an NSArray and only contains NSString value types
+static NSArray<NSString*>* EnsureArrayOfStrings(id obj) {
+  if (![obj isKindOfClass:[NSArray class]]) {
+    return nil;
+  }
+
+  for (id item in obj) {
+    if (![item isKindOfClass:[NSString class]]) {
+      return nil;
+    }
+  }
+
+  return obj;
+}
+
+static SNTRemovableMediaAction ActionFromString(NSString* action) {
+  if (!action) return SNTRemovableMediaActionAllow;
+  if ([action caseInsensitiveCompare:@"Allow"] == NSOrderedSame) {
+    return SNTRemovableMediaActionAllow;
+  }
+  if ([action caseInsensitiveCompare:@"Block"] == NSOrderedSame) {
+    return SNTRemovableMediaActionBlock;
+  }
+  if ([action caseInsensitiveCompare:@"Remount"] == NSOrderedSame) {
+    return SNTRemovableMediaActionRemount;
+  }
+  LOGW(@"Unrecognized RemovableMediaAction value: %@, defaulting to Allow", action);
+  return SNTRemovableMediaActionAllow;
+}
+
+@interface SNTConfigurator ()
+@property(readonly, nonatomic) NSUserDefaults* defaults;
+
+/// Keys and expected value types.
+@property(readonly, nonatomic) NSDictionary* syncServerKeyTypes;
+@property(readonly, nonatomic) NSDictionary* forcedConfigKeyTypes;
+
+/// Holds the configurations from a sync server and mobileconfig.
+@property(atomic) NSDictionary* syncState;
+@property(atomic) NSMutableDictionary* configState;
+@property(atomic) NSDictionary* state;
+
+/// Working dictionary for an in-progress `performSyncStateBatch:` transaction.
+/// Non-nil only while inside the batch's block. Always accessed on the main
+/// thread, matching the convention enforced by `updateSyncStateForKey:value:`.
+@property(nonatomic) NSMutableDictionary* batchedSyncState;
+
+@property(readonly, nonatomic) NSString* syncStateFilePath;
+@property(readonly, nonatomic) NSString* stateFilePath;
+
+typedef BOOL (^StateFileAccessAuthorizer)(void);
+@property(nonatomic, copy) StateFileAccessAuthorizer syncStateAccessAuthorizerBlock;
+@property(nonatomic, copy) StateFileAccessAuthorizer stateAccessAuthorizerBlock;
+
+// Re-declare read/write for KVO
+@property BOOL inTemporaryMonitorMode;
+
+// Internal boot session tracking
+@property(nullable) NSString* lastBootUUID;
+
+@end
+
+@implementation SNTConfigurator
+
+/// The hard-coded path to the sync state file.
+NSString* const kSyncStateFilePath = @"/var/db/santa/sync-state.plist";
+
+/// The hard-coded path to the state file.
+NSString* const kStateFilePath = @"/var/db/santa/state.plist";
+
+/// Keys associated with the state file.
+static NSString* const kStateTempMonitorModeKey = @"TMM";
+NSString* const kStateTempAdminModeKey = @"TempAdmin";
+NSString* const kStateTempAdminTargetUIDKey = @"TargetUID";
+static NSString* const kStateDemotedAdminsKey = @"DemotedAdmins";
+static NSString* const kStateLastBootUUIDKey = @"LastBootUUID";
+static NSString* const kStateLastSyncServerURLKey = @"LastSyncServerURL";
+static NSString* const kStateTimedRuleKillsKey = @"TimedRuleKills";
+static NSString* const kStateClockReadingKey = @"ClockReading";
+
+/// User defaults key for user override of the menu item enabled setting.
+NSString* const kEnableMenuItemUserOverride = @"EnableMenuItemUserOverride";
+
+#ifdef DEBUG
+NSString* const kConfigOverrideFilePath = @"/var/db/santa/config-overrides.plist";
+#endif
+
+/// The domain used by mobileconfig.
+static const CFStringRef kMobileConfigDomain = CFSTR("com.northpolesec.santa");
+
+/// The keys managed by a mobileconfig.
+static NSString* const kStaticRulesKey = @"StaticRules";
+static NSString* const kSyncBaseURLKey = @"SyncBaseURL";
+static NSString* const kSyncEnableProtoTransfer = @"SyncEnableProtoTransfer";
+static NSString* const kSyncProxyConfigKey = @"SyncProxyConfiguration";
+static NSString* const kSyncExtraHeadersKey = @"SyncExtraHeaders";
+static NSString* const kSyncEnableCleanSyncEventUpload = @"SyncEnableCleanSyncEventUpload";
+static NSString* const kClientAuthCertificateFileKey = @"ClientAuthCertificateFile";
+static NSString* const kClientAuthCertificatePasswordKey = @"ClientAuthCertificatePassword";
+static NSString* const kClientAuthCertificateCNKey = @"ClientAuthCertificateCN";
+static NSString* const kClientAuthCertificateIssuerKey = @"ClientAuthCertificateIssuerCN";
+static NSString* const kServerAuthRootsDataKey = @"ServerAuthRootsData";
+static NSString* const kServerAuthRootsFileKey = @"ServerAuthRootsFile";
+
+static NSString* const kMachineOwnerKey = @"MachineOwner";
+static NSString* const kMachineOwnerGroupsKey = @"MachineOwnerGroups";
+static NSString* const kMachineIDKey = @"MachineID";
+static NSString* const kMachineOwnerPlistFileKey = @"MachineOwnerPlist";
+static NSString* const kMachineOwnerPlistKeyKey = @"MachineOwnerKey";
+static NSString* const kMachineOwnerGroupsPlistKeyKey = @"MachineOwnerGroupsKey";
+static NSString* const kMachineIDPlistFileKey = @"MachineIDPlist";
+static NSString* const kMachineIDPlistKeyKey = @"MachineIDKey";
+
+static NSString* const kEnableStandalonePasswordFallbackKey = @"EnableStandalonePasswordFallback";
+static NSString* const kEnableSilentModeKey = @"EnableSilentMode";
+static NSString* const kEnableSilentTTYModeKey = @"EnableSilentTTYMode";
+static NSString* const kAboutTextKey = @"AboutText";
+static NSString* const kMoreInfoURLKey = @"MoreInfoURL";
+static NSString* const kDismissTextKey = @"DismissText";
+static NSString* const kUnknownBlockMessage = @"UnknownBlockMessage";
+static NSString* const kBannedBlockMessage = @"BannedBlockMessage";
+static NSString* const kBannedUSBBlockMessage = @"BannedUSBBlockMessage";
+static NSString* const kRemountUSBBlockMessage = @"RemountUSBBlockMessage";
+static NSString* const kBannedNetworkMountBlockMessage = @"BannedNetworkMountBlockMessage";
+
+static NSString* const kModeNotificationMonitor = @"ModeNotificationMonitor";
+static NSString* const kModeNotificationLockdown = @"ModeNotificationLockdown";
+static NSString* const kModeNotificationStandalone = @"ModeNotificationStandalone";
+static NSString* const kEnableNotificationSilences = @"EnableNotificationSilences";
+static NSString* const kBrandingCompanyName = @"BrandingCompanyName";
+static NSString* const kBrandingCompanyLogo = @"BrandingCompanyLogo";
+static NSString* const kBrandingCompanyLogoDark = @"BrandingCompanyLogoDark";
+static NSString* const kFunFontsOnSpecificDays = @"FunFontsOnSpecificDays";
+static NSString* const kEnableMenuItem = @"EnableMenuItem";
+
+static NSString* const kEnablePageZeroProtectionKey = @"EnablePageZeroProtection";
+static NSString* const kEnableBadSignatureProtectionKey = @"EnableBadSignatureProtection";
+static NSString* const kEnableAntiTamperProcessSuspendResumeKey =
+    @"EnableAntiTamperProcessSuspendResume";
+static NSString* const kAntiSuspendSigningIDsKey = @"AntiSuspendSigningIDs";
+static NSString* const kAllowDelegatedSignalsKey = @"AllowDelegatedSignals";
+static NSString* const kFailClosedKey = @"FailClosed";
+static NSString* const kDisableUnknownEventUploadKey = @"DisableUnknownEventUpload";
+
+static NSString* const kFileChangesRegexKey = @"FileChangesRegex";
+static NSString* const kFileChangesPrefixFiltersKey = @"FileChangesPrefixFilters";
+
+static NSString* const kEventLogType = @"EventLogType";
+static NSString* const kEventLogPath = @"EventLogPath";
+static NSString* const kSpoolDirectory = @"SpoolDirectory";
+static NSString* const kSpoolDirectoryFileSizeThresholdKB = @"SpoolDirectoryFileSizeThresholdKB";
+static NSString* const kSpoolDirectorySizeThresholdMB = @"SpoolDirectorySizeThresholdMB";
+static NSString* const kSpoolDirectoryEventMaxFlushTimeSec = @"SpoolDirectoryEventMaxFlushTimeSec";
+
+static NSString* const kFileAccessPolicy = @"FileAccessPolicy";
+static NSString* const kFileAccessPolicyPlist = @"FileAccessPolicyPlist";
+static NSString* const kFileAccessBlockMessage = @"FileAccessBlockMessage";
+static NSString* const kFileAccessPolicyUpdateIntervalSec = @"FileAccessPolicyUpdateIntervalSec";
+static NSString* const kFileAccessGlobalLogsPerSec = @"FileAccessGlobalLogsPerSec";
+static NSString* const kFileAccessGlobalWindowSizeSec = @"FileAccessGlobalWindowSizeSec";
+
+static NSString* const kEnableTelemetryExport = @"EnableTelemetryExport";
+static NSString* const kTelemetryExportIntervalSec = @"TelemetryExportIntervalSec";
+static NSString* const kTelemetryExportTimeoutSec = @"TelemetryExportTimeoutSec";
+static NSString* const kTelemetryExportBatchThresholdSizeMB =
+    @"TelemetryExportBatchThresholdSizeMB";
+static NSString* const kTelemetryExportMaxFilesPerBatch = @"TelemetryExportMaxFilesPerBatch";
+
+static NSString* const kEnableMachineIDDecoration = @"EnableMachineIDDecoration";
+
+static NSString* const kIgnoreOtherEndpointSecurityClients = @"IgnoreOtherEndpointSecurityClients";
+static NSString* const kTelemetryKey = @"Telemetry";
+
+static NSString* const kClientContentEncoding = @"SyncClientContentEncoding";
+
+static NSString* const kFCMProject = @"FCMProject";
+static NSString* const kFCMEntity = @"FCMEntity";
+static NSString* const kFCMAPIKey = @"FCMAPIKey";
+
+static NSString* const kEnablePushNotifications = @"EnablePushNotifications";
+static NSString* const kEnableNATS =
+    @"EnableNATS";  // Deprecated: alias for EnablePushNotifications
+
+static NSString* const kEntitlementsPrefixFilterKey = @"EntitlementsPrefixFilter";
+static NSString* const kEntitlementsTeamIDFilterKey = @"EntitlementsTeamIDFilter";
+static NSString* const kTelemetryFilterExpressionsKey = @"TelemetryFilterExpressions";
+static NSString* const kBinaryUploadFilterExpressionsKey = @"BinaryUploadFilterExpressions";
+static NSString* const kCELFallbackRulesKey = @"CELFallbackRules";
+
+static NSString* const kOnStartUSBOptions = @"OnStartUSBOptions";
+
+static NSString* const kMetricFormat = @"MetricFormat";
+static NSString* const kMetricURL = @"MetricURL";
+static NSString* const kMetricExportInterval = @"MetricExportInterval";
+static NSString* const kMetricExportTimeout = @"MetricExportTimeout";
+static NSString* const kMetricExtraLabels = @"MetricExtraLabels";
+
+static NSString* const kEnabledProcessAnnotations = @"EnabledProcessAnnotations";
+static NSString* const kAllowedSantaCommandsKey = @"AllowedSantaCommands";
+
+// The keys managed by a sync server or mobileconfig.
+static NSString* const kClientModeKey = @"ClientMode";
+static NSString* const kBlockUSBMountKey = @"BlockUSBMount";
+static NSString* const kRemountUSBModeKey = @"RemountUSBMode";
+static NSString* const kRemovableMediaActionKey = @"RemovableMediaAction";
+static NSString* const kRemovableMediaRemountFlagsKey = @"RemovableMediaRemountFlags";
+static NSString* const kEncryptedRemovableMediaActionKey = @"EncryptedRemovableMediaAction";
+static NSString* const kEncryptedRemovableMediaRemountFlagsKey =
+    @"EncryptedRemovableMediaRemountFlags";
+static NSString* const kBlockNetworkMountKey = @"BlockNetworkMount";
+static NSString* const kAllowedNetworkMountHosts = @"AllowedNetworkMountHosts";
+static NSString* const kEnableTransitiveRulesKey = @"EnableTransitiveRules";
+static NSString* const kEnableTransitiveRulesKeyDeprecated = @"EnableTransitiveWhitelisting";
+static NSString* const kAllowedPathRegexKey = @"AllowedPathRegex";
+static NSString* const kAllowedPathRegexKeyDeprecated = @"WhitelistRegex";
+static NSString* const kBlockedPathRegexKey = @"BlockedPathRegex";
+static NSString* const kBlockedPathRegexKeyDeprecated = @"BlacklistRegex";
+static NSString* const kEnableAllEventUploadKey = @"EnableAllEventUpload";
+static NSString* const kOverrideFileAccessActionKey = @"OverrideFileAccessAction";
+static NSString* const kEnableBundlesKey = @"EnableBundles";
+static NSString* const kEventDetailURLKey = @"EventDetailURL";
+static NSString* const kEventDetailTextKey = @"EventDetailText";
+static NSString* const kFileAccessEventDetailURLKey = @"FileAccessEventDetailURL";
+static NSString* const kFileAccessEventDetailTextKey = @"FileAccessEventDetailText";
+
+// The keys managed by a sync server.
+static NSString* const kFullSyncLastSuccess = @"FullSyncLastSuccess";
+static NSString* const kRuleSyncLastSuccess = @"RuleSyncLastSuccess";
+static NSString* const kSyncCleanRequiredDeprecated = @"SyncCleanRequired";
+static NSString* const kSyncTypeRequired = @"SyncTypeRequired";
+static NSString* const kExportConfigurationKey = @"ExportConfiguration";
+static NSString* const kModeTransitionKey = @"ModeTransition";
+static NSString* const kTemporaryAdminPolicyKey = @"TemporaryAdminPolicy";
+static NSString* const kNetworkExtensionSettingsKey = @"NetworkExtensionSettings";
+static NSString* const kDNSUpstreamTimeoutSecondsKey = @"DNSUpstreamTimeoutSeconds";
+static NSString* const kPushTokenChainKey = @"PushTokenChain";
+
+- (instancetype)init {
+  return [self initWithSyncStateFile:kSyncStateFilePath
+      stateFile:kStateFilePath
+      syncStateAccessAuthorizer:^BOOL() {
+        // Only access the sync state if a sync server is configured and running as root
+        return self.syncBaseURL != nil && geteuid() == 0;
+      }
+      stateAccessAuthorizer:^BOOL() {
+        return geteuid() == 0 && [[[NSProcessInfo processInfo] processName]
+                                     isEqualToString:@"com.northpolesec.santa.daemon"];
+      }];
+}
+
+- (instancetype)initWithSyncStateFile:(NSString*)syncStateFilePath
+                            stateFile:(NSString*)stateFilePath
+            syncStateAccessAuthorizer:(StateFileAccessAuthorizer)syncStateAccessAuthorizer
+                stateAccessAuthorizer:(StateFileAccessAuthorizer)stateAccessAuthorizer {
+  self = [super init];
+  if (self) {
+    Class number = [NSNumber class];
+    Class re = [NSRegularExpression class];
+    Class date = [NSDate class];
+    Class string = [NSString class];
+    Class data = [NSData class];
+    Class array = [NSArray class];
+    Class dictionary = [NSDictionary class];
+    _syncServerKeyTypes = @{
+      kClientModeKey : number,
+      kEnableTransitiveRulesKey : number,
+      kEnableTransitiveRulesKeyDeprecated : number,
+      kAllowedPathRegexKey : re,
+      kAllowedPathRegexKeyDeprecated : re,
+      kBlockedPathRegexKey : re,
+      kBlockedPathRegexKeyDeprecated : re,
+      kBlockUSBMountKey : number,
+      kRemountUSBModeKey : array,
+      kRemovableMediaActionKey : string,
+      kRemovableMediaRemountFlagsKey : array,
+      kEncryptedRemovableMediaActionKey : string,
+      kEncryptedRemovableMediaRemountFlagsKey : array,
+      kBlockNetworkMountKey : number,
+      kBannedNetworkMountBlockMessage : string,
+      kAllowedNetworkMountHosts : array,
+      kFullSyncLastSuccess : date,
+      kRuleSyncLastSuccess : date,
+      kSyncCleanRequiredDeprecated : number,
+      kSyncTypeRequired : number,
+      kEnableAllEventUploadKey : number,
+      kOverrideFileAccessActionKey : string,
+      kEnableBundlesKey : number,
+      kExportConfigurationKey : data,
+      kModeTransitionKey : data,
+      kTemporaryAdminPolicyKey : data,
+      kNetworkExtensionSettingsKey : data,
+      kPushTokenChainKey : array,
+      kTelemetryFilterExpressionsKey : array,
+      kBinaryUploadFilterExpressionsKey : array,
+      kCELFallbackRulesKey : data,
+      kEventDetailURLKey : string,
+      kEventDetailTextKey : string,
+      kFileAccessEventDetailURLKey : string,
+      kFileAccessEventDetailTextKey : string,
+      kFullSyncInterval : number,
+      kFCMFullSyncInterval : number,
+    };
+    _forcedConfigKeyTypes = @{
+      kClientModeKey : number,
+      kFailClosedKey : number,
+      kEnableTransitiveRulesKey : number,
+      kEnableTransitiveRulesKeyDeprecated : number,
+      kFileChangesRegexKey : re,
+      kFileChangesPrefixFiltersKey : array,
+      kAllowedPathRegexKey : re,
+      kAllowedPathRegexKeyDeprecated : re,
+      kBlockedPathRegexKey : re,
+      kBlockedPathRegexKeyDeprecated : re,
+      kBlockUSBMountKey : number,
+      kRemountUSBModeKey : array,
+      kRemovableMediaActionKey : string,
+      kRemovableMediaRemountFlagsKey : array,
+      kEncryptedRemovableMediaActionKey : string,
+      kEncryptedRemovableMediaRemountFlagsKey : array,
+      kOnStartUSBOptions : string,
+      kEnablePageZeroProtectionKey : number,
+      kEnableBadSignatureProtectionKey : number,
+      kEnableAntiTamperProcessSuspendResumeKey : number,
+      kAntiSuspendSigningIDsKey : array,
+      kAllowDelegatedSignalsKey : number,
+      kEnableStandalonePasswordFallbackKey : number,
+      kEnableSilentModeKey : number,
+      kEnableSilentTTYModeKey : number,
+      kAboutTextKey : string,
+      kMoreInfoURLKey : string,
+      kEventDetailURLKey : string,
+      kEventDetailTextKey : string,
+      kFileAccessEventDetailURLKey : string,
+      kFileAccessEventDetailTextKey : string,
+      kDismissTextKey : string,
+      kUnknownBlockMessage : string,
+      kBannedBlockMessage : string,
+      kBannedUSBBlockMessage : string,
+      kRemountUSBBlockMessage : string,
+      kModeNotificationMonitor : string,
+      kModeNotificationLockdown : string,
+      kModeNotificationStandalone : string,
+      kEnableNotificationSilences : number,
+      kFunFontsOnSpecificDays : number,
+      kEnableMenuItem : number,
+      kStaticRulesKey : array,
+      kSyncBaseURLKey : string,
+      kSyncEnableProtoTransfer : number,
+      kSyncEnableCleanSyncEventUpload : number,
+      kSyncProxyConfigKey : dictionary,
+      kSyncExtraHeadersKey : dictionary,
+      kClientAuthCertificateFileKey : string,
+      kClientAuthCertificatePasswordKey : string,
+      kClientAuthCertificateCNKey : string,
+      kClientAuthCertificateIssuerKey : string,
+      kClientContentEncoding : string,
+      kServerAuthRootsDataKey : data,
+      kServerAuthRootsFileKey : string,
+      kMachineOwnerKey : string,
+      kMachineOwnerGroupsKey : array,
+      kMachineIDKey : string,
+      kMachineOwnerPlistFileKey : string,
+      kMachineOwnerPlistKeyKey : string,
+      kMachineOwnerGroupsPlistKeyKey : string,
+      kMachineIDPlistFileKey : string,
+      kMachineIDPlistKeyKey : string,
+      kEventLogType : string,
+      kEventLogPath : string,
+      kSpoolDirectory : string,
+      kSpoolDirectoryFileSizeThresholdKB : number,
+      kSpoolDirectorySizeThresholdMB : number,
+      kSpoolDirectoryEventMaxFlushTimeSec : number,
+      kFileAccessPolicy : dictionary,
+      kFileAccessPolicyPlist : string,
+      kFileAccessBlockMessage : string,
+      kFileAccessPolicyUpdateIntervalSec : number,
+      kFileAccessGlobalWindowSizeSec : number,
+      kFileAccessGlobalLogsPerSec : number,
+      kEnableTelemetryExport : number,
+      kTelemetryExportIntervalSec : number,
+      kTelemetryExportTimeoutSec : number,
+      kTelemetryExportBatchThresholdSizeMB : number,
+      kTelemetryExportMaxFilesPerBatch : number,
+      kEnableMachineIDDecoration : number,
+      kIgnoreOtherEndpointSecurityClients : number,
+      kFCMProject : string,
+      kFCMEntity : string,
+      kFCMAPIKey : string,
+      kEnablePushNotifications : number,
+      kEnableNATS : number,  // Deprecated: alias for EnablePushNotifications, kept for config key
+                             // compatibility
+      kMetricFormat : string,
+      kMetricURL : string,
+      kMetricExportInterval : number,
+      kMetricExportTimeout : number,
+      kMetricExtraLabels : dictionary,
+      kEnableAllEventUploadKey : number,
+      kDisableUnknownEventUploadKey : number,
+      kOverrideFileAccessActionKey : string,
+      kEntitlementsPrefixFilterKey : array,
+      kEntitlementsTeamIDFilterKey : array,
+      kEnabledProcessAnnotations : array,
+      kTelemetryFilterExpressionsKey : array,
+      kBinaryUploadFilterExpressionsKey : array,
+      kTelemetryKey : array,
+      kBrandingCompanyName : string,
+      kBrandingCompanyLogo : string,
+      kBrandingCompanyLogoDark : string,
+      kAllowedSantaCommandsKey : array,
+      kDNSUpstreamTimeoutSecondsKey : number,
+    };
+
+    _syncStateFilePath = syncStateFilePath;
+    _stateFilePath = stateFilePath;
+    _syncStateAccessAuthorizerBlock = syncStateAccessAuthorizer;
+    _stateAccessAuthorizerBlock = stateAccessAuthorizer;
+
+    // This is used to keep KVO on changes, but we use `CFPreferences*` for reading.
+    _defaults = [NSUserDefaults standardUserDefaults];
+    [_defaults addSuiteNamed:@"com.northpolesec.santa"];
+
+    _configState = [self readForcedConfig];
+
+    _syncState = [self readSyncStateFromDisk] ?: [NSMutableDictionary dictionary];
+    if ([self migrateDeprecatedSyncStateKeys]) {
+      // Save the updated sync state if any keys were migrated.
+      [self saveSyncStateToDisk];
+    }
+
+    if (self.stateAccessAuthorizerBlock()) {
+      _state = [self readStateFromDisk] ?: [NSDictionary dictionary];
+
+      // Check if this is first launch after boot before updating the UUID
+      NSString* currentBootUUID = [SNTSystemInfo bootSessionUUID];
+      if (![currentBootUUID isEqualToString:_lastBootUUID]) {
+        // If the lastBootUUID wasn't set, it is indeterminate whether or not this is truly the
+        // first launch after boot. Treat this as a "No".
+        _isFirstLaunchAfterBoot = (_lastBootUUID != nil);
+        [self updateLastBootUUID:currentBootUUID];
+      }
+    }
+
+    [self startWatchingDefaults];
+  }
+  return self;
+}
+
+#pragma mark Singleton retriever
+
+// The returned value is marked unsafe_unretained to avoid unnecessary retain/release handling.
+// The object returned is guaranteed to exist for the lifetime of the process so there's no need
+// to do this handling.
+static SNTConfigurator* sharedConfigurator = nil;
++ (__unsafe_unretained instancetype)configurator {
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    sharedConfigurator = [[SNTConfigurator alloc] init];
+  });
+  return sharedConfigurator;
+}
+
+#ifdef DEBUG
+- (instancetype)initWithStaticConfig:(NSDictionary*)config {
+  self = [super init];
+  if (self) {
+    _configState = [config mutableCopy];
+    _syncState = [config mutableCopy];
+  }
+  return self;
+}
+
++ (void)overrideConfig:(NSDictionary*)config {
+  (void)[SNTConfigurator configurator];  // burn the onceToken
+  sharedConfigurator = [[SNTConfigurator alloc] initWithStaticConfig:config];
+}
+#endif
+
++ (NSSet*)syncAndConfigStateSet {
+  static NSSet* set;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    set = [[self syncStateSet] setByAddingObjectsFromSet:[self configStateSet]];
+  });
+  return set;
+}
+
++ (NSSet*)syncStateSet {
+  static NSSet* set;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    set = [NSSet setWithObject:NSStringFromSelector(@selector(syncState))];
+  });
+  return set;
+}
+
++ (NSSet*)configStateSet {
+  static NSSet* set;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    set = [NSSet setWithObject:NSStringFromSelector(@selector(configState))];
+  });
+  return set;
+}
+
+#pragma mark KVO Dependencies
+
++ (NSSet*)keyPathsForValuesAffectingClientMode {
+  return [[self syncAndConfigStateSet]
+      setByAddingObject:NSStringFromSelector(@selector(inTemporaryMonitorMode))];
+}
+
++ (NSSet*)keyPathsForValuesAffectingClientModeIgnoringTemporaryMonitorMode {
+  // Deliberately excludes inTemporaryMonitorMode: this accessor reports the base
+  // (policy) mode, which an active session must not affect.
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAllowedPathRegex {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBlockedPathRegex {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileChangesRegex {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileChangesPrefixFiltersKey {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingStaticRules {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncBaseURL {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncBaseURLConfigured {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncEnableProtoTransfer {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncExtraHeaders {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableCleanSyncEventUpload {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnablePageZeroProtection {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableStandalonePasswordFallback {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableSilentMode {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableSilentTTYMode {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAboutText {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingMoreInfoURL {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEventDetailURL {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEventDetailText {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessEventDetailURL {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessEventDetailText {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingDismissText {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingUnknownBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBannedBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingModeNotificationMonitor {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingModeNotificationLockdown {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableNotificationSilences {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBrandingCompanyLogo {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBrandingCompanyLogoDark {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBrandingCompanyName {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFunFontsOnSpecificDays {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableMenuItem {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncClientAuthCertificateFile {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncClientAuthCertificatePassword {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncClientAuthCertificateCn {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncClientAuthCertificateIssuer {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncServerAuthRootsData {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncServerAuthRootsFile {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingMachineOwner {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingMachineOwnerGroups {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingMachineID {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFullSyncLastSuccess {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingRuleSyncLastSuccess {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncTypeRequired {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEventLogType {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEventLogPath {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSpoolDirectory {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSpoolDirectoryFileSizeThresholdKB {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSpoolDirectorySizeThresholdMB {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSpoolDirectoryEventMaxFlushTimeSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessPolicy {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessPolicyPlist {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessPolicyUpdateIntervalSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessGlobalLogsPerSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFileAccessGlobalWindowSizeSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableMachineIDDecoration {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableTransitiveRules {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableAllEventUpload {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingDisableUnknownEventUpload {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingIgnoreOtherEndpointSecurityClients {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingDnsUpstreamTimeoutSecs {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFcmProject {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFcmEntity {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFcmAPIKey {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingFcmEnabled {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnablePushNotifications {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableBadSignatureProtection {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableAntiTamperProcessSuspendResume {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAntiSuspendSigningIDs {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAllowDelegatedSignals {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingRemovableMediaAction {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingRemovableMediaRemountFlags {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEncryptedRemovableMediaAction {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEncryptedRemovableMediaRemountFlags {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBannedUSBBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingRemountUSBBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingUsbBlockMessage {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBlockNetworkMount {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBannedNetworkMountBlockMessage {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAllowedNetworkMountHosts {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingOverrideFileAccessActionKey {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEntitlementsPrefixFilter {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEntitlementsTeamIDFilter {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetryFilterExpressions {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingBinaryUploadFilterExpressions {
+  return [self syncAndConfigStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingCelFallbackRules {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetry {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableTelemetryExport {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetryExportIntervalSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetryExportTimeoutSec {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetryExportBatchThresholdSizeMB {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTelemetryExportMaxFilesPerBatch {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingExportMetrics {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingMetricExportInterval {
+  return [self configStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingEnableBundles {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingExportConfig {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingModeTransition {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingTemporaryAdminPolicy {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingSyncNetworkExtensionSettings {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingPushTokenChain {
+  return [self syncStateSet];
+}
+
++ (NSSet*)keyPathsForValuesAffectingAllowedSantaCommands {
+  return [self configStateSet];
+}
+
+#pragma mark Public Interface
+
+- (SNTClientMode)clientMode {
+  if ([self inTemporaryMonitorMode]) {
+    return SNTClientModeMonitor;
+  }
+  return [self clientModeIgnoringTemporaryMonitorMode];
+}
+
+- (SNTClientMode)clientModeIgnoringTemporaryMonitorMode {
+  SNTClientMode cm = static_cast<SNTClientMode>([self.syncState[kClientModeKey] integerValue]);
+  if (cm == SNTClientModeMonitor || cm == SNTClientModeLockdown || cm == SNTClientModeStandalone) {
+    return cm;
+  }
+
+  cm = static_cast<SNTClientMode>([self.configState[kClientModeKey] integerValue]);
+  if (cm == SNTClientModeMonitor || cm == SNTClientModeLockdown || cm == SNTClientModeStandalone) {
+    return cm;
+  }
+
+  return SNTClientModeMonitor;
+}
+
+- (void)setSyncServerClientMode:(SNTClientMode)newMode {
+  if (newMode == SNTClientModeMonitor || newMode == SNTClientModeLockdown ||
+      newMode == SNTClientModeStandalone) {
+    [self updateSyncStateForKey:kClientModeKey value:@(newMode)];
+  }
+}
+
+- (void)persistTimedSessionState:(NSDictionary*)state forKey:(NSString*)key {
+  @synchronized(self) {
+    [self updateStateSynchronizedKey:key value:state];
+  }
+}
+
+- (nullable NSDictionary*)savedTimedSessionStateForKey:(NSString*)key {
+  return self.state[key];
+}
+
+- (BOOL)persistDemotedAdmins:(NSArray<NSDictionary*>*)demotedAdmins {
+  @synchronized(self) {
+    NSDictionary* previous = self.state;
+    if ([self updateStateSynchronizedKey:kStateDemotedAdminsKey value:demotedAdmins]) {
+      return YES;
+    }
+    // Roll back the in-memory record so callers (and a later restart) see the
+    // same state: a record that exists only in memory would let capture demote
+    // users whose restore list vanishes with the daemon.
+    self.state = previous;
+    return NO;
+  }
+}
+
+- (nullable NSArray<NSDictionary*>*)savedDemotedAdmins {
+  return self.state[kStateDemotedAdminsKey];
+}
+
+- (BOOL)persistLastSyncServerURL:(NSURL*)syncServerURL {
+  @synchronized(self) {
+    return [self updateStateSynchronizedKey:kStateLastSyncServerURLKey
+                                      value:syncServerURL.absoluteString];
+  }
+}
+
+- (NSURL*)savedLastSyncServerURL {
+  NSString* urlString = self.state[kStateLastSyncServerURLKey];
+  return urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+}
+
+- (BOOL)persistTimedRuleKills:(NSArray<NSDictionary*>*)entries {
+  @synchronized(self) {
+    return [self updateStateSynchronizedKey:kStateTimedRuleKillsKey value:entries];
+  }
+}
+
+- (nullable NSArray<NSDictionary*>*)savedTimedRuleKills {
+  return self.state[kStateTimedRuleKillsKey];
+}
+
+- (BOOL)persistClockReading:(NSDictionary*)reading {
+  @synchronized(self) {
+    // No rollback on a failed write, as with the timed rule kills: the reading
+    // held in memory still floors the clock for the rest of this daemon's
+    // lifetime, and discarding it would let a rolled-back system clock through.
+    return [self updateStateSynchronizedKey:kStateClockReadingKey value:reading];
+  }
+}
+
+- (nullable NSDictionary*)savedClockReading {
+  return self.state[kStateClockReadingKey];
+}
+
+- (void)updateLastBootUUID:(NSString*)bootUUID {
+  @synchronized(self) {
+    [self updateStateSynchronizedKey:kStateLastBootUUIDKey value:bootUUID];
+    _lastBootUUID = bootUUID;
+  }
+}
+
+- (BOOL)failClosed {
+  NSNumber* n = self.configState[kFailClosedKey];
+  BOOL runningInLockdownClientMode =
+      self.clientMode == SNTClientModeLockdown || self.clientMode == SNTClientModeStandalone;
+  return [n boolValue] && runningInLockdownClientMode;
+}
+
+- (BOOL)enableTransitiveRules {
+  NSNumber* n = self.syncState[kEnableTransitiveRulesKey];
+  if (n) return [n boolValue];
+
+  n = self.syncState[kEnableTransitiveRulesKeyDeprecated];
+  if (n) return [n boolValue];
+
+  n = self.configState[kEnableTransitiveRulesKeyDeprecated];
+  if (n) return [n boolValue];
+
+  return [self.configState[kEnableTransitiveRulesKey] boolValue];
+}
+
+- (void)setEnableTransitiveRules:(BOOL)enabled {
+  [self updateSyncStateForKey:kEnableTransitiveRulesKey value:@(enabled)];
+}
+
+- (BOOL)enableBundles {
+  return [self.syncState[kEnableBundlesKey] boolValue];
+}
+
+- (void)setEnableBundles:(BOOL)enable {
+  [self updateSyncStateForKey:kEnableBundlesKey value:@(enable)];
+}
+- (SNTExportConfiguration*)exportConfig {
+  return [SNTExportConfiguration deserialize:self.syncState[kExportConfigurationKey]];
+}
+
+- (void)setSyncServerExportConfig:(SNTExportConfiguration*)exportConfig {
+  if (exportConfig.revoke) {
+    // On revoke, remove the key to discard any stored export configuration.
+    [self updateSyncStateForKey:kExportConfigurationKey value:nil];
+  } else {
+    [self updateSyncStateForKey:kExportConfigurationKey value:[exportConfig serialize]];
+  }
+}
+
+- (SNTModeTransition*)modeTransition {
+  return [SNTModeTransition deserialize:self.syncState[kModeTransitionKey]];
+}
+
+- (void)setSyncServerModeTransition:(SNTModeTransition*)modeTransition {
+  if (modeTransition.type == SNTModeTransitionTypeRevoke) {
+    // On revoke, set the value to nil to remove the key from the dictionary
+    [self updateSyncStateForKey:kModeTransitionKey value:nil];
+  } else {
+    [self updateSyncStateForKey:kModeTransitionKey value:[modeTransition serialize]];
+  }
+}
+
+- (SNTTemporaryAdminPolicy*)temporaryAdminPolicy {
+  return [SNTTemporaryAdminPolicy deserialize:self.syncState[kTemporaryAdminPolicyKey]];
+}
+
+- (void)setSyncServerTemporaryAdminPolicy:(SNTTemporaryAdminPolicy*)temporaryAdminPolicy {
+  if (temporaryAdminPolicy.type == SNTTemporaryAdminPolicyTypeRevoke) {
+    // On revoke, set the value to nil to remove the key from the dictionary
+    [self updateSyncStateForKey:kTemporaryAdminPolicyKey value:nil];
+  } else {
+    [self updateSyncStateForKey:kTemporaryAdminPolicyKey value:[temporaryAdminPolicy serialize]];
+  }
+}
+
+- (SNTSyncNetworkExtensionSettings*)syncNetworkExtensionSettings {
+  return [SNTSyncNetworkExtensionSettings deserialize:self.syncState[kNetworkExtensionSettingsKey]];
+}
+
+- (void)setSyncServerSyncNetworkExtensionSettings:
+    (SNTSyncNetworkExtensionSettings*)syncNetworkExtensionSettings {
+  [self updateSyncStateForKey:kNetworkExtensionSettingsKey
+                        value:[syncNetworkExtensionSettings serialize]];
+}
+
+- (NSArray<NSString*>*)pushTokenChain {
+  return EnsureArrayOfStrings(self.syncState[kPushTokenChainKey]);
+}
+
+- (void)setSyncServerPushTokenChain:(NSArray<NSString*>*)pushTokenChain {
+  [self updateSyncStateForKey:kPushTokenChainKey value:EnsureArrayOfStrings(pushTokenChain)];
+}
+
+- (NSRegularExpression*)allowedPathRegex {
+  NSRegularExpression* r = self.syncState[kAllowedPathRegexKey];
+  if (r) return r;
+
+  r = self.syncState[kAllowedPathRegexKeyDeprecated];
+  if (r) return r;
+
+  r = self.configState[kAllowedPathRegexKey];
+  if (r) return r;
+
+  return self.configState[kAllowedPathRegexKeyDeprecated];
+}
+
+- (void)setSyncServerAllowedPathRegex:(NSString*)pattern {
+  [self updateSyncStateForKey:kAllowedPathRegexKey value:[self expressionForPattern:pattern]];
+}
+
+- (NSRegularExpression*)blockedPathRegex {
+  NSRegularExpression* r = self.syncState[kBlockedPathRegexKey];
+  if (r) return r;
+
+  r = self.syncState[kBlockedPathRegexKeyDeprecated];
+  if (r) return r;
+
+  r = self.configState[kBlockedPathRegexKey];
+  if (r) return r;
+
+  return self.configState[kBlockedPathRegexKeyDeprecated];
+}
+
+- (void)setSyncServerBlockedPathRegex:(NSString*)pattern {
+  [self updateSyncStateForKey:kBlockedPathRegexKey value:[self expressionForPattern:pattern]];
+}
+
+- (NSRegularExpression*)fileChangesRegex {
+  return self.configState[kFileChangesRegexKey];
+}
+
+- (NSArray*)fileChangesPrefixFilters {
+  NSArray* filters = self.configState[kFileChangesPrefixFiltersKey];
+  for (id filter in filters) {
+    if (![filter isKindOfClass:[NSString class]]) {
+      return nil;
+    }
+  }
+  return filters;
+}
+
+- (SNTDeviceManagerStartupPreferences)onStartUSBOptions {
+  NSString* action = [self.configState[kOnStartUSBOptions] lowercaseString];
+
+  if ([action isEqualToString:@"unmount"]) {
+    return SNTDeviceManagerStartupPreferencesUnmount;
+  } else if ([action isEqualToString:@"forceunmount"]) {
+    return SNTDeviceManagerStartupPreferencesForceUnmount;
+  } else if ([action isEqualToString:@"remount"]) {
+    return SNTDeviceManagerStartupPreferencesRemount;
+  } else if ([action isEqualToString:@"forceremount"]) {
+    return SNTDeviceManagerStartupPreferencesForceRemount;
+  } else {
+    return SNTDeviceManagerStartupPreferencesNone;
+  }
+}
+
+- (NSArray<NSDictionary*>*)staticRules {
+  return self.configState[kStaticRulesKey];
+}
+
+- (NSURL*)syncBaseURL {
+  NSString* urlString = self.configState[kSyncBaseURLKey];
+  if (urlString.length == 0) {
+    // Treat empty values as nil. This is depended upon by callers.
+    return nil;
+  }
+  if (![urlString hasSuffix:@"/"]) {
+    urlString = [urlString stringByAppendingString:@"/"];
+  }
+  NSURL* url = [NSURL URLWithString:urlString];
+
+  // Only allow HTTP for loopback addresses. Everything else must use HTTPS.
+  if ([[url.scheme lowercaseString] isEqualToString:@"http"]) {
+    NSString* host = [url.host lowercaseString];
+    if (![host isEqualToString:@"localhost"] && ![host isEqualToString:@"127.0.0.1"] &&
+        ![host isEqualToString:@"::1"]) {
+      LOGW(@"Rejecting non-localhost HTTP SyncBaseURL: %@", urlString);
+      return nil;
+    }
+  }
+
+  return url;
+}
+
+// Raw check: returns YES if a SyncBaseURL string is present in the config, without any
+// URL parsing or validation. This lets callers distinguish "not configured" from
+// "configured but rejected by syncBaseURL policy" (e.g. non-localhost HTTP).
+- (BOOL)syncBaseURLConfigured {
+  return [self.configState[kSyncBaseURLKey] length] > 0;
+}
+
+- (BOOL)syncEnableProtoTransfer {
+  NSNumber* number = self.configState[kSyncEnableProtoTransfer];
+  return number ? [number boolValue] : NO;
+}
+
+- (NSDictionary*)syncProxyConfig {
+  return self.configState[kSyncProxyConfigKey];
+}
+
+- (NSDictionary*)syncExtraHeaders {
+  return self.configState[kSyncExtraHeadersKey];
+}
+
+- (BOOL)enablePageZeroProtection {
+  NSNumber* number = self.configState[kEnablePageZeroProtectionKey];
+  return number ? [number boolValue] : YES;
+}
+
+- (BOOL)enableBadSignatureProtection {
+  NSNumber* number = self.configState[kEnableBadSignatureProtectionKey];
+  return number ? [number boolValue] : NO;
+}
+
+- (BOOL)enableAntiTamperProcessSuspendResume {
+  NSNumber* number = self.configState[kEnableAntiTamperProcessSuspendResumeKey];
+  return number ? [number boolValue] : YES;
+}
+
+- (NSArray<NSString*>*)antiSuspendSigningIDs {
+  return EnsureArrayOfStrings(self.configState[kAntiSuspendSigningIDsKey]);
+}
+
+- (BOOL)allowDelegatedSignals {
+  NSNumber* number = self.configState[kAllowDelegatedSignalsKey];
+  return number ? [number boolValue] : NO;
+}
+
+- (BOOL)enableStandalonePasswordFallback {
+  NSNumber* number = self.configState[kEnableStandalonePasswordFallbackKey];
+  return number ? [number boolValue] : YES;
+}
+
+- (BOOL)enableSilentMode {
+  NSNumber* number = self.configState[kEnableSilentModeKey];
+  return number ? [number boolValue] : NO;
+}
+
+- (BOOL)enableSilentTTYMode {
+  NSNumber* number = self.configState[kEnableSilentTTYModeKey];
+  return number ? [number boolValue] : NO;
+}
+
+- (NSString*)aboutText {
+  return self.configState[kAboutTextKey];
+}
+
+- (NSURL*)moreInfoURL {
+  return [NSURL URLWithString:self.configState[kMoreInfoURLKey]];
+}
+
+- (NSString*)eventDetailURL {
+  return self.syncState[kEventDetailURLKey] ?: self.configState[kEventDetailURLKey];
+}
+
+- (void)setSyncServerEventDetailURL:(NSString*)eventDetailURL {
+  [self updateSyncStateForKey:kEventDetailURLKey value:eventDetailURL];
+}
+
+- (NSString*)eventDetailText {
+  return self.syncState[kEventDetailTextKey] ?: self.configState[kEventDetailTextKey];
+}
+
+- (void)setSyncServerEventDetailText:(NSString*)eventDetailText {
+  [self updateSyncStateForKey:kEventDetailTextKey value:eventDetailText];
+}
+
+- (NSString*)fileAccessEventDetailURL {
+  return self.syncState[kFileAccessEventDetailURLKey]
+             ?: self.configState[kFileAccessEventDetailURLKey];
+}
+
+- (void)setSyncServerFileAccessEventDetailURL:(NSString*)fileAccessEventDetailURL {
+  [self updateSyncStateForKey:kFileAccessEventDetailURLKey value:fileAccessEventDetailURL];
+}
+
+- (NSString*)fileAccessEventDetailText {
+  return self.syncState[kFileAccessEventDetailTextKey]
+             ?: self.configState[kFileAccessEventDetailTextKey];
+}
+
+- (void)setSyncServerFileAccessEventDetailText:(NSString*)fileAccessEventDetailText {
+  [self updateSyncStateForKey:kFileAccessEventDetailTextKey value:fileAccessEventDetailText];
+}
+
+- (NSString*)dismissText {
+  return self.configState[kDismissTextKey];
+}
+
+- (NSString*)unknownBlockMessage {
+  return self.configState[kUnknownBlockMessage];
+}
+
+- (NSString*)bannedBlockMessage {
+  return self.configState[kBannedBlockMessage];
+}
+
+- (NSString*)bannedUSBBlockMessage {
+  return self.configState[kBannedUSBBlockMessage];
+}
+
+- (NSString*)remountUSBBlockMessage {
+  return self.configState[kRemountUSBBlockMessage];
+}
+
+- (NSString*)modeNotificationMonitor {
+  return self.configState[kModeNotificationMonitor];
+}
+
+- (NSString*)modeNotificationLockdown {
+  return self.configState[kModeNotificationLockdown];
+}
+
+- (NSString*)modeNotificationStandalone {
+  return self.configState[kModeNotificationStandalone];
+}
+
+- (BOOL)enableNotificationSilences {
+  NSNumber* number = self.configState[kEnableNotificationSilences];
+  return number ? [number boolValue] : YES;
+}
+
+- (BOOL)funFontsOnSpecificDays {
+  return [self.configState[kFunFontsOnSpecificDays] boolValue];
+}
+
+- (BOOL)enableMenuItem {
+  NSNumber* number = self.configState[kEnableMenuItem];
+  return number ? [number boolValue] : YES;
+}
+
+- (NSURL*)brandingCompanyLogo {
+  NSString* logoVal = self.configState[kBrandingCompanyLogo];
+  NSURL* url = [NSURL URLWithString:logoVal];
+  // Only allow file and data URLs so as not to affect UI when offline
+  if (url && ([url.scheme isEqualToString:@"file"] || [url.scheme isEqualToString:@"data"])) {
+    return url;
+  }
+  return nil;
+}
+
+- (NSURL*)brandingCompanyLogoDark {
+  NSString* logoVal = self.configState[kBrandingCompanyLogoDark];
+  NSURL* url = [NSURL URLWithString:logoVal];
+  // Only allow file and data URLs so as not to affect UI when offline
+  if (url && ([url.scheme isEqualToString:@"file"] || [url.scheme isEqualToString:@"data"])) {
+    return url;
+  }
+  return nil;
+}
+
+- (NSString*)brandingCompanyName {
+  return self.configState[kBrandingCompanyName];
+}
+
+- (NSString*)syncClientAuthCertificateFile {
+  return self.configState[kClientAuthCertificateFileKey];
+}
+
+- (NSString*)syncClientAuthCertificatePassword {
+  return self.configState[kClientAuthCertificatePasswordKey];
+}
+
+- (NSString*)syncClientAuthCertificateCn {
+  return self.configState[kClientAuthCertificateCNKey];
+}
+
+- (NSString*)syncClientAuthCertificateIssuer {
+  return self.configState[kClientAuthCertificateIssuerKey];
+}
+
+- (SNTSyncContentEncoding)syncClientContentEncoding {
+  NSString* contentEncoding = [self.configState[kClientContentEncoding] lowercaseString];
+  if ([contentEncoding isEqualToString:@"deflate"]) {
+    return SNTSyncContentEncodingDeflate;
+  } else if ([contentEncoding isEqualToString:@"gzip"]) {
+    return SNTSyncContentEncodingGzip;
+  } else if ([contentEncoding isEqualToString:@"none"]) {
+    return SNTSyncContentEncodingNone;
+  } else {
+    // Ensure we have the same default zlib behavior Santa's always had otherwise.
+    return SNTSyncContentEncodingDeflate;
+  }
+}
+
+- (NSData*)syncServerAuthRootsData {
+  return self.configState[kServerAuthRootsDataKey];
+}
+
+- (NSString*)syncServerAuthRootsFile {
+  return self.configState[kServerAuthRootsFileKey];
+}
+
+- (NSDate*)fullSyncLastSuccess {
+  return self.syncState[kFullSyncLastSuccess];
+}
+
+- (void)setFullSyncLastSuccess:(NSDate*)fullSyncLastSuccess {
+  [self updateSyncStateForKey:kFullSyncLastSuccess value:fullSyncLastSuccess];
+  self.ruleSyncLastSuccess = fullSyncLastSuccess;
+}
+
+- (NSDate*)ruleSyncLastSuccess {
+  return self.syncState[kRuleSyncLastSuccess];
+}
+
+- (void)setRuleSyncLastSuccess:(NSDate*)ruleSyncLastSuccess {
+  [self updateSyncStateForKey:kRuleSyncLastSuccess value:ruleSyncLastSuccess];
+}
+
+- (SNTSyncType)syncTypeRequired {
+  if (self.syncState.count == 0) {
+    // Without synced state the client can't vouch for its rules. Clean, not CleanAll, so the
+    // server keeps the final say and can still escalate.
+    return SNTSyncTypeClean;
+  }
+  return (SNTSyncType)[self.syncState[kSyncTypeRequired] integerValue];
+}
+
+- (void)setSyncTypeRequired:(SNTSyncType)syncTypeRequired {
+  [self updateSyncStateForKey:kSyncTypeRequired value:@(syncTypeRequired)];
+}
+
+- (NSUInteger)fullSyncInterval {
+  NSNumber* interval = self.syncState[kFullSyncInterval];
+  if (interval) {
+    return [interval unsignedIntegerValue];
+  }
+  return kDefaultFullSyncInterval;
+}
+
+- (void)setSyncServerFullSyncInterval:(NSUInteger)interval {
+  // A value of 0 means "not provided" (e.g. server didn't set the field).
+  // Clear the key so the getter falls back to the default rather than storing a sentinel.
+  [self updateSyncStateForKey:kFullSyncInterval value:interval ? @(interval) : nil];
+}
+
+- (NSUInteger)pushNotificationsFullSyncInterval {
+  NSNumber* interval = self.syncState[kFCMFullSyncInterval];
+  if (interval) {
+    return [interval unsignedIntegerValue];
+  }
+  return kDefaultPushNotificationsFullSyncInterval;
+}
+
+- (void)setSyncServerPushNotificationsFullSyncInterval:(NSUInteger)interval {
+  // A value of 0 means "not applicable" (e.g. sync v1). Clear the key so
+  // the getter falls back to the default rather than storing a sentinel.
+  [self updateSyncStateForKey:kFCMFullSyncInterval value:interval ? @(interval) : nil];
+}
+
+- (NSString*)machineOwner {
+  NSString* machineOwner = self.configState[kMachineOwnerKey];
+  if (machineOwner) return machineOwner;
+
+  NSString* plistPath = self.configState[kMachineOwnerPlistFileKey];
+  NSString* plistKey = self.configState[kMachineOwnerPlistKeyKey];
+  if (plistPath.length && plistKey.length) {
+    NSDictionary* plist = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    machineOwner = [plist[plistKey] isKindOfClass:[NSString class]] ? plist[plistKey] : nil;
+  }
+
+  return machineOwner ?: @"";
+}
+
+- (NSArray<NSString*>*)machineOwnerGroups {
+  NSArray<NSString*>* machineOwnerGroups = self.configState[kMachineOwnerGroupsKey];
+  if (machineOwnerGroups.count) return machineOwnerGroups;
+
+  NSString* plistPath = self.configState[kMachineOwnerPlistFileKey];
+  NSString* plistKey = self.configState[kMachineOwnerGroupsPlistKeyKey];
+  if (plistPath.length && plistKey.length) {
+    NSDictionary* plist = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    machineOwnerGroups = [plist[plistKey] isKindOfClass:[NSArray class]] ? plist[plistKey] : nil;
+    for (NSString* group in machineOwnerGroups) {
+      if (![group isKindOfClass:[NSString class]]) {
+        machineOwnerGroups = nil;
+        break;
+      }
+    }
+  }
+
+  return machineOwnerGroups;
+}
+
+- (NSString*)machineID {
+  NSString* machineId = self.configState[kMachineIDKey];
+  if (machineId) return machineId;
+
+  NSString* plistPath = self.configState[kMachineIDPlistFileKey];
+  NSString* plistKey = self.configState[kMachineIDPlistKeyKey];
+
+  if (plistPath && plistKey) {
+    NSDictionary* plist = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    machineId = [plist[plistKey] isKindOfClass:[NSString class]] ? plist[plistKey] : nil;
+  }
+
+  return machineId.length ? machineId : [SNTSystemInfo hardwareUUID];
+}
+
+- (SNTEventLogType)eventLogType {
+  NSString* logType = [self.configState[kEventLogType] lowercaseString];
+  if ([logType isEqualToString:@"protobuf"]) {
+    return SNTEventLogTypeProtobuf;
+  } else if ([logType isEqualToString:@"protobufstream"]) {
+    return SNTEventLogTypeProtobufStream;
+  } else if ([logType isEqualToString:@"protobufstreamgzip"]) {
+    return SNTEventLogTypeProtobufStreamGzip;
+  } else if ([logType isEqualToString:@"protobufstreamzstd"]) {
+    return SNTEventLogTypeProtobufStreamZstd;
+  } else if ([logType isEqualToString:@"syslog"]) {
+    return SNTEventLogTypeSyslog;
+  } else if ([logType isEqualToString:@"null"]) {
+    return SNTEventLogTypeNull;
+  } else if ([logType isEqualToString:@"json"]) {
+    return SNTEventLogTypeJSON;
+  } else if ([logType isEqualToString:@"file"]) {
+    return SNTEventLogTypeFilelog;
+  } else {
+    return SNTEventLogTypeFilelog;
+  }
+}
+
+- (NSString*)eventLogTypeRaw {
+  return self.configState[kEventLogType] ?: @"file";
+}
+
+- (NSString*)eventLogPath {
+  return self.configState[kEventLogPath] ?: @"/var/db/santa/santa.log";
+}
+
+- (NSString*)spoolDirectory {
+  return self.configState[kSpoolDirectory] ?: @"/var/db/santa/spool";
+}
+
+- (NSUInteger)spoolDirectoryFileSizeThresholdKB {
+  return self.configState[kSpoolDirectoryFileSizeThresholdKB]
+             ? [self.configState[kSpoolDirectoryFileSizeThresholdKB] unsignedIntegerValue]
+             : 250;
+}
+
+- (NSUInteger)spoolDirectorySizeThresholdMB {
+  return self.configState[kSpoolDirectorySizeThresholdMB]
+             ? [self.configState[kSpoolDirectorySizeThresholdMB] unsignedIntegerValue]
+             : 250;
+}
+
+- (float)spoolDirectoryEventMaxFlushTimeSec {
+  return self.configState[kSpoolDirectoryEventMaxFlushTimeSec]
+             ? [self.configState[kSpoolDirectoryEventMaxFlushTimeSec] floatValue]
+             : 15.0;
+}
+
+- (NSDictionary*)fileAccessPolicy {
+  return self.configState[kFileAccessPolicy];
+}
+
+- (NSString*)fileAccessPolicyPlist {
+  // This property is ignored when kFileAccessPolicy is set
+  if (self.configState[kFileAccessPolicy]) {
+    return nil;
+  } else {
+    return self.configState[kFileAccessPolicyPlist];
+  }
+}
+
+- (NSString*)fileAccessBlockMessage {
+  return self.configState[kFileAccessBlockMessage];
+}
+
+- (uint32_t)fileAccessPolicyUpdateIntervalSec {
+  return self.configState[kFileAccessPolicyUpdateIntervalSec]
+             ? [self.configState[kFileAccessPolicyUpdateIntervalSec] unsignedIntValue]
+             : 60 * 10;
+}
+
+- (uint32_t)fileAccessGlobalLogsPerSec {
+  return self.configState[kFileAccessGlobalLogsPerSec]
+             ? [self.configState[kFileAccessGlobalLogsPerSec] unsignedIntValue]
+             : 60;
+}
+
+- (uint32_t)fileAccessGlobalWindowSizeSec {
+  return self.configState[kFileAccessGlobalWindowSizeSec]
+             ? [self.configState[kFileAccessGlobalWindowSizeSec] unsignedIntValue]
+             : 15;
+}
+
+- (BOOL)enableTelemetryExport {
+  return [self.configState[kEnableTelemetryExport] boolValue];
+}
+
+- (uint32_t)telemetryExportIntervalSec {
+  return self.configState[kTelemetryExportIntervalSec]
+             ? [self.configState[kTelemetryExportIntervalSec] unsignedIntValue]
+             : 60 * 15;
+}
+
+- (uint32_t)telemetryExportTimeoutSec {
+  return self.configState[kTelemetryExportTimeoutSec]
+             ? [self.configState[kTelemetryExportTimeoutSec] unsignedIntValue]
+             : (5 * 60);
+}
+
+- (uint32_t)telemetryExportBatchThresholdSizeMB {
+  return self.configState[kTelemetryExportBatchThresholdSizeMB]
+             ? [self.configState[kTelemetryExportBatchThresholdSizeMB] unsignedIntValue]
+             : 500;
+}
+
+- (uint32_t)telemetryExportMaxFilesPerBatch {
+  return self.configState[kTelemetryExportMaxFilesPerBatch]
+             ? [self.configState[kTelemetryExportMaxFilesPerBatch] unsignedIntValue]
+             : 50;
+}
+
+- (BOOL)enableMachineIDDecoration {
+  NSNumber* number = self.configState[kEnableMachineIDDecoration];
+  return number ? [number boolValue] : NO;
+}
+
+- (BOOL)enableCleanSyncEventUpload {
+  NSNumber* number = self.configState[kSyncEnableCleanSyncEventUpload];
+  return number ? [number boolValue] : NO;
+}
+
+- (BOOL)enableAllEventUpload {
+  NSNumber* n = self.syncState[kEnableAllEventUploadKey];
+  if (n) return [n boolValue];
+
+  return [self.configState[kEnableAllEventUploadKey] boolValue];
+}
+
+- (void)setEnableAllEventUpload:(BOOL)enabled {
+  [self updateSyncStateForKey:kEnableAllEventUploadKey value:@(enabled)];
+}
+
+- (BOOL)disableUnknownEventUpload {
+  NSNumber* n = self.syncState[kDisableUnknownEventUploadKey];
+  if (n) return [n boolValue];
+
+  return [self.configState[kDisableUnknownEventUploadKey] boolValue];
+}
+
+- (void)setDisableUnknownEventUpload:(BOOL)enabled {
+  [self updateSyncStateForKey:kDisableUnknownEventUploadKey value:@(enabled)];
+}
+
+// This method returns only the values that are of the expected string type.
+// The reasoning is that if a filter is attempted to be set, this method should
+// return some subset rather than `nil`. Since `nil` effectively means to log
+// everything, returning it would be akin to "failing open" even though some
+// filter configuration was attempted.
+- (NSArray<NSString*>*)telemetry {
+  NSArray* configuredEvents = self.configState[kTelemetryKey];
+  if (!configuredEvents) {
+    return nil;
+  }
+
+  NSMutableArray* events = [[NSMutableArray alloc] initWithCapacity:configuredEvents.count];
+
+  for (id event in configuredEvents) {
+    if ([event isKindOfClass:[NSString class]]) {
+      [events addObject:event];
+    }
+  }
+
+  return events;
+}
+
+- (BOOL)ignoreOtherEndpointSecurityClients {
+  NSNumber* number = self.configState[kIgnoreOtherEndpointSecurityClients];
+  return number ? [number boolValue] : NO;
+}
+
+- (NSTimeInterval)dnsUpstreamTimeoutSecs {
+  NSNumber* v = self.configState[kDNSUpstreamTimeoutSecondsKey];
+  return v ? v.doubleValue : 0;  // 0 == unset
+}
+
+- (NSString*)fcmProject {
+  return self.configState[kFCMProject];
+}
+
+- (NSString*)fcmEntity {
+  return self.configState[kFCMEntity];
+}
+
+- (NSString*)fcmAPIKey {
+  return self.configState[kFCMAPIKey];
+}
+
+- (BOOL)fcmEnabled {
+  return (self.fcmProject.length && self.fcmEntity.length && self.fcmAPIKey.length);
+}
+
+- (BOOL)hasValidPushTokenChain {
+  if (!self.pushTokenChain) {
+    LOGW(@"Push token chain is not set");
+    return NO;
+  }
+  if (self.pushTokenChain.count != 2) {
+    LOGW(@"Push token chain has %ld tokens, expected 2", self.pushTokenChain.count);
+    return NO;
+  }
+  if (!self.pushTokenChain[0].length || !self.pushTokenChain[1].length) {
+    LOGW(@"Push token chain has empty tokens");
+    return NO;
+  }
+  return santa::NKeyTokenValidator(kTrustedNKeys, self.pushTokenChain[0], self.pushTokenChain[1])
+      .Validate();
+}
+
+- (BOOL)isSyncV2Enabled {
+  // Only the daemon can read / write to the sync state. Ensure there are no attempts to read this
+  // setting from non-daemon processes.
+  if (![[[NSProcessInfo processInfo] processName]
+          isEqualToString:@"com.northpolesec.santa.daemon"]) {
+    // This is a programming error
+    LOGE(@"Attempting to call isSyncV2Enabled from a non-daemon process");
+    [NSException
+         raise:@"Attempt to call isSyncV2Enabled from a non-daemon process"
+        format:@"isSyncV2Enabled called from: %@", [[NSProcessInfo processInfo] processName]];
+  }
+
+  if (santa::SNTIsLiteInstall()) {
+    return NO;
+  }
+
+  return santa::IsDomainPinned([self syncBaseURL]) || [self hasValidPushTokenChain];
+}
+
+- (BOOL)enablePushNotifications {
+  // TODO: Consider supporting enablement from the sync server.
+  // Check new key first, then fall back to deprecated key for backward compatibility
+  NSNumber* value = self.configState[kEnablePushNotifications];
+  if (value != nil) {
+    return [value boolValue];
+  }
+  NSNumber* deprecatedValue = self.configState[kEnableNATS];
+  if (deprecatedValue != nil) {
+    return [deprecatedValue boolValue];
+  }
+  return YES;
+}
+
+- (void)setSyncServerRemovableMediaAction:(nullable NSString*)action {
+  [self updateSyncStateForKey:kRemovableMediaActionKey value:action];
+}
+
+- (SNTRemovableMediaAction)removableMediaAction {
+  // New keys take precedence
+  NSString* s = self.syncState[kRemovableMediaActionKey];
+  if (!s) s = self.configState[kRemovableMediaActionKey];
+  if (s) return ActionFromString(s);
+
+  // Deprecated sync state key (should be migrated, but handle gracefully)
+  NSNumber* syncBlock = self.syncState[kBlockUSBMountKey];
+  if (syncBlock) {
+    if (![syncBlock boolValue]) return SNTRemovableMediaActionAllow;
+    NSArray* flags = EnsureArrayOfStrings(self.syncState[kRemountUSBModeKey]);
+    return [flags count] > 0 ? SNTRemovableMediaActionRemount : SNTRemovableMediaActionBlock;
+  }
+
+  // Deprecated mobileconfig keys (can't migrate MDM-managed profiles)
+  if ([self.configState[kBlockUSBMountKey] boolValue]) {
+    NSArray* flags = EnsureArrayOfStrings(self.configState[kRemountUSBModeKey]);
+    return [flags count] > 0 ? SNTRemovableMediaActionRemount : SNTRemovableMediaActionBlock;
+  }
+
+  return SNTRemovableMediaActionAllow;
+}
+
+- (void)setSyncServerRemovableMediaRemountFlags:(nullable NSArray<NSString*>*)flags {
+  [self updateSyncStateForKey:kRemovableMediaRemountFlagsKey value:flags];
+}
+
+- (nullable NSArray<NSString*>*)removableMediaRemountFlags {
+  NSArray* flags = EnsureArrayOfStrings(self.syncState[kRemovableMediaRemountFlagsKey]);
+  if (flags) return flags;
+
+  flags = EnsureArrayOfStrings(self.configState[kRemovableMediaRemountFlagsKey]);
+  if (flags) return flags;
+
+  // Fall back to deprecated key
+  flags = EnsureArrayOfStrings(self.syncState[kRemountUSBModeKey]);
+  if (flags) return flags;
+
+  return EnsureArrayOfStrings(self.configState[kRemountUSBModeKey]);
+}
+
+- (void)setSyncServerEncryptedRemovableMediaAction:(nullable NSString*)action {
+  [self updateSyncStateForKey:kEncryptedRemovableMediaActionKey value:action];
+}
+
+- (SNTRemovableMediaAction)encryptedRemovableMediaAction {
+  NSString* s = self.syncState[kEncryptedRemovableMediaActionKey];
+  if (!s) s = self.configState[kEncryptedRemovableMediaActionKey];
+  if (s) return ActionFromString(s);
+
+  // No explicit encrypted policy — fall through to baseline
+  return [self removableMediaAction];
+}
+
+- (void)setSyncServerEncryptedRemovableMediaRemountFlags:(nullable NSArray<NSString*>*)flags {
+  [self updateSyncStateForKey:kEncryptedRemovableMediaRemountFlagsKey value:flags];
+}
+
+- (nullable NSArray<NSString*>*)encryptedRemovableMediaRemountFlags {
+  NSArray<NSString*>* args =
+      EnsureArrayOfStrings(self.syncState[kEncryptedRemovableMediaRemountFlagsKey]);
+  if (!args) {
+    args = EnsureArrayOfStrings(self.configState[kEncryptedRemovableMediaRemountFlagsKey]);
+  }
+  if (args) return args;
+
+  // If encrypted action is explicitly set, don't fall through to baseline flags.
+  // Remount with no flags = Allow (handled by device manager early return).
+  NSString* s = self.syncState[kEncryptedRemovableMediaActionKey];
+  if (!s) s = self.configState[kEncryptedRemovableMediaActionKey];
+  if (s) return nil;
+
+  // No encrypted override at all — fall through to baseline
+  return [self removableMediaRemountFlags];
+}
+
+- (void)setSyncServerBannedNetworkMountBlockMessage:(NSString*)msg {
+  [self updateSyncStateForKey:kBannedNetworkMountBlockMessage value:msg];
+}
+
+- (nullable NSString*)bannedNetworkMountBlockMessage {
+  return self.syncState[kBannedNetworkMountBlockMessage];
+}
+
+- (void)setSyncServerBlockNetworkMount:(BOOL)enabled {
+  [self updateSyncStateForKey:kBlockNetworkMountKey value:@(enabled)];
+}
+
+- (BOOL)blockNetworkMount {
+  return [self.syncState[kBlockNetworkMountKey] boolValue];
+}
+
+- (void)setSyncServerAllowedNetworkMountHosts:(NSArray<NSString*>*)args {
+  [self updateSyncStateForKey:kAllowedNetworkMountHosts value:args];
+}
+
+- (NSArray<NSString*>*)allowedNetworkMountHosts {
+  NSArray<NSString*>* hosts = self.syncState[kAllowedNetworkMountHosts];
+  if (!hosts) {
+    return nil;
+  }
+
+  for (NSString* host in hosts) {
+    if (![host isKindOfClass:[NSString class]]) {
+      LOGE(@"Unexpected type in %@: %@", kAllowedNetworkMountHosts, [host class]);
+      return nil;
+    }
+  }
+
+  return hosts;
+}
+
+- (void)setSyncServerOverrideFileAccessAction:(NSString*)action {
+  NSString* a = [action lowercaseString];
+  if ([a isEqualToString:@"auditonly"] || [a isEqualToString:@"disable"] ||
+      [a isEqualToString:@"none"] || [a isEqualToString:@""]) {
+    [self updateSyncStateForKey:kOverrideFileAccessActionKey value:action];
+  }
+}
+
+- (SNTOverrideFileAccessAction)overrideFileAccessAction {
+  NSString* action = [self.syncState[kOverrideFileAccessActionKey] lowercaseString];
+
+  if (!action) {
+    action = [self.configState[kOverrideFileAccessActionKey] lowercaseString];
+    if (!action) {
+      return SNTOverrideFileAccessActionNone;
+    }
+  }
+
+  // Note: `auditonly` without an underscore is a deprecated, but still accepted form.
+  if ([action isEqualToString:@"audit_only"] || [action isEqualToString:@"auditonly"]) {
+    return SNTOverrideFileAccessActionAuditOnly;
+  } else if ([action isEqualToString:@"disable"]) {
+    return SNTOverrideFileAccessActionDisable;
+  } else {
+    return SNTOverrideFileAccessActionNone;
+  }
+}
+
+///
+/// Returns YES if all of the necessary options are set to export metrics, NO
+/// otherwise.
+///
+- (BOOL)exportMetrics {
+  SNTMetricFormatType format = [self metricFormat];
+  if (format == SNTMetricFormatTypeUnknown) return NO;
+  // Proto format exports via the sync service; requires a configured SyncBaseURL.
+  if (format == SNTMetricFormatTypeProto) {
+    NSString* syncURL = self.configState[kSyncBaseURLKey];
+    return syncURL.length > 0;
+  }
+  NSString* url = self.configState[kMetricURL];
+  return url.length > 0;
+}
+
+- (SNTMetricFormatType)metricFormat {
+  NSString* normalized = [self.configState[kMetricFormat] lowercaseString];
+
+  normalized = [normalized stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+
+  if ([normalized isEqualToString:@"rawjson"]) {
+    return SNTMetricFormatTypeRawJSON;
+  } else if ([normalized isEqualToString:@"monarchjson"]) {
+    return SNTMetricFormatTypeMonarchJSON;
+  } else if ([normalized isEqualToString:@"proto"]) {
+    return SNTMetricFormatTypeProto;
+  } else if (normalized.length == 0 && santa::IsDomainPinned([self syncBaseURL])) {
+    return SNTMetricFormatTypeProto;
+  } else {
+    return SNTMetricFormatTypeUnknown;
+  }
+}
+
+- (NSURL*)metricURL {
+  if ([self metricFormat] == SNTMetricFormatTypeProto) {
+    return [self syncBaseURL];
+  }
+  return [NSURL URLWithString:self.configState[kMetricURL]];
+}
+
+// Returns a default value of 30 (for 30 seconds), or 600 (10 minutes) for proto format.
+- (NSUInteger)metricExportInterval {
+  NSNumber* configuredInterval = self.configState[kMetricExportInterval];
+
+  if (configuredInterval == nil) {
+    return [self metricFormat] == SNTMetricFormatTypeProto ? 600 : 30;
+  }
+  return [configuredInterval unsignedIntegerValue];
+}
+
+// Returns a default value of 30 (for 30 seconds).
+- (NSUInteger)metricExportTimeout {
+  NSNumber* configuredInterval = self.configState[kMetricExportTimeout];
+
+  if (configuredInterval == nil) {
+    return 30;
+  }
+  return [configuredInterval unsignedIntegerValue];
+}
+
+- (NSDictionary*)extraMetricLabels {
+  return self.configState[kMetricExtraLabels];
+}
+
+- (NSArray<NSString*>*)enabledProcessAnnotations {
+  NSArray<NSString*>* annotations = self.configState[kEnabledProcessAnnotations];
+  for (id annotation in annotations) {
+    if (![annotation isKindOfClass:[NSString class]]) {
+      return nil;
+    }
+  }
+  return annotations;
+}
+
+- (NSArray<NSString*>*)allowedSantaCommands {
+  NSArray* commands = self.configState[kAllowedSantaCommandsKey];
+  if (!commands) {
+    return nil;
+  }
+
+  NSMutableArray<NSString*>* filtered = [[NSMutableArray alloc] initWithCapacity:commands.count];
+
+  for (id command in commands) {
+    if ([command isKindOfClass:[NSString class]]) {
+      [filtered addObject:command];
+    } else {
+      LOGW(@"AllowedSantaCommands contains non-string value, ignoring: %@", [command class]);
+    }
+  }
+
+  return filtered;
+}
+
+#pragma mark - Private
+
+///
+///  Update the syncState. Triggers a KVO event for all dependents.
+///
+///  This operation blocks to allow the caller to read the written values
+///  immediately after the call completes.
+///
+- (void)updateSyncStateForKey:(NSString*)key value:(id)value {
+  void (^block)(void) = ^{
+    if (self.batchedSyncState) {
+      self.batchedSyncState[key] = value;
+      return;
+    }
+    NSMutableDictionary* syncState = self.syncState.mutableCopy;
+    syncState[key] = value;
+    self.syncState = syncState;
+    [self saveSyncStateToDisk];
+  };
+  // Avoid deadlocks by directly calling the block when already running on the
+  // main thread.
+  if ([NSThread isMainThread]) {
+    block();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), block);
+  }
+}
+
+- (BOOL)performSyncStateBatch:(void(NS_NOESCAPE ^)(void))block {
+  __block BOOL committed = NO;
+  void (^run)(void) = ^{
+    if (self.batchedSyncState != nil) {
+      NSAssert(NO, @"Sync-state batches do not nest");
+      LOGE(@"Sync-state batches do not nest; skipping nested batch");
+      return;
+    }
+    self.batchedSyncState = self.syncState.mutableCopy;
+    block();
+    self.syncState = self.batchedSyncState;
+    self.batchedSyncState = nil;
+    committed = [self saveSyncStateToDisk];
+  };
+  if ([NSThread isMainThread]) {
+    run();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), run);
+  }
+  return committed;
+}
+
+///
+///  Read the saved syncState.
+///
+- (NSMutableDictionary*)readSyncStateFromDisk {
+  if (!self.syncStateAccessAuthorizerBlock()) {
+    return nil;
+  }
+
+  NSMutableDictionary* syncState =
+      [NSMutableDictionary dictionaryWithContentsOfFile:self.syncStateFilePath];
+  for (NSString* key in syncState.allKeys) {
+    if (self.syncServerKeyTypes[key] == [NSRegularExpression class]) {
+      NSString* pattern = [syncState[key] isKindOfClass:[NSString class]] ? syncState[key] : nil;
+      syncState[key] = [self expressionForPattern:pattern];
+    } else if (![syncState[key] isKindOfClass:self.syncServerKeyTypes[key]]) {
+      syncState[key] = nil;
+      continue;
+    }
+  }
+
+  return syncState;
+}
+
+///
+///  Migrate any deprecated sync state keys/values to alternative keys/values.
+///
+///  Returns YES if any keys were migrated. Otherwise NO.
+///
+- (BOOL)migrateDeprecatedSyncStateKeys {
+  BOOL migrated = NO;
+  NSMutableDictionary* syncState = self.syncState.mutableCopy;
+
+  // Migrate kSyncCleanRequiredDeprecated → kSyncTypeRequired
+  if (syncState[kSyncCleanRequiredDeprecated]) {
+    if (!syncState[kSyncTypeRequired]) {
+      syncState[kSyncTypeRequired] = [syncState[kSyncCleanRequiredDeprecated] boolValue]
+                                         ? @(SNTSyncTypeClean)
+                                         : @(SNTSyncTypeNormal);
+    }
+    syncState[kSyncCleanRequiredDeprecated] = nil;
+    migrated = YES;
+  }
+
+  // Migrate BlockUSBMount + RemountUSBMode → RemovableMediaAction + RemovableMediaRemountFlags
+  if (syncState[kBlockUSBMountKey]) {
+    if (!syncState[kRemovableMediaActionKey]) {
+      if ([syncState[kBlockUSBMountKey] boolValue]) {
+        NSArray* flags = EnsureArrayOfStrings(syncState[kRemountUSBModeKey]);
+        syncState[kRemovableMediaActionKey] = [flags count] > 0 ? @"Remount" : @"Block";
+        if ([flags count] > 0) {
+          syncState[kRemovableMediaRemountFlagsKey] = flags;
+        }
+      } else {
+        syncState[kRemovableMediaActionKey] = @"Allow";
+      }
+    }
+    syncState[kBlockUSBMountKey] = nil;
+    syncState[kRemountUSBModeKey] = nil;
+    migrated = YES;
+  }
+
+  if (migrated) {
+    self.syncState = syncState;
+  }
+
+  return migrated;
+}
+
+///
+///  Removes the sync state plist, returning whether it is now gone. A missing file is the
+///  expected case on a host that never synced and counts as success; anything else means synced
+///  state survived on disk and would be read back on the next launch, so it must not fail
+///  silently.
+///
+- (BOOL)removeSyncStateFile {
+  NSError* error;
+  if ([[NSFileManager defaultManager] removeItemAtPath:self.syncStateFilePath error:&error]) {
+    return YES;
+  }
+  if ([error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileNoSuchFileError) {
+    return YES;
+  }
+  LOGE(@"Failed to remove sync state at %@: %@", self.syncStateFilePath, error);
+  return NO;
+}
+
+///
+///  Saves the current effective syncState to disk. Returns YES if the write
+///  succeeded; NO if the authorizer denied the operation or the underlying
+///  file write failed.
+///
+- (BOOL)saveSyncStateToDisk {
+  if (!self.syncStateAccessAuthorizerBlock()) {
+    return NO;
+  }
+  return [self writeSyncStateToDisk];
+}
+
+///
+///  Saves the current effective syncState to disk without consulting
+///  `syncStateAccessAuthorizerBlock`. Only for callers that have a documented
+///  reason to skip that gate; everything on the ordinary sync-server write path
+///  must go through `saveSyncStateToDisk` instead.
+///
+- (BOOL)writeSyncStateToDisk {
+  NSMutableDictionary* syncState = self.syncState.mutableCopy;
+
+  // An empty sync state and a missing plist mean the same thing, so keep only the one that says
+  // so. Sync-state writes are unconditional, so without this a no-op commit (e.g. a preflight
+  // whose config bundle carries nothing) leaves an empty plist behind, which reads as though the
+  // host holds synced state when it holds none.
+  if (syncState.count == 0) {
+    return [self removeSyncStateFile];
+  }
+
+  syncState[kAllowedPathRegexKey] = [syncState[kAllowedPathRegexKey] pattern];
+  syncState[kBlockedPathRegexKey] = [syncState[kBlockedPathRegexKey] pattern];
+  if (![syncState writeToFile:self.syncStateFilePath atomically:YES]) {
+    LOGE(@"Failed to write sync state to %@", self.syncStateFilePath);
+    return NO;
+  }
+  [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @0600}
+                                   ofItemAtPath:self.syncStateFilePath
+                                          error:NULL];
+  return YES;
+}
+
+/// Whether `syncState` holds anything a sync server put there. `SyncTypeRequired` is this
+/// client's own bookkeeping, so a dictionary holding nothing else counts as empty.
+static BOOL HoldsSyncedSettings(NSDictionary* syncState) {
+  for (NSString* key in syncState) {
+    if (![key isEqualToString:kSyncTypeRequired]) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+- (BOOL)hasSyncedSettings {
+  if (HoldsSyncedSettings(self.syncState)) {
+    return YES;
+  }
+
+  // In-memory state is not the whole story. `readSyncStateFromDisk` is gated on a configured sync
+  // server, so a daemon that started *after* SyncBaseURL was removed holds nothing while the
+  // departed server's settings are still on disk -- which is exactly when they most need dropping,
+  // and the ordinary way a fleet retires a sync server. Read the file directly rather than through
+  // the authorizer, the same exemption `clearSyncState` takes and for the same reason.
+  return HoldsSyncedSettings([NSDictionary dictionaryWithContentsOfFile:self.syncStateFilePath]);
+}
+
+- (void)clearSyncState {
+  // Intentionally not gated on `syncStateAccessAuthorizerBlock`: the authorizer
+  // requires `syncBaseURL != nil`, but the SNTSyncdQueue caller invokes this
+  // method precisely *because* `syncBaseURL` went to nil. Gating here would
+  // make the cleanup unreachable in production. Disk removal still requires
+  // root, which santad already has.
+  void (^block)(void) = ^{
+    if (self.batchedSyncState) {
+      [self.batchedSyncState removeAllObjects];
+      return;
+    }
+    self.syncState = [NSMutableDictionary dictionary];
+    [self removeSyncStateFile];
+  };
+  if ([NSThread isMainThread]) {
+    block();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), block);
+  }
+}
+
+- (BOOL)clearSyncStateRequiringSyncType:(SNTSyncType)syncType {
+  // One transition rather than `clearSyncState` plus `setSyncTypeRequired:`. That pairing cannot
+  // work here: `setSyncTypeRequired:` writes through `saveSyncStateToDisk`, whose authorizer
+  // requires `syncBaseURL != nil`, and the caller runs precisely *because* the URL went away. The
+  // write would be refused and the requirement would survive only in this process's memory, so a
+  // restarted daemon would fall back to `syncTypeRequired`'s empty-state default, which lapses to
+  // Normal the moment postflight writes any other key.
+  //
+  // Skipping the authorizer is the same exemption `clearSyncState` takes, for the same reason.
+  // Writing to `syncStateFilePath` still requires root, which santad has.
+  __block BOOL committed = NO;
+  void (^block)(void) = ^{
+    NSMutableDictionary* syncState = [NSMutableDictionary dictionaryWithObject:@(syncType)
+                                                                        forKey:kSyncTypeRequired];
+    if (self.batchedSyncState) {
+      [self.batchedSyncState removeAllObjects];
+      [self.batchedSyncState addEntriesFromDictionary:syncState];
+      // Durability is the enclosing batch's to report, not ours.
+      committed = YES;
+      return;
+    }
+    self.syncState = syncState;
+    committed = [self writeSyncStateToDisk];
+  };
+  if ([NSThread isMainThread]) {
+    block();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), block);
+  }
+  return committed;
+}
+
+- (NSArray*)entitlementsPrefixFilter {
+  return EnsureArrayOfStrings(self.configState[kEntitlementsPrefixFilterKey]);
+}
+
+- (NSArray*)entitlementsTeamIDFilter {
+  return EnsureArrayOfStrings(self.configState[kEntitlementsTeamIDFilterKey]);
+}
+
+- (NSArray*)telemetryFilterExpressions {
+  NSMutableArray* merged = [NSMutableArray array];
+
+  NSArray* configExpressions =
+      EnsureArrayOfStrings(self.configState[kTelemetryFilterExpressionsKey]);
+  if (configExpressions) [merged addObjectsFromArray:configExpressions];
+
+  NSArray* syncExpressions = EnsureArrayOfStrings(self.syncState[kTelemetryFilterExpressionsKey]);
+  if (syncExpressions) [merged addObjectsFromArray:syncExpressions];
+
+  return merged.count ? [merged copy] : nil;
+}
+
+- (void)setSyncServerTelemetryFilterExpressions:(NSArray<NSString*>*)expressions {
+  [self updateSyncStateForKey:kTelemetryFilterExpressionsKey
+                        value:EnsureArrayOfStrings(expressions)];
+}
+
+- (NSArray*)binaryUploadFilterExpressions {
+  NSMutableArray* merged = [NSMutableArray array];
+
+  NSArray* configExpressions =
+      EnsureArrayOfStrings(self.configState[kBinaryUploadFilterExpressionsKey]);
+  if (configExpressions) [merged addObjectsFromArray:configExpressions];
+
+  NSArray* syncExpressions =
+      EnsureArrayOfStrings(self.syncState[kBinaryUploadFilterExpressionsKey]);
+  if (syncExpressions) [merged addObjectsFromArray:syncExpressions];
+
+  return merged.count ? [merged copy] : nil;
+}
+
+- (void)setSyncServerBinaryUploadFilterExpressions:(NSArray<NSString*>*)expressions {
+  [self updateSyncStateForKey:kBinaryUploadFilterExpressionsKey
+                        value:EnsureArrayOfStrings(expressions)];
+}
+
+- (NSArray<SNTCELFallbackRule*>*)celFallbackRules {
+  return [SNTCELFallbackRule deserializeArray:self.syncState[kCELFallbackRulesKey]];
+}
+
+- (void)setSyncServerCELFallbackRules:(NSArray<SNTCELFallbackRule*>*)rules {
+  [self updateSyncStateForKey:kCELFallbackRulesKey value:[SNTCELFallbackRule serializeArray:rules]];
+}
+
+- (NSDictionary*)readStateFromDisk {
+  if (!self.stateAccessAuthorizerBlock()) {
+    return nil;
+  }
+
+  NSDictionary* state = [NSDictionary dictionaryWithContentsOfFile:self.stateFilePath];
+  if (!state) {
+    return nil;
+  }
+
+  // This acts as a filter, populated only with known state file data
+  // so that unknown state data is removed.
+  NSMutableDictionary* newState = [NSMutableDictionary dictionary];
+
+  if ([state[kStateTempMonitorModeKey] isKindOfClass:[NSDictionary class]]) {
+    newState[kStateTempMonitorModeKey] = state[kStateTempMonitorModeKey];
+  }
+
+  if ([state[kStateTempAdminModeKey] isKindOfClass:[NSDictionary class]]) {
+    newState[kStateTempAdminModeKey] = state[kStateTempAdminModeKey];
+  }
+
+  if ([state[kStateDemotedAdminsKey] isKindOfClass:[NSArray class]]) {
+    newState[kStateDemotedAdminsKey] = state[kStateDemotedAdminsKey];
+  }
+
+  if ([state[kStateLastBootUUIDKey] isKindOfClass:[NSString class]]) {
+    _lastBootUUID = state[kStateLastBootUUIDKey];
+    newState[kStateLastBootUUIDKey] = _lastBootUUID;
+  }
+
+  if ([state[kStateLastSyncServerURLKey] isKindOfClass:[NSString class]]) {
+    newState[kStateLastSyncServerURLKey] = state[kStateLastSyncServerURLKey];
+  }
+
+  if ([state[kStateTimedRuleKillsKey] isKindOfClass:[NSArray class]]) {
+    newState[kStateTimedRuleKillsKey] = state[kStateTimedRuleKillsKey];
+  }
+
+  if ([state[kStateClockReadingKey] isKindOfClass:[NSDictionary class]]) {
+    newState[kStateClockReadingKey] = state[kStateClockReadingKey];
+  }
+
+  return newState;
+}
+
+- (BOOL)updateStateSynchronizedKey:(NSString*)key value:(id)value {
+  NSMutableDictionary* newState = [self.state mutableCopy] ?: [NSMutableDictionary dictionary];
+
+  newState[key] = value;
+  self.state = newState;
+
+  return [self saveStateToDiskSynchronized:self.state];
+}
+
+- (BOOL)saveStateToDiskSynchronized:(NSDictionary*)state {
+  if (!self.stateAccessAuthorizerBlock()) {
+    return NO;
+  }
+
+  if (![state writeToFile:self.stateFilePath atomically:YES]) {
+    LOGW(@"Unable to update state file");
+    return NO;
+  }
+
+  return [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @0600}
+                                          ofItemAtPath:self.stateFilePath
+                                                 error:NULL];
+}
+
+#pragma mark - Private Defaults Methods
+
+- (NSRegularExpression*)expressionForPattern:(NSString*)pattern {
+  // An empty pattern must clear the regex, not become "^", which matches every
+  // path. Sync servers send "" to mean "no regex managed here".
+  if (!pattern.length) return nil;
+  if (![pattern hasPrefix:@"^"]) pattern = [@"^" stringByAppendingString:pattern];
+  return [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:NULL];
+}
+
+// Whether the debug-only config-override-file mechanism is active in this process.
+// Off by default under xctest so override values don't leak into tests; opt in per
+// test with `bazel test --test_env=ENABLE_CONFIG_OVERRIDES=1 ...`.
+- (BOOL)overridesEnabled {
+#ifdef DEBUG
+  if (![[[NSProcessInfo processInfo] processName] isEqualToString:@"xctest"]) {
+    return YES;
+  } else {
+    return
+        [[[NSProcessInfo processInfo] environment] objectForKey:@"ENABLE_CONFIG_OVERRIDES"] != nil;
+  }
+#else
+  return NO;
+#endif
+}
+
+- (void)applyOverrides:(NSMutableDictionary*)forcedConfig {
+  if (![self overridesEnabled]) {
+    return;
+  }
+
+#ifdef DEBUG
+  NSDictionary* overrides = [NSDictionary dictionaryWithContentsOfFile:kConfigOverrideFilePath];
+  for (NSString* key in overrides) {
+    id obj = overrides[key];
+    if (![obj isKindOfClass:self.forcedConfigKeyTypes[key]] &&
+        !(self.forcedConfigKeyTypes[key] == [NSRegularExpression class] &&
+          [obj isKindOfClass:[NSString class]])) {
+      continue;
+    }
+
+    forcedConfig[key] = obj;
+
+    if (self.forcedConfigKeyTypes[key] == [NSRegularExpression class]) {
+      NSString* pattern = [obj isKindOfClass:[NSString class]] ? obj : nil;
+      forcedConfig[key] = [self expressionForPattern:pattern];
+    }
+  }
+#endif
+}
+
+- (id)overriderValue:(id)value forKey:(NSString*)key {
+  // Overrides should only be applied under debug builds.
+  id overrideValue = value;
+#ifdef DEBUG
+  overrideValue =
+      [NSDictionary dictionaryWithContentsOfFile:kConfigOverrideFilePath][key] ?: overrideValue;
+#endif
+  return overrideValue;
+}
+
+- (NSMutableDictionary*)readForcedConfig {
+  NSMutableDictionary* forcedConfig = [NSMutableDictionary dictionary];
+  for (NSString* key in self.forcedConfigKeyTypes) {
+    id obj = [self forcedConfigValueForKey:key];
+    forcedConfig[key] = [obj isKindOfClass:self.forcedConfigKeyTypes[key]] ? obj : nil;
+    // Create the regex objects now
+    if (self.forcedConfigKeyTypes[key] == [NSRegularExpression class]) {
+      NSString* pattern = [obj isKindOfClass:[NSString class]] ? obj : nil;
+      forcedConfig[key] = [self expressionForPattern:pattern];
+    }
+  }
+
+  // Backward compatibility: if EnableNATS is set but EnablePushNotifications is not,
+  // copy the value from EnableNATS to EnablePushNotifications
+  if (forcedConfig[kEnableNATS] != nil && forcedConfig[kEnablePushNotifications] == nil) {
+    forcedConfig[kEnablePushNotifications] = forcedConfig[kEnableNATS];
+  }
+
+  [self applyOverrides:forcedConfig];
+
+  return forcedConfig;
+}
+
+- (id)forcedConfigValueForKey:(NSString*)key {
+  CFStringRef keyRef = (__bridge CFStringRef)key;
+  if (CFPreferencesAppValueIsForced(keyRef, kMobileConfigDomain)) {
+    return CFBridgingRelease(CFPreferencesCopyAppValue(keyRef, kMobileConfigDomain));
+  }
+  return nil;
+}
+
+- (void)startWatchingDefaults {
+  // santactl is not a long running daemon, it does not need to watch for config changes.
+  NSString* processName = [[NSProcessInfo processInfo] processName];
+  if ([processName isEqualToString:@"santactl"]) return;
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(defaultsChanged:)
+                                               name:NSUserDefaultsDidChangeNotification
+                                             object:nil];
+#ifdef DEBUG
+  if ([self overridesEnabled]) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      [self watchOverridesFile];
+    });
+  }
+#endif
+}
+
+#ifdef DEBUG
+- (void)watchOverridesFile {
+  while (![[NSFileManager defaultManager] fileExistsAtPath:kConfigOverrideFilePath]) {
+    [NSThread sleepForTimeInterval:0.2];
+  }
+  [self defaultsChanged:nil];
+
+  int descriptor = open([kConfigOverrideFilePath fileSystemRepresentation], O_EVTONLY);
+  if (descriptor < 0) {
+    return;
+  }
+
+  dispatch_source_t source =
+      dispatch_source_create(DISPATCH_SOURCE_TYPE_VNODE, descriptor,
+                             DISPATCH_VNODE_WRITE | DISPATCH_VNODE_RENAME | DISPATCH_VNODE_DELETE,
+                             dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+  dispatch_source_set_event_handler(source, ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self defaultsChanged:nil];
+    });
+    unsigned long events = dispatch_source_get_data(source);
+    if ((events & DISPATCH_VNODE_DELETE) || (events & DISPATCH_VNODE_RENAME)) {
+      dispatch_source_cancel(source);
+    }
+  });
+  dispatch_source_set_cancel_handler(source, ^{
+    close(descriptor);
+    [self watchOverridesFile];
+  });
+  dispatch_resume(source);
+}
+#endif
+
+- (void)defaultsChanged:(void*)v {
+  SEL handleChange = @selector(handleChange);
+  [NSObject cancelPreviousPerformRequestsWithTarget:self selector:handleChange object:nil];
+  [self performSelector:handleChange withObject:nil afterDelay:1.0f];
+}
+
+///
+///  Update the configState. Triggers a KVO event for all dependents.
+///
+- (void)handleChange {
+  self.configState = [self readForcedConfig];
+}
+
+#pragma mark - Config Validation
+
+- (nullable NSArray*)validateConfiguration {
+  NSMutableArray* errors = [NSMutableArray array];
+
+  [self.defaults.dictionaryRepresentation enumerateKeysAndObjectsUsingBlock:^(NSString* key, id obj,
+                                                                              BOOL* stop) {
+    // If the key is not forced it will be ignored, so we don't need to validate
+    // it. This also has the effect of removing Apple keys that are present in
+    // the user defaults preferences.
+    if (!CFPreferencesAppValueIsForced((__bridge CFStringRef)key, kMobileConfigDomain)) return;
+
+    // If the key is a 'standard' configuration profile key, skip it.
+    static NSArray* profileKeys = @[
+      @"_manualProfile",
+      @"PayloadUUID",
+    ];
+    if ([profileKeys containsObject:key]) return;
+
+    // Check that the key is known to us.
+    id type = self.forcedConfigKeyTypes[key];
+    if (!type) {
+      [errors addObject:[NSString stringWithFormat:@"The key %@ is not recognized", key]];
+      return;
+    }
+
+    // Check that the type of the value matches the expected type.
+    id value = CFBridgingRelease(
+        CFPreferencesCopyAppValue((__bridge CFStringRef)key, kMobileConfigDomain));
+    value = [self overriderValue:value forKey:key];
+    if (![value isKindOfClass:type] &&
+        !(type == [NSRegularExpression class] && [value isKindOfClass:[NSString class]])) {
+      [errors addObject:[NSString stringWithFormat:@"The key %@ has an unexpected type: %@", key,
+                                                   [value class]]];
+      return;
+    }
+
+    // If the type is a regex, check that it compiles.
+    if (type == [NSRegularExpression class] && ![self expressionForPattern:value]) {
+      [errors addObject:[NSString
+                            stringWithFormat:@"The regular expression for key %@ does not compile",
+                                             key]];
+    }
+
+    // If the key is StaticRules, validate the passed in rules.
+    if ([key isEqualToString:kStaticRulesKey]) {
+      // We've already validated that `value` is an NSArray
+      [errors addObjectsFromArray:[self validateStaticRules:(NSArray*)value]];
+    }
+
+    // If the key is FileAccessPolicy, validate the FAA policy configuration.
+    if ([key isEqualToString:kFileAccessPolicy]) {
+      // We've already validated that `value` is an NSDictionary
+      [errors addObjectsFromArray:[self validateFileAccessPolicy:(NSDictionary*)value]];
+    }
+
+    // If the key is FileAccessPolicyPlist, load and validate the referenced file.
+    // Note: FileAccessPolicyPlist is ignored when FileAccessPolicy is set.
+    if ([key isEqualToString:kFileAccessPolicyPlist] &&
+        !CFPreferencesAppValueIsForced((__bridge CFStringRef)kFileAccessPolicy,
+                                       kMobileConfigDomain)) {
+      // We've already validated that `value` is an NSString
+      [errors addObjectsFromArray:[self validateFileAccessPolicyPlist:(NSString*)value]];
+    }
+  }];
+  return errors;
+}
+
+- (NSArray*)validateStaticRules:(NSArray*)rules {
+  NSMutableArray* errors = [NSMutableArray array];
+  [rules enumerateObjectsUsingBlock:^(id rule, NSUInteger idx, BOOL* stop) {
+    if (![rule isKindOfClass:[NSDictionary class]]) {
+      [errors addObject:[NSString stringWithFormat:@"StaticRule at index %lu has bad type: %@", idx,
+                                                   [rule class]]];
+      return;
+    }
+
+    NSError* error;
+    (void)[[SNTRule alloc] initStaticRuleWithDictionary:rule error:&error];
+    if (error) {
+      [errors addObject:[NSString stringWithFormat:@"StaticRule at index %lu is invalid: %@", idx,
+                                                   error.localizedDescription]];
+    }
+  }];
+  return errors;
+}
+
+- (NSArray*)validateFileAccessPolicy:(NSDictionary*)policy {
+  NSMutableArray* errors = [NSMutableArray array];
+
+  // Always a locally managed configuration, never a sync server's rules.
+  constexpr auto kDataSource = santa::WatchItems::DataSource::kEmbeddedConfig;
+
+  // First validate top-level config structure.
+  NSError* error;
+  if (!santa::WatchItems::IsValidConfig(policy, kDataSource, &error)) {
+    [errors addObject:[NSString stringWithFormat:@"FileAccessPolicy: %@",
+                                                 error.localizedDescription ?: @"Unknown error"]];
+  }
+
+  // Then validate each rule individually to report per-rule errors.
+  NSDictionary* watchItems = policy[kWatchItemConfigKeyWatchItems];
+  NSString* policyVersion = policy[kWatchItemConfigKeyVersion];
+  if ([watchItems isKindOfClass:[NSDictionary class]]) {
+    for (NSString* name in watchItems) {
+      if (![watchItems[name] isKindOfClass:[NSDictionary class]]) {
+        [errors addObject:[NSString stringWithFormat:@"FileAccessPolicy rule '%@' is invalid: "
+                                                     @"Value must be a dictionary",
+                                                     name]];
+        continue;
+      }
+      NSError* ruleError;
+      if (!santa::WatchItems::IsValidRule(name, watchItems[name], kDataSource, &ruleError,
+                                          policyVersion)) {
+        [errors addObject:[NSString
+                              stringWithFormat:@"FileAccessPolicy rule '%@' is invalid: %@", name,
+                                               ruleError.localizedDescription ?: @"Unknown error"]];
+      }
+    }
+  }
+
+  return errors;
+}
+
+- (NSArray*)validateFileAccessPolicyPlist:(NSString*)path {
+  NSMutableArray* errors = [NSMutableArray array];
+
+  if (!path.length) {
+    [errors addObject:@"FileAccessPolicyPlist: Path is empty"];
+    return errors;
+  }
+
+  NSDictionary* policy = [NSDictionary dictionaryWithContentsOfFile:path];
+  if (!policy) {
+    [errors addObject:[NSString stringWithFormat:@"FileAccessPolicyPlist: Unable to read plist "
+                                                 @"at path '%@'",
+                                                 path]];
+    return errors;
+  }
+
+  [errors addObjectsFromArray:[self validateFileAccessPolicy:policy]];
+  return errors;
+}
+
+@end

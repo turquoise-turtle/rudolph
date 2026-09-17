@@ -19,7 +19,11 @@ var (
 )
 
 func init() {
-	handlers = []HandlerInterface{
+	handlers = newHandlers()
+}
+
+func newHandlers() []HandlerInterface {
+	return []HandlerInterface{
 		&health.GetHealthHandler{},
 		&eventupload.PostEventuploadHandler{},
 		&preflight.PostPreflightHandler{},

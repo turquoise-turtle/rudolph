@@ -1,0 +1,753 @@
+/// Copyright 2015 Google Inc. All rights reserved.
+/// Copyright 2024 North Pole Security, Inc.
+///
+/// Licensed under the Apache License, Version 2.0 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     http://www.apache.org/licenses/LICENSE-2.0
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+
+#import "Source/santasyncservice/SNTSyncRuleDownload.h"
+#import "Source/common/SNTCommonEnums.h"
+
+#import <Foundation/Foundation.h>
+
+#import "Source/common/MOLXPCConnection.h"
+#import "Source/common/SNTFileAccessRule.h"
+#import "Source/common/SNTNetworkFlowRule.h"
+#import "Source/common/SNTRule.h"
+#import "Source/common/SNTSignal.h"
+#import "Source/common/SNTSyncConstants.h"
+#import "Source/common/SNTXPCControlInterface.h"
+#import "Source/common/String.h"
+#import "Source/common/faa/WatchItemPolicy.h"
+#import "Source/common/faa/WatchItems.h"
+#include "Source/santasyncservice/ProtoTraits.h"
+#import "Source/santasyncservice/SNTPushNotificationsTracker.h"
+#import "Source/santasyncservice/SNTSyncConfigBundle.h"
+#import "Source/santasyncservice/SNTSyncLogging.h"
+#import "Source/santasyncservice/SNTSyncState.h"
+#include "google/protobuf/arena.h"
+#import "src/santanetd/NetworkFlowRuleValidator.h"
+#include "syncv2/v2.pb.h"
+
+namespace pbv2 = ::santa::sync::v2;
+
+using santa::NSStringToUTF8String;
+using santa::StringToNSString;
+
+template <bool IsV2>
+SNTRule* RuleFromProtoRule(const typename santa::ProtoTraits<IsV2>::RuleT& rule);
+template <bool IsV2>
+void ProcessBundleNotificationsForRule(SNTSyncRuleDownload* self, SNTRule* rule,
+                                       const typename santa::ProtoTraits<IsV2>::RuleT* protoRule);
+template <bool IsV2>
+void ProcessDeprecatedBundleNotificationsForRule(
+    SNTRule* rule, const typename santa::ProtoTraits<IsV2>::RuleT* protoRule);
+SNTFileAccessRule* FAARuleFromProtoFAARuleRemove(
+    const ::pbv2::FileAccessRule::Remove& pbRemoveRule);
+SNTFileAccessRule* FAARuleFromProtoFileAccessRule(const ::pbv2::FileAccessRule& wi);
+SNTFileAccessRule* FAARuleFromProtoFAARuleAdd(const ::pbv2::FileAccessRule::Add& pbAddRule);
+NSArray* PathsFromProtoFAARulePaths(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::Path>& pbPaths);
+NSDictionary* OptionsFromProtoFAARuleAdd(const ::pbv2::FileAccessRule::Add& pbAddRule);
+NSArray* ProcessesFromProtoFAARuleProcesses(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::Process>& pbProcesses);
+NSArray* ProcessesWithOptionsFromProtoFAARuleProcesses(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::ProcessWithOptions>&
+        pbProcesses);
+SNTNetworkFlowRule* NetworkFlowRuleFromProto(const ::pbv2::NetworkFlowRule& nr);
+SNTSignal* SignalFromProtoSignalRule(const ::pbv2::TelemetrySignalRule& sr);
+
+// Small local object to more easily return the different sets of downloaded rules.
+@interface SNTDownloadedRuleSets : NSObject
+@property(readonly) NSArray<SNTRule*>* executionRules;
+@property(readonly) NSArray<SNTFileAccessRule*>* fileAccessRules;
+@property(readonly) NSArray<SNTNetworkFlowRule*>* networkRules;
+@property(readonly) NSArray<SNTSignal*>* signals;
+@end
+
+@implementation SNTDownloadedRuleSets
+- (instancetype)initWithExecutionRules:(NSArray<SNTRule*>*)executionRules
+                       fileAccessRules:(NSArray<SNTFileAccessRule*>*)fileAccessRules
+                          networkRules:(NSArray<SNTNetworkFlowRule*>*)networkRules
+                               signals:(NSArray<SNTSignal*>*)signals {
+  self = [super init];
+  if (self) {
+    _executionRules = executionRules;
+    _fileAccessRules = fileAccessRules;
+    _networkRules = networkRules;
+    _signals = signals;
+  }
+  return self;
+}
+@end
+
+SNTRuleCleanup SyncTypeToRuleCleanup(SNTSyncType syncType) {
+  switch (syncType) {
+    case SNTSyncTypeNormal: return SNTRuleCleanupNone;
+    case SNTSyncTypeClean: return SNTRuleCleanupNonTransitive;
+    case SNTSyncTypeCleanAll: return SNTRuleCleanupAll;
+    default: return SNTRuleCleanupNone;
+  }
+}
+
+// Downloads new rules from server and converts them into SNTRule.
+// Returns an array of all converted rules, or nil if there was a server problem.
+// Note that rules from the server are filtered.
+template <bool IsV2>
+SNTDownloadedRuleSets* DownloadNewRulesFromServer(SNTSyncRuleDownload* self) {
+  using Traits = santa::ProtoTraits<IsV2>;
+  google::protobuf::Arena arena;
+
+  self.syncState.rulesReceived = 0;
+  self.syncState.fileAccessRulesReceived = 0;
+  self.syncState.networkFlowRulesReceived = 0;
+  self.syncState.signalsReceived = 0;
+  NSMutableArray<SNTRule*>* newRules = [NSMutableArray array];
+  NSMutableArray<SNTFileAccessRule*>* newFileAccessRules = [NSMutableArray array];
+  NSMutableArray<SNTNetworkFlowRule*>* newNetworkRules = [NSMutableArray array];
+  NSMutableArray<SNTSignal*>* newSignals = [NSMutableArray array];
+  std::string cursor;
+
+  do {
+    @autoreleasepool {
+      auto req = google::protobuf::Arena::Create<typename Traits::RuleDownloadRequestT>(&arena);
+      req->set_machine_id(NSStringToUTF8String(self.syncState.machineID));
+
+      if (!cursor.empty()) {
+        req->set_cursor(cursor);
+      }
+      typename Traits::RuleDownloadResponseT response;
+      NSError* err = [self performRequest:[self requestWithMessage:req]
+                              intoMessage:&response
+                                  timeout:30];
+
+      if (err) {
+        SLOGE(@"Error downloading rules: %@", err);
+        return nil;
+      }
+
+      for (const typename Traits::RuleT& rule : response.rules()) {
+        SNTRule* r = RuleFromProtoRule<IsV2>(rule);
+        if (!r) {
+          SLOGD(@"Ignoring bad rule: %s", rule.Utf8DebugString().c_str());
+          continue;
+        }
+        ProcessBundleNotificationsForRule<IsV2>(self, r, &rule);
+        [newRules addObject:r];
+      }
+
+      if constexpr (IsV2) {
+        for (const typename Traits::FileAccessRuleT& faaRule : response.file_access_rules()) {
+          SNTFileAccessRule* rule = FAARuleFromProtoFileAccessRule(faaRule);
+          if (!rule) {
+            SLOGD(@"Ignoring bad file access rule: %s", faaRule.Utf8DebugString().c_str());
+            continue;
+          }
+          [newFileAccessRules addObject:rule];
+        }
+
+        for (const ::pbv2::NetworkFlowRule& networkRule : response.network_flow_rules()) {
+          SNTNetworkFlowRule* rule = NetworkFlowRuleFromProto(networkRule);
+          if (!rule) {
+            SLOGD(@"Ignoring bad network flow rule: %s", networkRule.Utf8DebugString().c_str());
+            continue;
+          }
+          [newNetworkRules addObject:rule];
+        }
+
+        for (const ::pbv2::TelemetrySignalRule& signalRule : response.telemetry_signal_rules()) {
+          SNTSignal* s = SignalFromProtoSignalRule(signalRule);
+          if (!s) {
+            SLOGD(@"Ignoring bad telemetry signal rule: %s", signalRule.Utf8DebugString().c_str());
+            continue;
+          }
+          [newSignals addObject:s];
+        }
+      }
+
+      cursor = response.cursor();
+      SLOGI(@"Received %lu rules", (unsigned long)response.rules_size());
+      self.syncState.rulesReceived += response.rules_size();
+      if constexpr (IsV2) {
+        self.syncState.fileAccessRulesReceived += response.file_access_rules_size();
+        self.syncState.networkFlowRulesReceived += response.network_flow_rules_size();
+        self.syncState.signalsReceived += response.telemetry_signal_rules_size();
+      }
+    }
+  } while (!cursor.empty());
+
+  self.syncState.rulesProcessed = newRules.count;
+  self.syncState.fileAccessRulesProcessed = newFileAccessRules.count;
+  self.syncState.networkFlowRulesProcessed = newNetworkRules.count;
+  self.syncState.signalsProcessed = newSignals.count;
+
+  return [[SNTDownloadedRuleSets alloc] initWithExecutionRules:newRules
+                                               fileAccessRules:newFileAccessRules
+                                                  networkRules:newNetworkRules
+                                                       signals:newSignals];
+}
+
+NSArray* PathsFromProtoFAARulePaths(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::Path>& pbPaths) {
+  NSMutableArray* watchPaths = [NSMutableArray array];
+
+  for (const ::pbv2::FileAccessRule::Path& path : pbPaths) {
+    NSMutableDictionary* pathDict = [NSMutableDictionary dictionary];
+    pathDict[kWatchItemConfigKeyPathsPath] = StringToNSString(path.path());
+
+    switch (path.path_type()) {
+      // Note: If unspecified, using kWatchItemPolicyDefaultPathType (WatchItemPathType::kLiteral)
+      case ::pbv2::FileAccessRule::Path::PATH_TYPE_UNSPECIFIED: [[clang::fallthrough]];
+      case ::pbv2::FileAccessRule::Path::PATH_TYPE_LITERAL:
+        pathDict[kWatchItemConfigKeyPathsIsPrefix] = @(NO);
+        break;
+      case ::pbv2::FileAccessRule::Path::PATH_TYPE_PREFIX:
+        pathDict[kWatchItemConfigKeyPathsIsPrefix] = @(YES);
+        break;
+      default: return nil;
+    }
+
+    [watchPaths addObject:pathDict];
+  }
+
+  return watchPaths;
+}
+
+NSDictionary* OptionsFromProtoFAARuleAdd(const ::pbv2::FileAccessRule::Add& pbAddRule) {
+  NSMutableDictionary* optionsDict = [NSMutableDictionary dictionary];
+
+  switch (pbAddRule.rule_type()) {
+    case ::pbv2::FileAccessRule::RULE_TYPE_UNSPECIFIED:
+    case ::pbv2::FileAccessRule::RULE_TYPE_PATHS_WITH_ALLOWED_PROCESSES:
+      optionsDict[kWatchItemConfigKeyOptionsRuleType] = kRuleTypePathsWithAllowedProcesses;
+      break;
+    case ::pbv2::FileAccessRule::RULE_TYPE_PATHS_WITH_DENIED_PROCESSES:
+      optionsDict[kWatchItemConfigKeyOptionsRuleType] = kRuleTypePathsWithDeniedProcesses;
+      break;
+    case ::pbv2::FileAccessRule::RULE_TYPE_PROCESSES_WITH_ALLOWED_PATHS:
+      optionsDict[kWatchItemConfigKeyOptionsRuleType] = kRuleTypeProcessesWithAllowedPaths;
+      break;
+    case ::pbv2::FileAccessRule::RULE_TYPE_PROCESSES_WITH_DENIED_PATHS:
+      optionsDict[kWatchItemConfigKeyOptionsRuleType] = kRuleTypeProcessesWithDeniedPaths;
+      break;
+    default: return nil;
+  }
+
+  optionsDict[kWatchItemConfigKeyOptionsVersion] = StringToNSString(pbAddRule.version());
+  optionsDict[kWatchItemConfigKeyOptionsAllowReadAccess] = @(pbAddRule.allow_read_access());
+  optionsDict[kWatchItemConfigKeyOptionsAuditOnly] = @(!pbAddRule.block_violations());
+  optionsDict[kWatchItemConfigKeyOptionsEnableSilentMode] = @(pbAddRule.enable_silent_mode());
+  optionsDict[kWatchItemConfigKeyOptionsEnableSilentTTYMode] =
+      @(pbAddRule.enable_silent_tty_mode());
+  optionsDict[kWatchItemConfigKeyOptionsCustomMessage] =
+      pbAddRule.block_message().length() > 0 ? StringToNSString(pbAddRule.block_message()) : nil;
+  optionsDict[kWatchItemConfigKeyOptionsEventDetailText] =
+      pbAddRule.event_detail_text().length() > 0 ? StringToNSString(pbAddRule.event_detail_text())
+                                                 : nil;
+  optionsDict[kWatchItemConfigKeyOptionsEventDetailURL] =
+      pbAddRule.event_detail_url().length() > 0 ? StringToNSString(pbAddRule.event_detail_url())
+                                                : nil;
+
+  if (pbAddRule.rule_id() > 0) {
+    optionsDict[kWatchItemConfigKeyOptionsRuleId] = @(pbAddRule.rule_id());
+  }
+
+  return optionsDict;
+}
+
+/// Convert the identifier oneof of a single proto process into the config
+/// dictionary form. Returns nil if no identifier was set.
+NSMutableDictionary* ProcessDictFromProtoFAARuleProcess(
+    const ::pbv2::FileAccessRule::Process& process) {
+  NSMutableDictionary* processDict = [NSMutableDictionary dictionary];
+
+  switch (process.identifier_case()) {
+    case ::pbv2::FileAccessRule::Process::kBinaryPath:
+      processDict[kWatchItemConfigKeyProcessesBinaryPath] = StringToNSString(process.binary_path());
+      break;
+    case ::pbv2::FileAccessRule::Process::kCdHash:
+      processDict[kWatchItemConfigKeyProcessesCDHash] = StringToNSString(process.cd_hash());
+      break;
+    case ::pbv2::FileAccessRule::Process::kSigningId:
+      processDict[kWatchItemConfigKeyProcessesSigningID] = StringToNSString(process.signing_id());
+      break;
+    case ::pbv2::FileAccessRule::Process::kCertificateSha256:
+      processDict[kWatchItemConfigKeyProcessesCertificateSha256] =
+          StringToNSString(process.certificate_sha256());
+      break;
+    case ::pbv2::FileAccessRule::Process::kTeamId:
+      processDict[kWatchItemConfigKeyProcessesTeamID] = StringToNSString(process.team_id());
+      break;
+    default: return nil;
+  }
+
+  return processDict;
+}
+
+NSArray* ProcessesFromProtoFAARuleProcesses(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::Process>& pbProcesses) {
+  NSMutableArray* processes = [NSMutableArray array];
+
+  for (const ::pbv2::FileAccessRule::Process& process : pbProcesses) {
+    NSMutableDictionary* processDict = ProcessDictFromProtoFAARuleProcess(process);
+    if (!processDict) {
+      return nil;
+    }
+
+    [processes addObject:processDict];
+  }
+
+  return processes;
+}
+
+NSArray* ProcessesWithOptionsFromProtoFAARuleProcesses(
+    const google::protobuf::RepeatedPtrField<::pbv2::FileAccessRule::ProcessWithOptions>&
+        pbProcesses) {
+  NSMutableArray* processes = [NSMutableArray array];
+
+  for (const ::pbv2::FileAccessRule::ProcessWithOptions& process : pbProcesses) {
+    NSMutableDictionary* processDict = ProcessDictFromProtoFAARuleProcess(process.process());
+    if (!processDict) {
+      return nil;
+    }
+
+    switch (process.action()) {
+      // Unspecified means the outcome is inherited from the rule, which is
+      // conveyed by simply omitting the key.
+      case ::pbv2::FileAccessRule::ProcessWithOptions::ACTION_UNSPECIFIED: break;
+      case ::pbv2::FileAccessRule::ProcessWithOptions::ACTION_ALLOW:
+        processDict[kWatchItemConfigKeyProcessesAction] = kProcessActionAllow;
+        break;
+      case ::pbv2::FileAccessRule::ProcessWithOptions::ACTION_AUDIT:
+        processDict[kWatchItemConfigKeyProcessesAction] = kProcessActionAudit;
+        break;
+      case ::pbv2::FileAccessRule::ProcessWithOptions::ACTION_DENY:
+        processDict[kWatchItemConfigKeyProcessesAction] = kProcessActionDeny;
+        break;
+      default: return nil;
+    }
+
+    // Note: Only explicitly set fields are emitted. An absent key means the
+    // value is inherited from the rule.
+    if (process.has_allow_read_access()) {
+      processDict[kWatchItemConfigKeyOptionsAllowReadAccess] = @(process.allow_read_access());
+    }
+    if (process.has_enable_silent_mode()) {
+      processDict[kWatchItemConfigKeyOptionsEnableSilentMode] = @(process.enable_silent_mode());
+    }
+    if (process.has_enable_silent_tty_mode()) {
+      processDict[kWatchItemConfigKeyOptionsEnableSilentTTYMode] =
+          @(process.enable_silent_tty_mode());
+    }
+    if (process.has_block_message()) {
+      processDict[kWatchItemConfigKeyOptionsCustomMessage] =
+          StringToNSString(process.block_message());
+    }
+    if (process.has_event_detail_url()) {
+      processDict[kWatchItemConfigKeyOptionsEventDetailURL] =
+          StringToNSString(process.event_detail_url());
+    }
+    if (process.has_event_detail_text()) {
+      processDict[kWatchItemConfigKeyOptionsEventDetailText] =
+          StringToNSString(process.event_detail_text());
+    }
+
+    [processes addObject:processDict];
+  }
+
+  return processes;
+}
+
+SNTFileAccessRule* FAARuleFromProtoFAARuleAdd(const ::pbv2::FileAccessRule::Add& pbAddRule) {
+  NSMutableDictionary* details = [NSMutableDictionary dictionary];
+
+  NSArray* paths = PathsFromProtoFAARulePaths(pbAddRule.paths());
+  if (!paths) {
+    return nil;
+  }
+  details[kWatchItemConfigKeyPaths] = paths;
+
+  NSDictionary* optionsDict = OptionsFromProtoFAARuleAdd(pbAddRule);
+  if (!optionsDict) {
+    return nil;
+  }
+  details[kWatchItemConfigKeyOptions] = optionsDict;
+
+  NSArray* processes = ProcessesFromProtoFAARuleProcesses(pbAddRule.processes());
+  if (!processes) {
+    return nil;
+  }
+  details[kWatchItemConfigKeyProcesses] = processes;
+
+  if (pbAddRule.processes_with_options_size() > 0) {
+    NSArray* processesWithOptions =
+        ProcessesWithOptionsFromProtoFAARuleProcesses(pbAddRule.processes_with_options());
+    if (!processesWithOptions) {
+      return nil;
+    }
+    details[kWatchItemConfigKeyProcessesWithOptions] = processesWithOptions;
+  }
+
+  NSString* name = StringToNSString(pbAddRule.name());
+
+  NSError* err;
+  if (santa::WatchItems::IsValidRule(name, details, santa::WatchItems::DataSource::kDatabase,
+                                     &err)) {
+    return [[SNTFileAccessRule alloc] initAddRuleWithName:name details:details];
+  } else {
+    return nil;
+  }
+}
+
+SNTFileAccessRule* FAARuleFromProtoFAARuleRemove(
+    const ::pbv2::FileAccessRule::Remove& pbRemoveRule) {
+  return [[SNTFileAccessRule alloc] initRemoveRuleWithName:StringToNSString(pbRemoveRule.name())];
+}
+
+SNTFileAccessRule* FAARuleFromProtoFileAccessRule(const ::pbv2::FileAccessRule& wi) {
+  switch (wi.action_case()) {
+    case ::pbv2::FileAccessRule::kAdd: return FAARuleFromProtoFAARuleAdd(wi.add());
+    case ::pbv2::FileAccessRule::kRemove: return FAARuleFromProtoFAARuleRemove(wi.remove());
+    default: return nil;
+  }
+}
+
+SNTNetworkFlowRule* NetworkFlowRuleFromProto(const ::pbv2::NetworkFlowRule& nr) {
+  switch (nr.action_case()) {
+    case ::pbv2::NetworkFlowRule::kAdd: {
+      const ::pbv2::NetworkFlowRule::Add& add = nr.add();
+
+      // `name` is the primary key. santanetd's validator only checks the proto's
+      // rule_id/matchers, so guard the empty-name case here.
+      if (add.name().empty()) {
+        SLOGW(@"Dropping network flow rule with empty name (rule_id %lld)",
+              (long long)add.rule_id());
+        return nil;
+      }
+
+      NSError* err;
+      if (!santanetd::ValidateNetworkFlowRule(add, &err)) {
+        SLOGW(@"Dropping invalid network flow rule %@ (rule_id %lld): %@",
+              StringToNSString(add.name()), (long long)add.rule_id(),
+              err.localizedDescription ?: @"validation failed");
+        return nil;
+      }
+
+      // Serialize only valid rules.
+      std::string serialized;
+      if (!add.SerializeToString(&serialized)) {
+        SLOGW(@"Dropping network flow rule %@ (rule_id %lld): serialization failed",
+              StringToNSString(add.name()), (long long)add.rule_id());
+        return nil;
+      }
+      NSData* blob = [NSData dataWithBytes:serialized.data() length:serialized.size()];
+      return [[SNTNetworkFlowRule alloc] initAddRuleWithName:StringToNSString(add.name())
+                                                      ruleId:add.rule_id()
+                                                   protoBlob:blob];
+    }
+    case ::pbv2::NetworkFlowRule::kRemove: {
+      const std::string& name = nr.remove().name();
+      if (name.empty()) {
+        SLOGW(@"Dropping network flow remove rule with empty name");
+        return nil;
+      }
+      return [[SNTNetworkFlowRule alloc] initRemoveRuleWithName:StringToNSString(name)];
+    }
+    default: return nil;
+  }
+}
+
+// A valid signal name is 1-64 characters, each matching [A-Za-z0-9_.:-].
+bool IsValidSignalName(const std::string& name) {
+  if (name.size() < 1 || name.size() > 64) {
+    return false;
+  }
+  for (char c : name) {
+    bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '_' || c == '-' || c == '.' || c == ':';
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
+}
+
+SNTSignal* SignalFromProtoSignalRule(const ::pbv2::TelemetrySignalRule& sr) {
+  switch (sr.action_case()) {
+    case ::pbv2::TelemetrySignalRule::kAdd: {
+      const ::santa::common::v1::Signal& signal = sr.add().signal();
+      if (!IsValidSignalName(signal.name())) {
+        return nil;
+      }
+      std::string bytes;
+      if (!signal.SerializeToString(&bytes)) {
+        return nil;
+      }
+      return [[SNTSignal alloc] initAddRuleWithName:StringToNSString(signal.name())
+                                               data:[NSData dataWithBytes:bytes.data()
+                                                                   length:bytes.size()]];
+    }
+    case ::pbv2::TelemetrySignalRule::kRemove:
+      if (!IsValidSignalName(sr.remove().name())) {
+        return nil;
+      }
+      return [[SNTSignal alloc] initRemoveRuleWithName:StringToNSString(sr.remove().name())];
+    default: return nil;
+  }
+}
+
+template <bool IsV2>
+SNTRule* RuleFromProtoRule(const typename santa::ProtoTraits<IsV2>::RuleT& rule) {
+  using Traits = santa::ProtoTraits<IsV2>;
+  NSString* identifier = StringToNSString(rule.identifier());
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  if (!identifier.length) identifier = StringToNSString(rule.deprecated_sha256());
+#pragma clang diagnostic pop
+  if (!identifier.length) {
+    LOGE(@"Failed to process rule with no identifier");
+    return nil;
+  }
+
+  SNTRuleState state;
+  switch (rule.policy()) {
+    case Traits::ALLOWLIST: state = SNTRuleStateAllow; break;
+    case Traits::ALLOWLIST_COMPILER: state = SNTRuleStateAllowCompiler; break;
+    case Traits::BLOCKLIST: state = SNTRuleStateBlock; break;
+    case Traits::SILENT_BLOCKLIST: state = SNTRuleStateSilentBlock; break;
+    case Traits::SILENT_GUI_BLOCKLIST: state = SNTRuleStateSilentBlockGUI; break;
+    case Traits::SILENT_TTY_BLOCKLIST: state = SNTRuleStateSilentBlockTTY; break;
+    case Traits::REMOVE: state = SNTRuleStateRemove; break;
+    case Traits::CEL: state = (IsV2) ? SNTRuleStateCELv2 : SNTRuleStateCEL; break;
+    default:
+      if constexpr (IsV2) {
+        if (rule.policy() == Traits::SEATBELT) {
+          state = SNTRuleStateSeatbelt;
+          break;
+        }
+      }
+      LOGE(@"Failed to process rule with unknown policy: %d", rule.policy());
+      return nil;
+  }
+
+  SNTRuleType type;
+  switch (rule.rule_type()) {
+    case Traits::BINARY: type = SNTRuleTypeBinary; break;
+    case Traits::CERTIFICATE: type = SNTRuleTypeCertificate; break;
+    case Traits::TEAMID: type = SNTRuleTypeTeamID; break;
+    case Traits::SIGNINGID: type = SNTRuleTypeSigningID; break;
+    case Traits::CDHASH: type = SNTRuleTypeCDHash; break;
+    default: LOGE(@"Failed to process rule with unknown type: %d", rule.rule_type()); return nil;
+  }
+
+  const std::string& custom_msg = rule.custom_msg();
+  NSString* customMsg = (!custom_msg.empty()) ? StringToNSString(custom_msg) : nil;
+
+  const std::string& custom_url = rule.custom_url();
+  NSString* customURL = (!custom_url.empty()) ? StringToNSString(custom_url) : nil;
+
+  // The button label has to fit on a button, so cap it (kEventDetailButtonTextMaxLength).
+  const std::string& button_label = rule.event_detail_button_label();
+  NSString* eventDetailButtonText =
+      (!button_label.empty()) ? santa::TruncateNSStringToLength(StringToNSString(button_label),
+                                                                kEventDetailButtonTextMaxLength)
+                              : nil;
+
+  const std::string& cel_expr = rule.cel_expr();
+  NSString* celExpr = (!cel_expr.empty()) ? StringToNSString(cel_expr) : nil;
+
+  int64_t ruleId = 0;
+  NSString* seatbeltPolicy = nil;
+  if constexpr (IsV2) {
+    ruleId = rule.rule_id();
+    const std::string& sb_policy = rule.seatbelt_policy();
+    if (!sb_policy.empty()) {
+      seatbeltPolicy = StringToNSString(sb_policy);
+    }
+  }
+  return [[SNTRule alloc] initWithIdentifier:identifier
+                                       state:state
+                                        type:type
+                                   customMsg:customMsg
+                                   customURL:customURL
+                       eventDetailButtonText:eventDetailButtonText
+                                     celExpr:celExpr
+                              seatbeltPolicy:seatbeltPolicy
+                                      ruleId:ruleId];
+}
+
+template <bool IsV2>
+void ProcessBundleNotificationsForRule(SNTSyncRuleDownload* self, SNTRule* rule,
+                                       const typename santa::ProtoTraits<IsV2>::RuleT* protoRule) {
+  // Display a system notification if notification_app_name is set and this is not a clean sync.
+  NSString* appName = StringToNSString(protoRule->notification_app_name());
+  if (appName.length) {
+    // If notification_app_name is set but this is a clean sync, return early. We don't want to
+    // spam users with notifications for many apps that might be included in a clean sync, and
+    // we don't want to fallback to the deprecated behavior. Also ignore app name if the rule state
+    // is remove.
+    if (self.syncState.syncType != SNTSyncTypeNormal || rule.state == SNTRuleStateRemove) return;
+    [[SNTPushNotificationsTracker tracker] addNotification:[@{
+                                             kFileName : appName,
+                                             kFileBundleBinaryCount : @(0)
+                                           } mutableCopy]
+                                                   forHash:rule.identifier];
+    return;
+  }
+
+  // If notification_app_name is not set, continue processing with deprecated behavior.
+  ProcessDeprecatedBundleNotificationsForRule<IsV2>(rule, protoRule);
+}
+
+template <bool IsV2>
+void ProcessDeprecatedBundleNotificationsForRule(
+    SNTRule* rule, const typename santa::ProtoTraits<IsV2>::RuleT* protoRule) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  // Check rule for extra notification related info.
+  if (rule.state == SNTRuleStateAllow || rule.state == SNTRuleStateAllowCompiler) {
+    // primaryHash is the bundle hash if there was a bundle hash included in the rule, otherwise
+    // it is simply the binary hash.
+    NSString* primaryHash = StringToNSString(protoRule->file_bundle_hash());
+    if (primaryHash.length != 64) {
+      primaryHash = rule.identifier;
+    }
+
+    // As we read in rules, we update the "remaining count" information. This count represents the
+    // number of rules associated with the primary hash that still need to be downloaded and added.
+    [[SNTPushNotificationsTracker tracker]
+        decrementPendingRulesForHash:primaryHash
+                      totalRuleCount:@(protoRule->file_bundle_binary_count())];
+  }
+#pragma clang diagnostic pop
+}
+
+@implementation SNTSyncRuleDownload
+
+- (NSURL*)stageURL {
+  NSString* stageName = [@"ruledownload" stringByAppendingFormat:@"/%@", self.syncState.machineID];
+  return [NSURL URLWithString:stageName relativeToURL:self.syncState.syncBaseURL];
+}
+
+- (BOOL)sync {
+  // Grab the new rules from server
+  SNTDownloadedRuleSets* newRules;
+  if (self.syncState.isSyncV2) {
+    newRules = DownloadNewRulesFromServer<true>(self);
+  } else {
+    newRules = DownloadNewRulesFromServer<false>(self);
+  }
+  // `DownloadNewRulesFromServer` returns nil if there was a problem with the download
+  if (!newRules) {
+    return NO;
+  }
+
+  // If the request was successfully completed, but no new rules received, just return
+  if (!newRules.executionRules.count && !newRules.fileAccessRules.count &&
+      !newRules.networkRules.count && !newRules.signals.count) {
+    return YES;
+  }
+
+  // Tell santad to add the new rules to the database.
+  // Wait until finished or until 5 minutes pass.
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  __block NSArray<NSError*>* errors;
+  __block BOOL success;
+  [[self.daemonConn remoteObjectProxy]
+      databaseRuleAddExecutionRules:newRules.executionRules
+                    fileAccessRules:newRules.fileAccessRules
+                   networkFlowRules:newRules.networkRules
+                            signals:newRules.signals
+                        ruleCleanup:SyncTypeToRuleCleanup(self.syncState.syncType)
+                             source:SNTRuleAddSourceSyncService
+                              reply:^(BOOL didSucceed, NSArray<NSError*>* e) {
+                                errors = e;
+                                success = didSucceed;
+                                dispatch_semaphore_signal(sema);
+                              }];
+  if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC))) {
+    SLOGE(@"Failed to add rule(s) to database: timeout sending rules to daemon");
+    return NO;
+  }
+
+  if (!success) {
+    SLOGE(@"Failed to add rule(s) to database:");
+    for (NSError* e in errors) {
+      SLOGE(@"\t%@. Reason: %@", e.localizedDescription, e.localizedFailureReason);
+    }
+    return NO;
+  } else if (errors.count > 0) {
+    SLOGW(@"Added rule(s) to database but with the following reported issues:");
+    for (NSError* e in errors) {
+      SLOGW(@"\t%@. Reason: %@", e.localizedDescription, e.localizedFailureReason);
+    }
+  }
+
+  // Tell santad to record a successful rules sync and wait for it to finish.
+  sema = dispatch_semaphore_create(0);
+  [[self.daemonConn remoteObjectProxy] updateSyncSettings:RuleSyncConfigBundle()
+                                                    reply:^{
+                                                      dispatch_semaphore_signal(sema);
+                                                    }];
+  dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+
+  if (newRules.executionRules.count) {
+    SLOGI(@"Processed %lu execution rules", newRules.executionRules.count);
+  }
+
+  if (newRules.fileAccessRules.count) {
+    SLOGI(@"Processed %lu file access rules", newRules.fileAccessRules.count);
+  }
+
+  if (newRules.networkRules.count) {
+    SLOGI(@"Processed %lu network flow rules", newRules.networkRules.count);
+  }
+
+  if (newRules.signals.count) {
+    SLOGI(@"Processed %lu signal rules", newRules.signals.count);
+  }
+
+  // Send out push notifications about any newly allowed binaries
+  // that had been previously blocked by santad.
+  [self announceUnblockingRules:newRules.executionRules];
+  return YES;
+}
+
+// Send out push notifications for allowed bundles/binaries whose rule download was preceded by
+// an associated announcing FCM message.
+- (void)announceUnblockingRules:(NSArray<SNTRule*>*)newRules {
+  if (newRules.count == 0) {
+    // No new execution rules received
+    return;
+  }
+
+  NSMutableArray* processed = [NSMutableArray array];
+  SNTPushNotificationsTracker* tracker = [SNTPushNotificationsTracker tracker];
+  [[tracker all]
+      enumerateKeysAndObjectsUsingBlock:^(NSString* key, NSDictionary* notifier, BOOL* stop) {
+        // Each notifier object is a dictionary with name and count keys. If the count has been
+        // decremented to zero, then this means that we have downloaded all of the rules associated
+        // with this SHA256 hash (which might be a bundle hash or a binary hash), in which case we
+        // are OK to show a notification that the named bundle/binary can be run.
+        NSNumber* remaining = notifier[kFileBundleBinaryCount];
+        if (remaining && [remaining intValue] == 0) {
+          [processed addObject:key];
+          NSString* app = notifier[kFileName];
+          [[self.daemonConn remoteObjectProxy] postRuleSyncNotificationForApplication:app
+                                                                                reply:^{
+                                                                                }];
+        }
+      }];
+
+  [tracker removeNotificationsForHashes:processed];
+}
+
+@end
