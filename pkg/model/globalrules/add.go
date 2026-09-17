@@ -45,7 +45,10 @@ func AddNewGlobalRule(
 		return fmt.Errorf("invalid identifier %q for rule type %s", identifier, ruleTypeName(ruleType))
 	}
 
-	feedRule := feedrules.ConstructFeedRuleFromBaseRule(time, rule.SantaRule)
+	feedRule, err := feedrules.ConstructFeedRuleFromBaseRule(time, rule.SantaRule)
+	if err != nil {
+		return err
+	}
 
 	putItem1, err := client.CreateTransactPutItem(rule)
 	if err != nil {

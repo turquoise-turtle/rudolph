@@ -38,7 +38,9 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 		return fmt.Errorf("something went wrong during pulling global rule")
 	}
 
-	var newPolicy types.Policy
+	request := ruleRemovalRequest{
+		DeleteOnNextSync: true,
+	}
 	if globalRule != nil {
 		// There is an associated global rule.
 		//
@@ -46,20 +48,21 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 		// next sync that reflects the state of the global rule.
 		//
 		// The way we achieve this is to change the machine-specific rule to INHERIT the policy
-		// from the global rule. The next time the machine performs a sync, it will reach this
-		// machine-specific rule on the final page, updating the state. Finally, the postflight
-		// process then delete this record.
+		// and the fields (e.g. CEL expression, custom message) from the global rule; fields the
+		// global rule does not have are cleared. The next time the machine performs a sync, it
+		// will reach this machine-specific rule on the final page, updating the state. Finally,
+		// the postflight process then delete this record.
 		log.Printf("There is a global rule that this machine-rule overwrites. Inheriting...")
-		newPolicy = globalRule.Policy
+		request.Policy = globalRule.Policy
+		request.CustomMessage = globalRule.CustomMessage
+		request.CustomURL = globalRule.CustomURL
+		request.NotificationAppName = globalRule.NotificationAppName
+		request.CELExpr = globalRule.CELExpr
+		request.EventDetailButtonLabel = globalRule.EventDetailButtonLabel
 	} else {
 		// There was no associated global rule.
-		// Simply change item to a "REMOVE" and then delete the DynamoDB record after the next sync
-		newPolicy = types.Remove
-	}
-
-	request := ruleRemovalRequest{
-		Policy:           newPolicy,
-		DeleteOnNextSync: true,
+		// Simply change item to a "REMOVE" (without any other fields) and then delete the DynamoDB record after the next sync
+		request.Policy = types.Remove
 	}
 
 	_, err = updater.UpdateItem(rule.PrimaryKey, request)

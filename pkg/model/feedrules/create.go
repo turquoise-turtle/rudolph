@@ -1,15 +1,19 @@
 package feedrules
 
 import (
+	"fmt"
+
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 )
 
+// ConstructFeedRuleFromBaseRule builds the feed row for a rule change. It returns an error when the rule is not valid,
+// so that callers never write (or dereference) an invalid feed row.
 func ConstructFeedRuleFromBaseRule(
 	timeProvider clock.TimeProvider,
 	rule rules.SantaRule,
-) *FeedRuleRow {
+) (*FeedRuleRow, error) {
 	var identifier string
 	// Support backwards compatibility with legacy SHA256 identifier
 	if rule.SHA256 != "" && rule.Identifier == "" {
@@ -34,12 +38,15 @@ func ConstructFeedRuleFromBaseRule(
 		DataType:     GetDataType(),
 	}
 
-	isValid, _ := feedRuleRow.feedRuleRowValidation()
+	isValid, err := feedRuleRow.feedRuleRowValidation()
+	if err != nil {
+		return nil, fmt.Errorf("invalid feed rule for %q: %w", identifier, err)
+	}
 	if !isValid {
-		return nil
+		return nil, fmt.Errorf("invalid feed rule: identifier %q is not valid for its rule type", identifier)
 	}
 
-	return feedRuleRow
+	return feedRuleRow, nil
 }
 
 func ReconstructFeedSyncLastEvaluatedKeyFromDate(feedSyncCursor string) dynamodb.PrimaryKey {
