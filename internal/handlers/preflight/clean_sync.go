@@ -45,8 +45,16 @@ func (c concreteCleanSyncService) determineCleanSync(machineID string, preflight
 
 }
 
+// determineCleanSyncByRuleCount forces a clean sync when the client reports holding no rules at all.
+// Every rule count Santa sends must be considered; otherwise a host holding only e.g. TeamID rules clean syncs every time.
 func determineCleanSyncByRuleCount(preflightRequest *PreflightRequest) bool {
-	ruleCount := preflightRequest.BinaryRuleCount + preflightRequest.CertificateRuleCount + preflightRequest.CompilerRuleCount + preflightRequest.TransitiveRuleCount
+	ruleCount := preflightRequest.BinaryRuleCount +
+		preflightRequest.CertificateRuleCount +
+		preflightRequest.CompilerRuleCount +
+		preflightRequest.TransitiveRuleCount +
+		preflightRequest.TeamIDRuleCount +
+		preflightRequest.SigningIDRuleCount +
+		preflightRequest.CDHashRuleCount
 	return ruleCount == 0
 }
 
