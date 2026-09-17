@@ -61,11 +61,21 @@ type ConfigurationWriter interface {
 	dynamodb.PutItemAPI
 }
 
+// maxConfigWriteAttempts bounds retries when a concurrent write creates or deletes the row being updated
+const maxConfigWriteAttempts = 3
+
+// GetConfigurationUpdater returns an updater that does not cache what it writes. The timeProvider is unused.
 func GetConfigurationUpdater(client ConfigurationWriter, fetcher ConcreteConfigurationFetcher, timeProvider clock.TimeProvider) ConcreteConfigurationUpdater {
+	return newConfigurationUpdater(client, fetcher, nil)
+}
+
+// newConfigurationUpdater returns an updater that stores an updated global config in cache, if not nil.
+// The fetcher should be uncached, so updates are applied to the current config.
+func newConfigurationUpdater(client ConfigurationWriter, fetcher ConcreteConfigurationFetcher, cache Cache) ConcreteConfigurationUpdater {
 	return ConcreteConfigurationUpdater{
 		global: ConcreteGlobalConfigurationUpdater{
 			updater: client,
-			cache:   GetCache(timeProvider),
+			cache:   cache,
 			fetcher: fetcher,
 		},
 		machine: ConcreteMachineConfigurationUpdater{
@@ -108,7 +118,7 @@ type ConcreteGlobalConfigurationUpdater struct {
 }
 
 func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (updatedConfig *MachineConfiguration, err error) {
-	// Requesting LOCKDOWN needs confirmation, even if the stored global config is already LOCKDOWN
+	// Requesting a blocking mode needs confirmation, even if the stored global config already has it
 	if configRequest.ClientMode != nil {
 		err = checkGlobalClientMode(*configRequest.ClientMode, opts)
 		if err != nil {
@@ -116,20 +126,40 @@ func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineCo
 		}
 	}
 
-	currentGlobalConfig, isDefaultConfig, err := c.fetcher.getIntendedGlobalConfig()
+	configRequest, err = normalizeUpdateRequest(configRequest)
 	if err != nil {
 		return
 	}
 
-	// Without a stored global config there is no row to update yet
-	updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, currentGlobalConfig, !isDefaultConfig, configRequest)
-	if err != nil {
-		err = fmt.Errorf("failed to update global configuration: %w", err)
-		return
+	for attempt := 1; ; attempt++ {
+		currentGlobalConfig, isDefaultConfig, eerr := c.fetcher.getIntendedGlobalConfig()
+		if eerr != nil {
+			err = eerr
+			return
+		}
+
+		newGlobalConfig, changes := applyUpdateRequest(currentGlobalConfig, configRequest)
+		if touchesUsbMountSettings(configRequest) {
+			err = validateRemountUsbMode(newGlobalConfig.RemountUsbMode, newGlobalConfig.BlockUsbMount)
+			if err != nil {
+				return
+			}
+		}
+
+		// Without a stored global config there is no row to update yet
+		updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, newGlobalConfig, changes, !isDefaultConfig)
+		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
+			// The row was created or deleted concurrently; apply the update to its current state
+			continue
+		}
+		if err != nil {
+			err = fmt.Errorf("failed to update global configuration: %w", err)
+			return
+		}
+		break
 	}
 
-	// Attempt to set the new global configuration into cache
-	_ = c.cache.Set(CacheKeyGlobal, updatedConfig)
+	setCachedGlobalConfig(c.cache, updatedConfig)
 
 	return
 }
@@ -145,41 +175,95 @@ type ConcreteMachineConfigurationUpdater struct {
 }
 
 func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, configRequest MachineConfigurationUpdateRequest) (updatedConfig *MachineConfiguration, err error) {
-	currentMachineConfig, err := c.fetcher.machine.GetMachineSpecificConfig(machineID)
+	configRequest, err = normalizeUpdateRequest(configRequest)
 	if err != nil {
-		err = fmt.Errorf("failed to get machine config: %w", err)
 		return
 	}
 
-	exists := currentMachineConfig != nil
-	if !exists {
-		// The machine uses the global config so far; its machine-specific config starts out as a copy of it
-		globalConfig, _, eerr := c.fetcher.getIntendedGlobalConfig()
+	for attempt := 1; ; attempt++ {
+		currentMachineConfig, eerr := c.fetcher.machine.GetMachineSpecificConfig(machineID)
 		if eerr != nil {
-			err = eerr
+			err = fmt.Errorf("failed to get machine config: %w", eerr)
 			return
 		}
-		currentMachineConfig = &globalConfig
-	}
 
-	updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), *currentMachineConfig, exists, configRequest)
-	if err != nil {
-		err = fmt.Errorf("updating machine configuration failed: %w", err)
-	}
+		// The global config is needed for a new machine config and to validate inherited settings; read it once
+		var globalConfig *MachineConfiguration
+		getGlobalConfig := func() (*MachineConfiguration, error) {
+			if globalConfig == nil {
+				config, _, eerr := c.fetcher.getIntendedGlobalConfig()
+				if eerr != nil {
+					return nil, eerr
+				}
+				globalConfig = &config
+			}
+			return globalConfig, nil
+		}
 
-	return
-}
+		exists := currentMachineConfig != nil
+		if !exists {
+			// The machine uses the global config so far. Its machine-specific config starts out as a copy of the
+			// global base settings; optional settings stay unset, so they keep being inherited.
+			global, eerr := getGlobalConfig()
+			if eerr != nil {
+				err = eerr
+				return
+			}
+			base := withoutOptionalSettings(*global)
+			currentMachineConfig = &base
+		}
 
-// writeConfigUpdate applies configRequest to the current config and writes the result to the config row with the given pk.
-// An existing row gets only the changed attributes; a row that does not exist yet is created from the complete new config.
-func writeConfigUpdate(client ConfigurationWriter, pk string, current MachineConfiguration, exists bool, configRequest MachineConfigurationUpdateRequest) (updatedConfig *MachineConfiguration, err error) {
-	newConfig, changes := applyUpdateRequest(current, configRequest)
+		newMachineConfig, changes := applyUpdateRequest(*currentMachineConfig, configRequest)
+		if touchesUsbMountSettings(configRequest) {
+			blockUsbMount := newMachineConfig.BlockUsbMount
+			if blockUsbMount == nil && len(newMachineConfig.RemountUsbMode) > 0 {
+				global, eerr := getGlobalConfig()
+				if eerr != nil {
+					err = eerr
+					return
+				}
+				blockUsbMount = global.BlockUsbMount
+			}
+			err = validateRemountUsbMode(newMachineConfig.RemountUsbMode, blockUsbMount)
+			if err != nil {
+				return
+			}
+		}
 
-	err = validateConfig(newConfig)
-	if err != nil {
+		updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), newMachineConfig, changes, exists)
+		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
+			// The row was created or deleted concurrently; apply the update to its current state
+			continue
+		}
+		if err != nil {
+			err = fmt.Errorf("updating machine configuration failed: %w", err)
+		}
 		return
 	}
+}
 
+// normalizeUpdateRequest validates the requested values and converts them to their stored form. Values already
+// stored are not validated, so an unrelated update never fails because of them.
+func normalizeUpdateRequest(configRequest MachineConfigurationUpdateRequest) (MachineConfigurationUpdateRequest, error) {
+	if configRequest.OverrideFileAccessAction != nil {
+		action, err := normalizeOverrideFileAccessAction(*configRequest.OverrideFileAccessAction)
+		if err != nil {
+			return configRequest, err
+		}
+		configRequest.OverrideFileAccessAction = &action
+	}
+	return configRequest, nil
+}
+
+func touchesUsbMountSettings(configRequest MachineConfigurationUpdateRequest) bool {
+	return configRequest.BlockUsbMount != nil || configRequest.RemountUsbMode != nil
+}
+
+// writeConfigUpdate writes newConfig to the config row with the given pk. An existing row gets only the changed
+// attributes, and only if it still exists. A row that does not exist yet is created from the complete new config,
+// and only if it still does not exist, so concurrent first updates cannot overwrite each other. If the row changed
+// existence in the meantime, the error satisfies dynamodb.IsConditionalCheckFailed.
+func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, exists bool) (updatedConfig *MachineConfiguration, err error) {
 	// if no items have been changed, return the same configuration
 	if len(changes) == 0 {
 		updatedConfig = &newConfig
@@ -188,7 +272,12 @@ func writeConfigUpdate(client ConfigurationWriter, pk string, current MachineCon
 
 	if !exists {
 		row := buildConfigRow(pk, newConfig)
-		_, err = client.PutItem(row)
+		// The DynamoDB client supports conditional puts; clients without them (e.g. in-memory stores) get a plain put
+		if conditionalClient, ok := client.(dynamodb.PutItemIfNotExistsAPI); ok {
+			_, err = conditionalClient.PutItemIfNotExists(row)
+		} else {
+			_, err = client.PutItem(row)
+		}
 		if err != nil {
 			return
 		}
@@ -296,8 +385,9 @@ func applyUpdateRequest(current MachineConfiguration, configRequest MachineConfi
 		changes["BlockUsbMount"] = *newConfig.BlockUsbMount
 	}
 
-	if configRequest.RemountUsbMode != nil && !stringSlicesEqual(*configRequest.RemountUsbMode, current.RemountUsbMode) {
-		newConfig.RemountUsbMode = append([]string{}, *configRequest.RemountUsbMode...)
+	// nil (not configured) and empty (configured without flags) differ
+	if configRequest.RemountUsbMode != nil && (current.RemountUsbMode == nil || !stringSlicesEqual(*configRequest.RemountUsbMode, current.RemountUsbMode)) {
+		newConfig.RemountUsbMode = append(MountFlags{}, *configRequest.RemountUsbMode...)
 		changes["RemountUsbMode"] = newConfig.RemountUsbMode
 	}
 

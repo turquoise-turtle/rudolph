@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
@@ -15,6 +16,7 @@ import (
 const (
 	flagBlockedPaths              = "blocked-paths"
 	flagAllowedPaths              = "allowed-paths"
+	flagSkipRegexValidation       = "skip-regex-validation"
 	flagConfirmGlobalLockdown     = "confirm-global-lockdown"
 	flagEnableAllEventUpload      = "enable-all-event-upload"
 	flagDisableUnknownEventUpload = "disable-unknown-event-upload"
@@ -26,59 +28,107 @@ const (
 )
 
 // combinePathRegexes combines several path regexes into one regex that matches a path if and only if any of
-// them matches. Each pattern is validated on its own. Empty patterns are ignored, and no patterns result in ""
-// which clears the setting on Santa.
+// them matches. Each pattern is validated with Go's regexp (RE2) syntax, which differs from the ICU syntax Santa
+// uses (e.g. RE2 has no lookahead). Empty patterns are ignored, and no patterns result in "", which clears the
+// setting on Santa.
 func combinePathRegexes(patterns []string) (string, error) {
-	var groups []string
 	for _, pattern := range patterns {
 		if pattern == "" {
 			continue
 		}
 		if _, err := regexp.Compile(pattern); err != nil {
-			return "", fmt.Errorf("invalid path regex %q: %w", pattern, err)
+			return "", fmt.Errorf("invalid path regex %q (validated as Go RE2 syntax): %w", pattern, err)
 		}
-		groups = append(groups, pattern)
 	}
 
-	if len(groups) == 1 {
-		return groups[0], nil
-	}
-	for i, pattern := range groups {
-		// Non-capturing groups keep each pattern's alternations and anchors to itself
-		groups[i] = "(?:" + pattern + ")"
-	}
-	combined := strings.Join(groups, "|")
+	combined := combinePathRegexesUnchecked(patterns)
 	if _, err := regexp.Compile(combined); err != nil {
 		return "", fmt.Errorf("path regexes cannot be combined: %w", err)
 	}
 	return combined, nil
 }
 
+// combinePathRegexesUnchecked combines patterns like combinePathRegexes, without validating them.
+//
+// Santa prepends "^" to a regex that does not start with one and searches for it in the path, so a path regex
+// always matches from the start of the path. A single pattern is returned unchanged. Several patterns are combined
+// as ^(?:(?:p1)|(?:p2)...), which is anchored as a whole, so every pattern still only matches from the start.
+func combinePathRegexesUnchecked(patterns []string) string {
+	var groups []string
+	for _, pattern := range patterns {
+		if pattern != "" {
+			groups = append(groups, pattern)
+		}
+	}
+
+	switch len(groups) {
+	case 0:
+		return ""
+	case 1:
+		return groups[0]
+	}
+	for i, pattern := range groups {
+		// Non-capturing groups keep each pattern's alternations to itself
+		groups[i] = "(?:" + pattern + ")"
+	}
+	return "^(?:" + strings.Join(groups, "|") + ")"
+}
+
 // pathRegexFlags are the repeatable --blocked-paths and --allowed-paths flags
 type pathRegexFlags struct {
-	blocked []string
-	allowed []string
+	blocked        []string
+	allowed        []string
+	skipValidation bool
 }
 
 func (f *pathRegexFlags) addFlags(cmd *cobra.Command) {
-	cmd.Flags().StringArrayVarP(&f.blocked, flagBlockedPaths, "b", nil, `A regex of paths to be blocked. Repeat the flag for several regexes (each value is one regex, commas included); a path is blocked if any of them matches`)
-	cmd.Flags().StringArrayVarP(&f.allowed, flagAllowedPaths, "a", nil, `A regex of paths to be allowed. Repeat the flag for several regexes (each value is one regex, commas included); a path is allowed if any of them matches`)
+	cmd.Flags().StringArrayVarP(&f.blocked, flagBlockedPaths, "b", nil, `A regex of paths to be blocked. Repeat the flag for several regexes (each value is one regex, commas included); a path is blocked if any of them matches. Santa matches regexes from the start of the path`)
+	cmd.Flags().StringArrayVarP(&f.allowed, flagAllowedPaths, "a", nil, `A regex of paths to be allowed. Repeat the flag for several regexes (each value is one regex, commas included); a path is allowed if any of them matches. Santa matches regexes from the start of the path`)
+	cmd.Flags().BoolVar(&f.skipValidation, flagSkipRegexValidation, false, `Do not validate path regexes. Validation uses Go's RE2 syntax, but Santa uses ICU regexes, so valid ICU syntax such as lookahead is rejected. Santa silently ignores a regex that is not valid ICU`)
 }
 
 func (f *pathRegexFlags) blockedPathRegex() (string, error) {
-	regex, err := combinePathRegexes(f.blocked)
+	return f.combine(flagBlockedPaths, f.blocked)
+}
+
+func (f *pathRegexFlags) allowedPathRegex() (string, error) {
+	return f.combine(flagAllowedPaths, f.allowed)
+}
+
+func (f *pathRegexFlags) combine(flag string, patterns []string) (string, error) {
+	if f.skipValidation {
+		return combinePathRegexesUnchecked(patterns), nil
+	}
+	regex, err := combinePathRegexes(patterns)
 	if err != nil {
-		return "", fmt.Errorf("--%s: %w", flagBlockedPaths, err)
+		return "", fmt.Errorf("--%s: %w (use --%s for ICU-only syntax)", flag, err, flagSkipRegexValidation)
 	}
 	return regex, nil
 }
 
-func (f *pathRegexFlags) allowedPathRegex() (string, error) {
-	regex, err := combinePathRegexes(f.allowed)
-	if err != nil {
-		return "", fmt.Errorf("--%s: %w", flagAllowedPaths, err)
+// optionalClientMode is a --client-mode flag without a default: it is only applied when given
+type optionalClientMode struct {
+	mode flags.ClientMode
+	set  bool
+}
+
+func (o *optionalClientMode) Set(value string) error {
+	if err := o.mode.Set(value); err != nil {
+		return err
 	}
-	return regex, nil
+	o.set = true
+	return nil
+}
+
+func (o *optionalClientMode) Type() string {
+	return o.mode.Type()
+}
+
+func (o *optionalClientMode) String() string {
+	if !o.set {
+		return ""
+	}
+	return o.mode.String()
 }
 
 // santaSettingsFlags are flags for optional Santa settings. A setting is only configured when its flag is given;
@@ -98,7 +148,7 @@ func (f *santaSettingsFlags) addFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.disableUnknownEventUpload, flagDisableUnknownEventUpload, false, "Do not upload events for unknown binaries that would be blocked in lockdown mode")
 	cmd.Flags().StringVar(&f.overrideFileAccessAction, flagOverrideFileAccessAction, "", `Override the File Access Authorization action. valid options are: "none", "audit_only" or "disable"`)
 	cmd.Flags().BoolVar(&f.blockUsbMount, flagBlockUsbMount, false, "Block mounting of USB mass storage devices")
-	cmd.Flags().StringSliceVar(&f.remountUsbMode, flagRemountUsbMode, nil, `Mount flags (e.g. "rdonly,noexec") to remount blocked USB mass storage devices with. Requires --block-usb-mount`)
+	cmd.Flags().StringSliceVar(&f.remountUsbMode, flagRemountUsbMode, nil, `Mount flags (e.g. "rdonly,noexec") to remount blocked USB mass storage devices with. Requires USB mounts to be blocked (--block-usb-mount, or inherited from the global configuration for a machine)`)
 	cmd.Flags().StringVar(&f.eventDetailURL, flagEventDetailURL, "", "URL opened by the button of a block notification. Supports Santa's placeholders such as %file_sha%")
 	cmd.Flags().StringVar(&f.eventDetailText, flagEventDetailText, "", "Text of the button of a block notification")
 }

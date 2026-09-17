@@ -27,14 +27,15 @@ type ConcreteMachineConfigurationService struct {
 	deleter  ConcreteConfigurationDeleter
 }
 
-// GetMachineConfigurationService caches the global config for reads. Updates always read the current config
-// uncached, so they never write back a stale copy.
+// GetMachineConfigurationService caches the global config for reads. Writes through the service refresh that
+// cache. Updates always read the current config uncached, so they never write back a stale copy.
 func GetMachineConfigurationService(dynamodb dynamodb.DynamoDBClient, timeProvider clock.TimeProvider) MachineConfigurationService {
+	cache := GetCache(timeProvider)
 	return ConcreteMachineConfigurationService{
 		dynamodb: dynamodb,
-		fetcher:  GetConfigurationFetcher(dynamodb, timeProvider),
-		setter:   GetConfigurationSetter(dynamodb, timeProvider),
-		updater:  GetConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), timeProvider),
+		fetcher:  newCachedConfigurationFetcher(dynamodb, cache),
+		setter:   newConfigurationSetter(dynamodb, cache),
+		updater:  newConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), cache),
 		deleter:  GetConfigurationDeleter(dynamodb),
 	}
 }
@@ -43,8 +44,8 @@ func GetUncachedMachineConfigurationService(dynamodb dynamodb.DynamoDBClient, ti
 	return ConcreteMachineConfigurationService{
 		dynamodb: dynamodb,
 		fetcher:  GetUncachedConfigurationFetcher(dynamodb, timeProvider),
-		setter:   GetConfigurationSetter(dynamodb, timeProvider),
-		updater:  GetConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), timeProvider),
+		setter:   newConfigurationSetter(dynamodb, nil),
+		updater:  newConfigurationUpdater(dynamodb, GetUncachedConfigurationFetcher(dynamodb, timeProvider), nil),
 		deleter:  GetConfigurationDeleter(dynamodb),
 	}
 }
@@ -64,7 +65,7 @@ func (s ConcreteMachineConfigurationService) GetIntendedGlobalConfig() (intended
 // Setter //
 
 // Global
-// Setting the global client mode to LOCKDOWN requires the ConfirmGlobalLockdown() option.
+// Setting a global client mode other than MONITOR requires the ConfirmGlobalLockdown() option.
 func (s ConcreteMachineConfigurationService) SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error {
 	return s.setter.global.setGlobalConfig(config, opts...)
 }
@@ -77,7 +78,7 @@ func (s ConcreteMachineConfigurationService) SetMachineConfig(machineID string, 
 // Updater //
 
 // Global
-// Setting the global client mode to LOCKDOWN requires the ConfirmGlobalLockdown() option.
+// Setting a global client mode other than MONITOR requires the ConfirmGlobalLockdown() option.
 func (s ConcreteMachineConfigurationService) UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (*MachineConfiguration, error) {
 	return s.updater.global.updateConfig(configRequest, opts...)
 }

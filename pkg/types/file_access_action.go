@@ -18,8 +18,8 @@ const (
 	FileAccessActionDisable FileAccessAction = "DISABLE"
 )
 
-// ParseFileAccessAction accepts the protocol enum names and the spellings used in Santa's documentation
-// (e.g. "auditonly"), case-insensitively.
+// ParseFileAccessAction accepts the protocol enum names, their deprecated aliases (e.g. "AuditOnly") and the
+// spellings used in Santa's documentation (e.g. "auditonly"), case-insensitively, and returns the enum name.
 func ParseFileAccessAction(value string) (FileAccessAction, error) {
 	switch strings.ToUpper(value) {
 	case "NONE":
@@ -31,6 +31,11 @@ func ParseFileAccessAction(value string) (FileAccessAction, error) {
 	default:
 		return "", fmt.Errorf(`unknown file access action %q; must be one of "none", "audit_only" or "disable"`, value)
 	}
+}
+
+// Normalize returns the enum name Santa expects for a (possibly legacy) stored spelling of a
+func (a FileAccessAction) Normalize() (FileAccessAction, error) {
+	return ParseFileAccessAction(string(a))
 }
 
 // IsValid reports whether a is one of the enum names a Santa client accepts.

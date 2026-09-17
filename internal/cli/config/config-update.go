@@ -17,7 +17,7 @@ import (
 
 func init() {
 	var (
-		clientModeArg         flags.ClientMode
+		clientModeArg         optionalClientMode
 		pathRegexArgs         pathRegexFlags
 		santaSettingsArgs     santaSettingsFlags
 		confirmGlobalLockdown bool
@@ -30,14 +30,15 @@ func init() {
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
-A machine without a machine-specific configuration gets one, copied from the global configuration.
+A machine without a machine-specific configuration gets one, copied from the global base settings at this moment;
+optional Santa settings it does not configure keep being inherited from the global configuration.
 Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
 			var updateRequest machineconfiguration.MachineConfigurationUpdateRequest
-			if cmd.Flags().Changed("client-mode") {
-				clientMode := clientModeArg.AsClientMode()
+			if clientModeArg.set {
+				clientMode := clientModeArg.mode.AsClientMode()
 				updateRequest.ClientMode = &clientMode
 			}
 			if cmd.Flags().Changed(flagBlockedPaths) {
@@ -81,7 +82,7 @@ Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 
 	tf.AddTargetFlags(configUpdateClientModeCmd)
 
-	// client-mode should be one of "monitor", "lockdown" or "standalone"
+	// client-mode should be one of "monitor", "lockdown" or "standalone"; it is only changed when given
 	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
 	addConfirmGlobalLockdownFlag(configUpdateClientModeCmd, &confirmGlobalLockdown)
 

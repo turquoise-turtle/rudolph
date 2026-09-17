@@ -104,22 +104,27 @@ func buildConfigRow(pk string, config MachineConfiguration) (configRow *MachineC
 	return
 }
 
-// validateConfig rejects settings that a Santa client would fail to parse
-func validateConfig(config MachineConfiguration) error {
-	if config.OverrideFileAccessAction != "" && !config.OverrideFileAccessAction.IsValid() {
-		return fmt.Errorf("invalid override file access action %q", config.OverrideFileAccessAction)
-	}
-	return nil
+// ConfigurationStore reads and writes configuration rows
+type ConfigurationStore interface {
+	dynamodb.GetItemAPI
+	dynamodb.PutItemAPI
 }
 
-func GetConfigurationSetter(client dynamodb.PutItemAPI, timeProvider clock.TimeProvider) ConcreteConfigurationSetter {
+// GetConfigurationSetter returns a setter that does not cache what it writes. The timeProvider is unused.
+func GetConfigurationSetter(client ConfigurationStore, timeProvider clock.TimeProvider) ConcreteConfigurationSetter {
+	return newConfigurationSetter(client, nil)
+}
+
+// newConfigurationSetter returns a setter that stores a written global config in cache, if not nil
+func newConfigurationSetter(client ConfigurationStore, cache Cache) ConcreteConfigurationSetter {
 	return ConcreteConfigurationSetter{
 		global: ConcreteGlobalConfigurationSetter{
 			setter: client,
-			cache:  GetCache(timeProvider),
+			cache:  cache,
 		},
 		machine: ConcreteMachineConfigurationSetter{
 			setter: client,
+			global: UncachedConcreteGlobalConfigurationFetcher{getter: client},
 		},
 	}
 }
@@ -164,7 +169,12 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 		return err
 	}
 
-	err = validateConfig(config)
+	config.OverrideFileAccessAction, err = normalizeOverrideFileAccessAction(config.OverrideFileAccessAction)
+	if err != nil {
+		return err
+	}
+
+	err = validateRemountUsbMode(config.RemountUsbMode, config.BlockUsbMount)
 	if err != nil {
 		return err
 	}
@@ -177,8 +187,7 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 		return fmt.Errorf("setting global config failed: %w", err)
 	}
 
-	// Attempt to set the new global configuration into cache
-	_ = c.cache.Set(CacheKeyGlobal, &globalConfigRow.MachineConfiguration)
+	setCachedGlobalConfig(c.cache, &globalConfigRow.MachineConfiguration)
 
 	return nil
 }
@@ -190,10 +199,28 @@ type MachineConfigurationSetter interface {
 
 type ConcreteMachineConfigurationSetter struct {
 	setter dynamodb.PutItemAPI
+	// global provides the settings a machine config inherits, for validation
+	global GlobalConfigurationFetcher
 }
 
 func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, config MachineConfiguration) error {
-	err := validateConfig(config)
+	var err error
+	config.OverrideFileAccessAction, err = normalizeOverrideFileAccessAction(config.OverrideFileAccessAction)
+	if err != nil {
+		return err
+	}
+
+	blockUsbMount := config.BlockUsbMount
+	if blockUsbMount == nil && len(config.RemountUsbMode) > 0 && c.global != nil {
+		globalConfig, eerr := c.global.GetGlobalConfig()
+		if eerr != nil {
+			return eerr
+		}
+		if globalConfig != nil {
+			blockUsbMount = globalConfig.BlockUsbMount
+		}
+	}
+	err = validateRemountUsbMode(config.RemountUsbMode, blockUsbMount)
 	if err != nil {
 		return err
 	}
@@ -209,4 +236,11 @@ func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, c
 		return fmt.Errorf("setting machine config failed: %w", err)
 	}
 	return nil
+}
+
+// setCachedGlobalConfig stores a global config that was just written into cache, if there is one
+func setCachedGlobalConfig(cache Cache, config *MachineConfiguration) {
+	if cache != nil {
+		_ = cache.Set(CacheKeyGlobal, config)
+	}
 }

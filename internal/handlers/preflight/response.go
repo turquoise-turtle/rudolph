@@ -46,11 +46,16 @@ func ConstructPreflightResponse(machineConfiguration machineconfiguration.Machin
 		syncType = types.SyncTypeNormal
 	}
 
-	// An enum value Santa does not know would make it reject the whole preflight response
-	overrideFileAccessAction := machineConfiguration.OverrideFileAccessAction
-	if overrideFileAccessAction != "" && !overrideFileAccessAction.IsValid() {
-		log.Printf("ignoring invalid OverrideFileAccessAction %q in machine configuration", overrideFileAccessAction)
-		overrideFileAccessAction = ""
+	// Send the enum name for legacy spellings; an enum value Santa does not know would make it reject the whole
+	// preflight response
+	var overrideFileAccessAction types.FileAccessAction
+	if machineConfiguration.OverrideFileAccessAction != "" {
+		normalized, err := machineConfiguration.OverrideFileAccessAction.Normalize()
+		if err != nil {
+			log.Printf("ignoring invalid OverrideFileAccessAction in machine configuration: %v", err)
+		} else {
+			overrideFileAccessAction = normalized
+		}
 	}
 
 	return &PreflightResponse{
