@@ -11,9 +11,19 @@ Remaining risks:
    download rules and configuration, upload events, and sync as any machine ID. Rotate the token when it may have leaked
    (two digests can be valid at once).
  - The authorizer's decision is cached per token for `authorizer_result_ttl_in_seconds` (default 5 minutes) and covers
-   all sync routes, so a removed token keeps working for up to that long, and machine ID validation within that window
-   is done by the handlers rather than the authorizer.
+   all sync routes, so a removed token keeps working for up to that long.
+ - Machine ID validation relies on the handlers. The authorizer rejects a non-UUID machine ID only for the request
+   that fills the cache, and only when it can deny that exact request: a machine ID containing IAM wildcard characters
+   (`*`, `?`) gets the normal Allow policy, because any denial would match (or, once cached, block) every host sharing
+   the token. Every sync handler validates the machine ID as a UUID and rejects such requests (UUID validation in all
+   handlers is added together with this authorizer; ruledownload lacked it before, see S3 in the audit).
  - The token is visible to anyone with access to the Mac's managed preferences.
+ - **Tokens in logs of older builds.** Older builds of the API router, eventupload and xsrf handlers log the full
+   request, including its headers, so the `Authorization` token would be written to CloudWatch Logs. Do not issue a
+   token to hosts before a build without that logging is deployed. If a token was ever used with an older build,
+   rotate it after upgrading and delete the old log streams of the `/aws/lambda/<prefix>_rudolph_*` log groups.
+   Deploy the Terraform changes and the handlers of this release together (see [deploy.md](deploy.md)); in particular
+   `binary_media_types = ["application/json"]` without the handlers that decode compressed bodies makes every sync fail.
 
 For stronger client authentication, enable mutual TLS on the custom domain (`mtls_truststore_uri`) so only hosts with
 a certificate from your CA can connect at all. Enabling mTLS disables the default `execute-api` endpoint, which would

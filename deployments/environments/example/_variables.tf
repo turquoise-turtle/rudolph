@@ -108,6 +108,7 @@ variable "kms_key_administrators_arns" {
 variable "sync_token_sha256" {
   type        = list(string)
   description = "SHA-256 hex digests of the bearer tokens Santa sends via SyncExtraHeaders. List two digests while rotating. Never put plain tokens here."
+  sensitive   = true
 }
 
 variable "authorizer_result_ttl_in_seconds" {

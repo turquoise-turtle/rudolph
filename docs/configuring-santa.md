@@ -50,7 +50,7 @@ Rudolph never stores the token itself. Deploy its SHA-256 digest instead, via `s
 `config.auto.tfvars.json`:
 
 ```
-printf '%s' "$TOKEN" | shasum -a 256 | cut -d ' ' -f 1
+printf '%s' "$TOKEN" | shasum -a 256 | cut -d ' ' -f 1   # macOS; on Linux use sha256sum instead of shasum -a 256
 ```
 
 ```json

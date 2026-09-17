@@ -68,7 +68,7 @@ Every Santa request must carry a bearer token. Generate one and put its SHA-256 
 
 ```
 TOKEN="$(openssl rand -base64 32)"
-printf '%s' "$TOKEN" | shasum -a 256 | cut -d ' ' -f 1
+printf '%s' "$TOKEN" | shasum -a 256 | cut -d ' ' -f 1   # macOS; on Linux use sha256sum instead of shasum -a 256
 ```
 
 See [configuring Santa](/docs/configuring-santa.md) for how hosts send the token, how to rotate it and how to enable
@@ -143,10 +143,27 @@ make deploy
 ## Upgrading an Existing Deployment
 Deployments created before Santa 2026.8 support need a few one-time steps.
 
-### 1. Roll out the sync token to hosts first
-Once deployed, the API rejects every request without a valid token. Create a token (see above), add its digest to
-`sync_token_sha256`, and deploy the `SyncExtraHeaders` configuration profile to your fleet (and upgrade Santa to
-2026.8+) **before** you deploy Rudolph. Older Rudolph versions ignore the extra header.
+### 0. Deploy code and infrastructure together
+This release changes the Terraform configuration and the Lambda handlers in ways that only work together. Always run
+`make deploy` from a checkout that contains both, never apply the Terraform changes on top of an older build:
+
+- `binary_media_types = ["application/json"]` makes API Gateway pass Santa's (deflate-compressed) request bodies to
+  Lambda base64 encoded. Only handlers that base64-decode and decompress the body can read them; deploying this setting
+  with older handlers makes **every sync fail**.
+- Older builds of the API router, eventupload and xsrf handlers log the full request including its headers, which
+  would write the sync token to CloudWatch Logs.
+
+### 1. Roll out the sync token
+Once deployed, the API rejects every request without a valid token. Create a token (see above) and add its digest to
+`sync_token_sha256`. Hosts must run Santa 2026.8+ and receive the `SyncExtraHeaders` configuration profile.
+
+**Do not issue the token to hosts while an older build (one that logs request headers) is deployed.** Deploy this
+release first, then push the configuration profile. Hosts keep enforcing their current rules but cannot sync until they
+receive the profile.
+
+If you cannot accept that gap and push the profile before upgrading, or if a token was ever used with an older build,
+treat the token as leaked: after the upgrade, rotate it (see [configuring Santa](/docs/configuring-santa.md)) and
+delete the old log streams in the `/aws/lambda/PREFIX_rudolph_*` log groups.
 
 ### 2. Fix the environment directory
 Environments created by the old `make init-env` contain `main.tf` and `variables.tf` symlinks to
@@ -215,5 +232,7 @@ import {
 Skip a log group import if the function has never been invoked (the group does not exist yet). Run `make plan`, check
 that only the expected changes are listed, `make deploy`, then delete `imports.tf`.
 
-The deployment also adds the `DataType_MachineID` index to the DynamoDB table (this takes a while on large tables) and
-moves the Lambda source bucket settings to separate `aws_s3_bucket_*` resources; neither needs manual steps.
+The deployment also adds the `DataType_MachineID` index to the DynamoDB table and moves the Lambda source bucket
+settings to separate `aws_s3_bucket_*` resources; neither needs manual steps. Creating the index backfills it from every
+existing item that has `DataType` and `MachineID`: this takes a while on large tables, and on the on-demand
+(`PAY_PER_REQUEST`) table the backfill is billed as write requests to the index, roughly one per indexed item.

@@ -132,10 +132,11 @@ variable "kms_key_administrators_arns" {
 variable "sync_token_sha256" {
   type        = list(string)
   description = "SHA-256 hex digests of the bearer tokens Santa sends via SyncExtraHeaders (Authorization: Bearer <token>). List two digests while rotating. Never put plain tokens here."
+  sensitive   = true
 
   validation {
     condition     = length(var.sync_token_sha256) > 0 && alltrue([for d in var.sync_token_sha256 : can(regex("^[0-9a-fA-F]{64}$", d))])
-    error_message = "sync_token_sha256 must contain at least one SHA-256 hex digest (64 hex characters), e.g. the output of: printf '%s' \"$TOKEN\" | shasum -a 256."
+    error_message = "sync_token_sha256 must contain at least one SHA-256 hex digest (64 hex characters), e.g. the output of: printf '%s' \"$TOKEN\" | shasum -a 256 (sha256sum on Linux)."
   }
 }
 
