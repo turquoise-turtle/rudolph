@@ -97,26 +97,10 @@ func runJsonImport(
 		return
 	}
 
-	// Track a total number of lines processed
-	// This gets passed to workers and atomic.Add is
-	// used to increment in a thread-safe way
-	var total uint64
-
 	// Start the workers
+	result := &importResult{}
 	rulesBuffer := make(chan fileRule)
-	var wg sync.WaitGroup
-	for w := 0; w < numWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done() // ensure Done is called after this worker is complete
-			ddbWriter(
-				client,
-				timeProvider,
-				rulesBuffer,
-				&total,
-			)
-		}()
-	}
+	wg := startWriters(client, timeProvider, rulesBuffer, result, numWorkers)
 
 	// Shovel all the json-parsed rules into the worker queue
 	for _, rule := range rules {
@@ -127,9 +111,7 @@ func runJsonImport(
 	// Chill
 	wg.Wait()
 
-	fmt.Println("processed lines:", total)
-
-	return
+	return result.report()
 }
 
 func runCsvImport(
@@ -146,16 +128,109 @@ func runCsvImport(
 	}
 
 	// Channel for csv parsing and workers to communicate over
-	rules := make(chan fileRule)
-
-	// Track a total number of lines processed
-	// This gets passed to workers and atomic.Add is
-	// used to increment in a thread-safe way
-	var total uint64
-
-	// Start the workers
 	// Fanning out workers allows us to make multiple HTTP requests concurrently which can
 	// improve performance assuming we aren't network I/O bottlenecked or something.
+	result := &importResult{}
+	rules := make(chan fileRule)
+	wg := startWriters(client, timeProvider, rules, result, numWorkers)
+
+	// Start taking lines from the csv and shoveling them into the workers
+	var record int
+	for line := range data {
+		record++
+		rule, err := parseCsvRule(line)
+		if err != nil {
+			result.fail(fmt.Errorf("record %d: %w", record, err))
+			continue
+		}
+		rules <- rule
+	}
+	close(rules)
+
+	// chill
+	wg.Wait()
+
+	return result.report()
+}
+
+// parseCsvRule converts a csv line into a rule
+func parseCsvRule(line map[string]string) (rule fileRule, err error) {
+	identifier, ok := line["identifier"]
+	if !ok {
+		return rule, errors.New("no identifier")
+	}
+	ruleTypeStr, ok := line["type"]
+	if !ok {
+		return rule, errors.New("no type")
+	}
+	policyStr, ok := line["policy"]
+	if !ok {
+		return rule, errors.New("no policy")
+	}
+
+	var ruleType types.RuleType
+	if err = ruleType.UnmarshalText([]byte(ruleTypeStr)); err != nil {
+		return rule, fmt.Errorf("invalid rule type: %w", err)
+	}
+	var policy types.Policy
+	if err = policy.UnmarshalText([]byte(policyStr)); err != nil {
+		return rule, fmt.Errorf("invalid policy: %w", err)
+	}
+
+	// Optional columns default to empty
+	return fileRule{
+		Identifier:             identifier,
+		RuleType:               ruleType,
+		Policy:                 policy,
+		Description:            line["description"],
+		CustomMessage:          line["custom_msg"],
+		CustomURL:              line["custom_url"],
+		EventDetailButtonLabel: line["event_detail_button_label"],
+		NotificationAppName:    line["notification_app_name"],
+		CELExpr:                line["cel_expr"],
+	}, nil
+}
+
+// importResult tracks the outcome of an import across workers
+type importResult struct {
+	// Counters are incremented with atomic.Add
+	total   uint64
+	skipped uint64
+
+	mu     sync.Mutex
+	errors []error
+}
+
+func (r *importResult) fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errors = append(r.errors, err)
+}
+
+// report prints the outcome and returns an error if any rule could not be imported.
+// Skipped legacy ALLOWLIST_TRANSITIVE rules alone are not an error.
+func (r *importResult) report() error {
+	fmt.Println("processed lines:", r.total)
+	if r.skipped > 0 {
+		fmt.Printf("[WARNING] skipped %d rule(s) with the ALLOWLIST_TRANSITIVE policy: %v\n", r.skipped, rudolphrules.ErrTransitivePolicy)
+	}
+	if len(r.errors) == 0 {
+		return nil
+	}
+	for _, err := range r.errors {
+		fmt.Println("[ERROR]", err)
+	}
+	return fmt.Errorf("%d rule(s) could not be imported: %w", len(r.errors), errors.Join(r.errors...))
+}
+
+// startWriters starts the workers writing rules to DynamoDB; wait on the returned WaitGroup after closing rules
+func startWriters(
+	client dynamodb.DynamoDBClient,
+	timeProvider clock.TimeProvider,
+	rules chan fileRule,
+	result *importResult,
+	numWorkers int,
+) *sync.WaitGroup {
 	var wg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
@@ -165,78 +240,22 @@ func runCsvImport(
 				client,
 				timeProvider,
 				rules,
-				&total,
+				result,
 			)
 		}()
 	}
-
-	// Start taking lines from the csv and shoveling them into the workers
-	for line := range data {
-		identifier, ok := line["identifier"]
-		if !ok {
-			panic("no identifier")
-		}
-		ruleTypeStr, ok := line["type"]
-		if !ok {
-			panic("no type")
-		}
-		policyStr, ok := line["policy"]
-		if !ok {
-			panic("no policy")
-		}
-		description, ok := line["description"]
-		if !ok {
-			description = ""
-		}
-		// Optional columns default to empty
-		customMsg := line["custom_msg"]
-		customURL := line["custom_url"]
-		eventDetailButtonLabel := line["event_detail_button_label"]
-		notificationAppName := line["notification_app_name"]
-		celExpr := line["cel_expr"]
-
-		var ruleType types.RuleType
-		err := ruleType.UnmarshalText([]byte(ruleTypeStr))
-		if err != nil {
-			panic("invalid ruletype")
-		}
-		var policy types.Policy
-		err = policy.UnmarshalText([]byte(policyStr))
-		if err != nil {
-			panic("invalid policy")
-		}
-
-		rules <- fileRule{
-			Identifier:             identifier,
-			RuleType:               ruleType,
-			Policy:                 policy,
-			Description:            description,
-			CustomMessage:          customMsg,
-			CustomURL:              customURL,
-			EventDetailButtonLabel: eventDetailButtonLabel,
-			NotificationAppName:    notificationAppName,
-			CELExpr:                celExpr,
-		}
-	}
-	close(rules)
-
-	// chill
-	wg.Wait()
-
-	fmt.Println("processed lines:", total)
-
-	return nil
+	return &wg
 }
 
 func ddbWriter(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
 	rules chan fileRule,
-	total *uint64,
+	result *importResult,
 ) {
 	for rule := range rules {
 		var err error
-		atomic.AddUint64(total, 1)
+		atomic.AddUint64(&result.total, 1)
 
 		var suffix string
 		switch rule.RuleType {
@@ -252,7 +271,13 @@ func ddbWriter(
 			suffix = ""
 		}
 
-		if rule.Policy == types.RulePolicyRemove {
+		switch rule.Policy {
+		case types.RulePolicyAllowlistTransitive:
+			// Legacy rows in older backups; Santa has no such policy, so skip them instead of failing the import
+			fmt.Printf("  [WARNING] Skipping rule with the ALLOWLIST_TRANSITIVE policy: %s%s\n", rule.Identifier, suffix)
+			atomic.AddUint64(&result.skipped, 1)
+			continue
+		case types.RulePolicyRemove:
 			fmt.Printf("  Removing rule: [%s]\n", rule.Identifier)
 			sortkey := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
 			err = globalrules.RemoveGlobalRule(
@@ -262,8 +287,7 @@ func ddbWriter(
 				sortkey,
 				"",
 			)
-
-		} else {
+		default:
 			fmt.Printf("  Writing rule: [%+v] %s%s\n", rule.Policy, rule.Identifier, suffix)
 			err = globalrules.AddNewGlobalRule(
 				timeProvider,
@@ -277,7 +301,7 @@ func ddbWriter(
 		}
 
 		if err != nil {
-			panic(err)
+			result.fail(fmt.Errorf("rule %s%s: %w", rule.Identifier, suffix, err))
 		}
 	}
 }
