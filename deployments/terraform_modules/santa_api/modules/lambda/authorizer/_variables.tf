@@ -44,3 +44,15 @@ variable "env_vars" {
   description = "Map of environment variables to pass to the function"
   default     = {}
 }
+
+variable "authorizer_result_ttl_in_seconds" {
+  type        = number
+  description = "How long API Gateway caches the authorizer result for a token, in seconds"
+  default     = 300
+}
+
+variable "log_retention_in_days" {
+  type        = number
+  description = "Retention of the authorizer Lambda's CloudWatch log group, in days"
+  default     = 30
+}

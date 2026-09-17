@@ -14,26 +14,40 @@ resource "aws_api_gateway_rest_api" "api_gateway" {
 
   # Use the authorizer's UsageIdentifierKey to uniquely identify an endpoint.
   api_key_source = "AUTHORIZER"
+
+  # Santa compresses request bodies (Content-Encoding: deflate by default) but still sends
+  # Content-Type: application/json. A Lambda proxy integration only passes such bodies through intact when the media
+  # type is binary: API Gateway then base64 encodes the raw body (isBase64Encoded = true) and the handlers decode and
+  # decompress it.
+  binary_media_types = ["application/json"]
+
+  # Clients must use the custom domain; the default endpoint would bypass mTLS.
+  disable_execute_api_endpoint = var.disable_execute_api_endpoint || local.mtls_enabled
+}
+
+locals {
+  mtls_enabled = var.mtls_truststore_uri != ""
 }
 
 ##########################
 # Stages and Deployments #
 ##########################
 
-# resource "aws_api_gateway_stage" "stage" {
-#   stage_name    = "v1"
-#   rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
-#   deployment_id = aws_api_gateway_deployment.api_deployment.id
-# }
-
+# Before hashicorp/aws 6.x the stage was created implicitly by the deployment's stage_name.
+# Existing environments must import it once, see docs/deploy.md.
+resource "aws_api_gateway_stage" "stage" {
+  stage_name    = var.stage_name
+  rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
+  deployment_id = aws_api_gateway_deployment.api_deployment.id
+}
 
 resource "aws_api_gateway_deployment" "api_deployment" {
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
-  stage_name  = var.stage_name
 
   triggers = {
     redeployment = join(",", [
       sha1(jsonencode(aws_api_gateway_rest_api.api_gateway)),
+      module.rudolph_api_authorizer.api_gateway_authorizer_sha,
       module.health_api.integration_shas,
       module.ruledownload_api.integration_shas,
       module.ruledownload_resource_api.integration_shas,
@@ -94,7 +108,7 @@ resource "aws_api_gateway_deployment" "api_deployment" {
 # @doc https://www.terraform.io/docs/providers/aws/r/api_gateway_base_path_mapping.html
 resource "aws_api_gateway_base_path_mapping" "gateway_custom_domain_mapping" {
   api_id      = aws_api_gateway_rest_api.api_gateway.id
-  stage_name  = aws_api_gateway_deployment.api_deployment.stage_name
+  stage_name  = aws_api_gateway_stage.stage.stage_name
   domain_name = aws_api_gateway_domain_name.api_custom_domain.domain_name
 }
 

@@ -4,6 +4,7 @@ locals {
 
 resource "aws_cloudwatch_log_group" "eventsupload_firehose" {
   name              = "/aws/kinesisfirehose/${local.firehose_name}"
+  retention_in_days = var.log_retention_in_days
 }
 
 resource "aws_kinesis_firehose_delivery_stream" "eventsupload_firehose" {

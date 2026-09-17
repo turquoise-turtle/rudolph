@@ -32,6 +32,11 @@ resource "aws_dynamodb_table" "store" {
     type = "S"
   }
 
+  attribute {
+    name = "MachineID"
+    type = "S"
+  }
+
   ttl {
     attribute_name = "ExpiresAfter"
     enabled        = true
@@ -43,6 +48,15 @@ resource "aws_dynamodb_table" "store" {
     range_key          = "DataType"
     projection_type    = "INCLUDE"
     non_key_attributes = ["MachineID"]
+  }
+
+  # Machine ID lookups by prefix (sensordata.MachineID_DataType_GSI). MachineID is the index range key, so KEYS_ONLY
+  # already projects it.
+  global_secondary_index {
+    name            = "DataType_MachineID"
+    hash_key        = "DataType"
+    range_key       = "MachineID"
+    projection_type = "KEYS_ONLY"
   }
 
   server_side_encryption {

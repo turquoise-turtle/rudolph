@@ -1,6 +1,6 @@
 # Setting Up New Environments
-It is easy to deploy and maintain multiple different Rudolph environments, as they are configured in just 5 simple files.
-This document will walk through the 5 files necessary.
+It is easy to deploy and maintain multiple different Rudolph environments, as they are configured in just 6 simple files.
+This document will walk through the files necessary.
 
 ## `init-env`
 The easiest way to create skeletons for all necessary files is via:
@@ -12,32 +12,38 @@ make init-env
 ## The Directory
 You will need a directory under `deployments/environments/{{ENV}}/`. For example, this current environment's `ENV` is "example", as it is located at `deployments/environment/example`.
 
-### `_variables.tf`
-This file is a symlink to [deployments/terraform_modules/default_variables.tf](../../../deployments/terraform_modules/default_variables.tf).
-
-You will never need to edit this variables file after creating the symlink. Leave it as-is.
-
 ### `main.tf`
-This file is a symlink to [deployments/terraform_modules/default_main.tf](../../../deployments/terraform_modules/default_main.tf).
+Instantiates the Rudolph module from this checkout:
 
-You will never need to edit this main file after creating the symlink. Leave it as-is.
+```
+module "santa_api" {
+  source = "../../terraform_modules/santa_api"
+  ...
+}
+```
+
+Always keep the local `source`. Pointing it at a remote repository (for example `github.com/airbnb/rudolph//...`)
+deploys whatever is on that repository's default branch instead of the code you built and tested.
+
+### `_variables.tf`
+Declares the variables that `config.auto.tfvars.json` and `make deploy` provide, and passes them to the module in
+`main.tf`. `make init-env` copies both files from this example; when you upgrade Rudolph, compare them with the example
+to pick up new settings.
 
 ### `versions.tf`
-Create a `versions.tf` in the environment directory with the appropriate versions. We recommend the following:
+Pins Terraform and the AWS provider. Use the same constraint as the module (`deployments/terraform_modules/santa_api/_providers.tf`):
 ```
 terraform {
-  required_version = ">= 0.14.11"
+  required_version = ">= 1.5.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 3.38.0"
+      version = "~> 6.0"
     }
   }
 }
 ```
-
-Although you may use Terraform 1.0+. That'll probably be fine?
 
 ### `_backend.tf`
 The first "complicated" file you'll need to set up is `_backend.tf` which describes how the Terraform state will be stored.
@@ -106,7 +112,13 @@ Consider this provided example:
   "eventupload_autocreate_policies": false,
   "route53_zone_name": "mywebsite.com",
   "use_existing_route53_zone": true,
-  "eventupload_output_lambda_name": ""
+  "eventupload_output_lambda_name": "",
+  "sync_token_sha256": ["<64 hex characters>"],
+  "authorizer_result_ttl_in_seconds": 300,
+  "mtls_truststore_uri": "",
+  "mtls_truststore_version": "",
+  "disable_execute_api_endpoint": false,
+  "log_retention_in_days": 30
 }
 ```
 
@@ -148,3 +160,21 @@ may accidentally destroy a Hosted Zone that's currently in use by another enviro
 #### `eventupload_output_lambda_name`
 An AWS Lambda Function name in the same region to forward `/eventupload` events to. Leave as `""` if you do not intend
 to use this feature.
+
+#### `sync_token_sha256`
+Required. The SHA-256 hex digests of the bearer tokens Santa sends through `SyncExtraHeaders`. List two digests while
+rotating tokens. Never put the tokens themselves here. See [configuring Santa](../../../docs/configuring-santa.md).
+
+#### `authorizer_result_ttl_in_seconds`
+How long API Gateway caches the authorizer's decision for a token. Defaults to `300`. A removed token can keep working
+for this long.
+
+#### `mtls_truststore_uri` and `mtls_truststore_version`
+Optional. An `s3://` URI of a PEM bundle of CA certificates, and optionally its S3 object version. When set, the custom
+domain requires client certificates issued by those CAs, and the default `execute-api` endpoint is disabled.
+
+#### `disable_execute_api_endpoint`
+Disable the default `execute-api` endpoint even without mTLS, so hosts can only use the custom domain. Defaults to `false`.
+
+#### `log_retention_in_days`
+Retention of the Lambda and Firehose CloudWatch log groups. Defaults to `30`.

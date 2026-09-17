@@ -12,9 +12,11 @@ resource "aws_api_gateway_authorizer" "api_authorizer" {
   # Options defining how this authorizer operates
   type                             = "REQUEST" # Validate entire request
 
-  # https://github.com/hashicorp/terraform-provider-aws/issues/5845#issuecomment-517998604
-  identity_source                  = ""
-  authorizer_result_ttl_in_seconds = 0 # Only GET methods are cached by default so just set to zero to reduce confusion
+  # Santa sends "Authorization: Bearer <token>" through SyncExtraHeaders. Requests without the header are rejected
+  # with a 401 by API Gateway without invoking the Lambda, and results are cached per token, so a host's whole sync
+  # is served by one authorizer invocation. The Lambda returns a policy covering all sync routes for this reason.
+  identity_source                  = "method.request.header.Authorization"
+  authorizer_result_ttl_in_seconds = var.authorizer_result_ttl_in_seconds
 }
 
 #
@@ -31,6 +33,7 @@ module "authorizer_function" {
   lambda_source_hash        = var.lambda_source_hash
   endpoint                  = "authorizer"
   api_gateway_execution_arn = var.api_gateway_execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = var.env_vars
 

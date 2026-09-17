@@ -40,6 +40,12 @@ variable "org" {
   description = "Organization name"
 }
 
+variable "log_retention_in_days" {
+  type        = number
+  description = "Retention of the Firehose CloudWatch log group, in days"
+  default     = 30
+}
+
 variable "kms_key_administrators_arns" {
   type = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"

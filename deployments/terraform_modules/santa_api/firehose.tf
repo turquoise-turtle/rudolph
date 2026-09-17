@@ -16,6 +16,7 @@ module "firehose" {
 
   existing_logging_bucket_name = var.existing_logging_bucket_name
   enable_logging               = var.enable_s3_logging
+  log_retention_in_days        = var.log_retention_in_days
 
   firehose_upload_lambda_role_names = [
     module.eventupload_function.lambda_role_name,
