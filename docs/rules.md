@@ -37,6 +37,15 @@ From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` ac
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.
 
+Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot
+be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. Removing a machine-specific rule restores
+the global rule for the same target, including its fields.
+
+> **Deploy the API Lambda first.** Deploy the Rudolph version that supports them before creating `CDHASH` rules or rules
+> with the `CEL`, `SILENT_GUI_BLOCKLIST` or `SILENT_TTY_BLOCKLIST` policies. Older Lambdas cannot read these values, so every
+> rule download that reaches such a rule fails; for a global rule that is every host, not just the hosts it matches. For the same reason, do not roll the Lambda
+> back to an older version once such rules exist: remove them first, or syncs break until you deploy again.
+
 
 Whenever a new binary is executed, Santa’s system extension gathers information about the binary (via processes similar to `santactl fileinfo {BINARY}`) and looks up any relevant rules. It combines the rules to determine if a binary/application should be allowed/blocked to execute.
 
