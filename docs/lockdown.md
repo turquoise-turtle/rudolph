@@ -19,6 +19,20 @@ On Rudolph both rules and machine configurations can be specified both _globally
 For Santa agent configurations, there is a default configuration that is hardcoded into the app, but we recommend setting a
 global one in DynamoDB. Each machine then also can have machine-specific configurations that override the global one.
 
+Setting the _global_ client mode to `LOCKDOWN` puts every machine without a machine-specific configuration into lockdown at its next sync, so Rudolph requires an explicit confirmation for it:
+
+```
+rudolph config update --global --client-mode lockdown --confirm-global-lockdown
+```
+
+Without `--confirm-global-lockdown` (or `ConfirmGlobalLockdown()` when using the `machineconfiguration` package), the change is rejected. Switching the global mode back to `MONITOR`, and putting individual machines into lockdown, need no confirmation:
+
+```
+rudolph config update --machine <machine-uuid> --client-mode lockdown
+```
+
+Warm Lambda instances cache the global configuration for at most one minute, so global changes reach hosts on their first sync after that.
+
 For rules, there is a set of global rules which is deployed to all machines. Each machine can also have their own machine-specific rules, which are appended onto the global rules (and override them, when applicable). This allows you to deploy rules to specific machines without influencing other machines.
 
 ## Eventupload
