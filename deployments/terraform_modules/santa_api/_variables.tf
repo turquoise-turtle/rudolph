@@ -125,3 +125,57 @@ variable "kms_key_administrators_arns" {
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
   default = []
 }
+
+#
+# Santa client authentication
+#
+variable "sync_token_sha256" {
+  type        = list(string)
+  description = "SHA-256 hex digests of the bearer tokens Santa sends via SyncExtraHeaders (Authorization: Bearer <token>). List two digests while rotating. Never put plain tokens here."
+  sensitive   = true
+
+  validation {
+    condition     = length(var.sync_token_sha256) > 0 && alltrue([for d in var.sync_token_sha256 : can(regex("^[0-9a-fA-F]{64}$", d))])
+    error_message = "sync_token_sha256 must contain at least one SHA-256 hex digest (64 hex characters), e.g. the output of: printf '%s' \"$TOKEN\" | shasum -a 256 (sha256sum on Linux)."
+  }
+}
+
+variable "authorizer_result_ttl_in_seconds" {
+  type        = number
+  description = "How long API Gateway caches the authorizer result for a token, in seconds. 0 disables caching and invokes the authorizer on every request."
+  default     = 300
+
+  validation {
+    condition     = var.authorizer_result_ttl_in_seconds >= 0 && var.authorizer_result_ttl_in_seconds <= 3600
+    error_message = "authorizer_result_ttl_in_seconds must be between 0 and 3600."
+  }
+}
+
+variable "mtls_truststore_uri" {
+  type        = string
+  description = "OPTIONAL: S3 URI (s3://bucket/key.pem) of a PEM truststore. When set, the custom domain requires client certificates (mTLS)."
+  default     = ""
+
+  validation {
+    condition     = var.mtls_truststore_uri == "" || startswith(var.mtls_truststore_uri, "s3://")
+    error_message = "mtls_truststore_uri must be an s3:// URI."
+  }
+}
+
+variable "mtls_truststore_version" {
+  type        = string
+  description = "OPTIONAL: S3 object version of the mTLS truststore. Set it to roll out truststore updates."
+  default     = ""
+}
+
+variable "disable_execute_api_endpoint" {
+  type        = bool
+  description = "Disable the default execute-api endpoint so clients must use the custom domain. Always disabled when mTLS is enabled, as the default endpoint would bypass it."
+  default     = false
+}
+
+variable "log_retention_in_days" {
+  type        = number
+  description = "Retention of Rudolph's CloudWatch log groups, in days"
+  default     = 30
+}

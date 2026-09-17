@@ -11,6 +11,7 @@ import (
 func init() {
 	tf := flags.TargetFlags{}
 	rf := flags.RuleInfoFlags{}
+	of := flags.RuleOptionFlags{}
 
 	var ruleSilentCmd = &cobra.Command{
 		Use:     "silent",
@@ -25,12 +26,13 @@ func init() {
 			dynamodbClient := dynamodb.GetClient(table, region)
 			time := clock.ConcreteTimeProvider{}
 
-			return applyPolicyForPath(time, dynamodbClient, types.SilentBlocklist, tf, rf)
+			return applyPolicyForPath(time, dynamodbClient, types.SilentBlocklist, tf, rf, of.Options()...)
 		},
 	}
 
 	tf.AddTargetFlags(ruleSilentCmd)
 	rf.AddRuleInfoFlags(ruleSilentCmd)
+	of.AddRuleOptionFlags(ruleSilentCmd)
 
 	RuleCmd.AddCommand(ruleSilentCmd)
 }

@@ -47,6 +47,7 @@ module "health_function" {
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "health"
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
     REGION = var.region
@@ -66,6 +67,7 @@ module "xsrf_function" {
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "xsrf"
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {}
 }
@@ -83,6 +85,7 @@ module "preflight_function" {
   endpoint                  = "preflight"
   lambda_memory_size        = 256
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
     REGION = var.region
@@ -103,6 +106,7 @@ module "eventupload_function" {
   endpoint                  = "eventupload"
   lambda_memory_size        = 256
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
     REGION        = var.region
@@ -126,6 +130,7 @@ module "ruledownload_function" {
   endpoint                  = "ruledownload"
   lambda_memory_size        = 512
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
     REGION = var.region
@@ -146,6 +151,7 @@ module "postflight_function" {
   endpoint                  = "postflight"
   lambda_memory_size        = 512
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
+  log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
     REGION = var.region

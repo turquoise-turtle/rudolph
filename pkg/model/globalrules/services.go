@@ -2,7 +2,6 @@ package globalrules
 
 import (
 	"github.com/airbnb/rudolph/pkg/clock"
-	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/types"
 )
 
@@ -12,7 +11,7 @@ type GlobalRulesUpdater interface {
 
 type ConcreteGlobalRulesUpdater struct {
 	ClockProvider clock.TimeProvider
-	TransactWrite dynamodb.TransactWriteItemsAPI
+	TransactWrite GlobalRuleUpdaterAPI
 }
 
 func (c ConcreteGlobalRulesUpdater) UpdateGlobalRule(sha256 string, ruleType types.RuleType, rulePolicy types.Policy) (err error) {

@@ -5,4 +5,5 @@ const (
 	certificateRuleSKPrefix = "Cert#"
 	teamIDRuleSKPrefix      = "TeamID#"
 	signingIDRuleSKPrefix   = "SigningID#"
+	cdhashRuleSKPrefix      = "CDHash#"
 )

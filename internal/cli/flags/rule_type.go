@@ -14,6 +14,7 @@ const (
 	certTypeShort = "cert"
 	teamIDType    = "teamid"
 	signingIDType = "signingid"
+	cdhashType    = "cdhash"
 )
 
 // ruleType is a custom type for use as a CLI flag representing the type of rule being applied
@@ -43,8 +44,10 @@ func (i *RuleType) Set(s string) error {
 		*i = RuleType(types.RuleTypeTeamID)
 	case signingIDType:
 		*i = RuleType(types.RuleTypeSigningID)
+	case cdhashType:
+		*i = RuleType(types.RuleTypeCDHash)
 	default:
-		return fmt.Errorf(`invalid rule type; must be "binary" or "cert"`)
+		return fmt.Errorf(`invalid rule type; must be "binary", "cert", "teamid", "signingid" or "cdhash"`)
 	}
 	return nil
 }
@@ -64,6 +67,8 @@ func (i *RuleType) String() string {
 		return teamIDType
 	case types.RuleTypeSigningID:
 		return signingIDType
+	case types.RuleTypeCDHash:
+		return cdhashType
 	}
 
 	// No default

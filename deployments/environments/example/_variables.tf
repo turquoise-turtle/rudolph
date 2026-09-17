@@ -104,3 +104,39 @@ variable "kms_key_administrators_arns" {
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
   default = []
 }
+
+variable "sync_token_sha256" {
+  type        = list(string)
+  description = "SHA-256 hex digests of the bearer tokens Santa sends via SyncExtraHeaders. List two digests while rotating. Never put plain tokens here."
+  sensitive   = true
+}
+
+variable "authorizer_result_ttl_in_seconds" {
+  type        = number
+  description = "How long API Gateway caches the authorizer result for a token, in seconds (1-3600)"
+  default     = 300
+}
+
+variable "mtls_truststore_uri" {
+  type        = string
+  description = "OPTIONAL: S3 URI (s3://bucket/key.pem) of a PEM truststore. When set, the custom domain requires client certificates (mTLS)."
+  default     = ""
+}
+
+variable "mtls_truststore_version" {
+  type        = string
+  description = "OPTIONAL: S3 object version of the mTLS truststore"
+  default     = ""
+}
+
+variable "disable_execute_api_endpoint" {
+  type        = bool
+  description = "Disable the default execute-api endpoint so clients must use the custom domain. Always disabled when mTLS is enabled."
+  default     = false
+}
+
+variable "log_retention_in_days" {
+  type        = number
+  description = "Retention of Rudolph's CloudWatch log groups, in days"
+  default     = 30
+}

@@ -11,5 +11,5 @@ output "api_domain_name" {
 }
 
 output "raw_url" {
-  value = aws_api_gateway_deployment.api_deployment.invoke_url
+  value = aws_api_gateway_stage.stage.invoke_url
 }

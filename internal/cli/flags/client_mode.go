@@ -9,6 +9,7 @@ import (
 const (
 	monitorMode       = "monitor"
 	lockdownMode      = "lockdown"
+	standaloneMode    = "standalone"
 	defaultClientMode = "monitor"
 )
 
@@ -35,8 +36,10 @@ func (i *ClientMode) Set(c string) error {
 		*i = ClientMode(types.Monitor)
 	case lockdownMode:
 		*i = ClientMode(types.Lockdown)
+	case standaloneMode:
+		*i = ClientMode(types.Standalone)
 	default:
-		return fmt.Errorf(`invalid client mode; must be "monitor" or "lockdown"`)
+		return fmt.Errorf(`invalid client mode; must be "monitor", "lockdown" or "standalone"`)
 	}
 	return nil
 }
@@ -47,12 +50,14 @@ func (i *ClientMode) Type() string {
 
 func (i *ClientMode) String() string {
 	c := (types.ClientMode)(*i)
-	// select `monitor` or `lockdown` and if invalid, always default to `defaultClientMode` ClientMode
+	// select `monitor`, `lockdown` or `standalone` and if invalid, always default to `defaultClientMode` ClientMode
 	switch c {
 	case types.Monitor:
 		return monitorMode
 	case types.Lockdown:
 		return lockdownMode
+	case types.Standalone:
+		return standaloneMode
 	default:
 		return defaultClientMode
 	}

@@ -11,6 +11,7 @@ import (
 func init() {
 	tf := flags.TargetFlags{}
 	rf := flags.RuleInfoFlags{}
+	of := flags.RuleOptionFlags{}
 
 	var ruleCompilerCmd = &cobra.Command{
 		Use:     "compiler  <file-path>",
@@ -25,12 +26,13 @@ func init() {
 			dynamodbClient := dynamodb.GetClient(table, region)
 			time := clock.ConcreteTimeProvider{}
 
-			return applyPolicyForPath(time, dynamodbClient, types.AllowlistCompiler, tf, rf)
+			return applyPolicyForPath(time, dynamodbClient, types.AllowlistCompiler, tf, rf, of.Options()...)
 		},
 	}
 
 	tf.AddTargetFlags(ruleCompilerCmd)
 	rf.AddRuleInfoFlags(ruleCompilerCmd)
+	of.AddRuleOptionFlags(ruleCompilerCmd)
 
 	RuleCmd.AddCommand(ruleCompilerCmd)
 }

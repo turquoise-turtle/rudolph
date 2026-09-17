@@ -18,6 +18,8 @@ type GlobalRuleRow struct {
 
 type updateRulePolicyRequest struct {
 	Policy types.Policy `dynamodbav:"Policy"`
+	// Not omitempty, so that an update clears the expression
+	CELExpr string `dynamodbav:"CELExpr"`
 }
 
 func globalRulesSK(identifier string, ruleType types.RuleType) string {

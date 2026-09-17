@@ -24,6 +24,13 @@ monthly costs will be about ~90% lower.
 
 If you have 90% fewer clients (e.g. 1,000 clients instead of 10,000), you can expect your costs to be ~90% lower as well.
 
+## Authorizer and Logs
+API Gateway caches the authorizer's decision per token for `authorizer_result_ttl_in_seconds` (default 300 seconds),
+so a sync normally costs no authorizer Lambda invocation beyond the first one in each cache window, instead of one per
+request.
+
+CloudWatch log groups keep logs for `log_retention_in_days` (default 30) instead of forever.
+
 ## Costs of Rules
 Due to Rudolph's sync logic, we have not observed noticable cost nor performance degradatation with very large numbers of
 rules.

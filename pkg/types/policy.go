@@ -31,7 +31,15 @@ const (
 	RulePolicyAllowlistCompiler
 	// Transitive rules are created by the santa sensor itself; it is never created by the server.
 	// Transitive rules are destroyed upon every clean sync.
+	// This is not a policy of the Santa sync protocol: rules with this policy must never be created or sent to
+	// clients (Santa silently ignores them). It is kept only so that legacy rows can still be read.
 	RulePolicyAllowlistTransitive
+	// CEL rules decide the outcome by evaluating the CEL expression attached to the rule.
+	RulePolicyCEL
+	// SilentGUIBlocklist blocks without showing GUI notifications; TTY notifications are still shown.
+	RulePolicySilentGUIBlocklist
+	// SilentTTYBlocklist blocks without showing TTY notifications; GUI notifications are still shown.
+	RulePolicySilentTTYBlocklist
 )
 
 // UnmarshalText for JSON marshalling interface
@@ -51,6 +59,12 @@ func (p *Policy) UnmarshalText(text []byte) error {
 		*p = RulePolicyAllowlistCompiler
 	case "ALLOWLIST_TRANSITIVE":
 		*p = RulePolicyAllowlistTransitive
+	case "CEL":
+		*p = RulePolicyCEL
+	case "SILENT_GUI_BLOCKLIST":
+		*p = RulePolicySilentGUIBlocklist
+	case "SILENT_TTY_BLOCKLIST":
+		*p = RulePolicySilentTTYBlocklist
 	default:
 		return fmt.Errorf("unknown policy value %q", t)
 	}
@@ -72,6 +86,12 @@ func (p Policy) MarshalText() ([]byte, error) {
 		return []byte("ALLOWLIST_COMPILER"), nil
 	case RulePolicyAllowlistTransitive:
 		return []byte("ALLOWLIST_TRANSITIVE"), nil
+	case RulePolicyCEL:
+		return []byte("CEL"), nil
+	case RulePolicySilentGUIBlocklist:
+		return []byte("SILENT_GUI_BLOCKLIST"), nil
+	case RulePolicySilentTTYBlocklist:
+		return []byte("SILENT_TTY_BLOCKLIST"), nil
 	default:
 		return nil, fmt.Errorf("unknown policy %d", p)
 	}
@@ -93,6 +113,12 @@ func (p Policy) MarshalDynamoDBAttributeValue() (awstypes.AttributeValue, error)
 		s = "5"
 	case RulePolicyAllowlistTransitive:
 		s = "6"
+	case RulePolicyCEL:
+		s = "7"
+	case RulePolicySilentGUIBlocklist:
+		s = "8"
+	case RulePolicySilentTTYBlocklist:
+		s = "9"
 	default:
 		return nil, fmt.Errorf("unknown policy value %q", p)
 	}
@@ -121,6 +147,12 @@ func (p *Policy) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue) err
 		*p = RulePolicyAllowlistCompiler
 	case "6":
 		*p = RulePolicyAllowlistTransitive
+	case "7":
+		*p = RulePolicyCEL
+	case "8":
+		*p = RulePolicySilentGUIBlocklist
+	case "9":
+		*p = RulePolicySilentTTYBlocklist
 	default:
 		return fmt.Errorf("unknown policy value %q", t)
 	}

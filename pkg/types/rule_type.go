@@ -18,8 +18,8 @@ const (
 )
 
 const (
-	// 	Most Specific                                  Least Specific
-	// Binary   -->   Signing ID   -->   Certificate   -->   Team ID
+	// 	Most Specific                                               Least Specific
+	// CDHash   -->   Binary   -->   Signing ID   -->   Certificate   -->   Team ID
 
 	// Binary rules use the SHA-256 hash of the entire binary as an identifier.
 	RuleTypeBinary RuleType = iota + 1
@@ -40,6 +40,10 @@ const (
 	// This is distinct from Certificates, as a single developer account can and frequently will request/rotate between multiple different signing certificates and entitlements.
 	// This is an even more powerful rule with broader reach than individual certificate rules.
 	RuleTypeTeamID
+
+	// CDHash rules identify a binary by the code directory hash (CDHash) of its code signature, 40 lowercase hex characters.
+	// They only match properly signed binaries and take precedence over binary rules.
+	RuleTypeCDHash
 )
 
 // UnmarshalText for JSON marshalling interface
@@ -53,6 +57,8 @@ func (r *RuleType) UnmarshalText(text []byte) error {
 		*r = RuleTypeSigningID
 	case "TEAMID":
 		*r = RuleTypeTeamID
+	case "CDHASH":
+		*r = RuleTypeCDHash
 	default:
 		return fmt.Errorf("unknown rule_type value %q", t)
 	}
@@ -70,6 +76,8 @@ func (r RuleType) MarshalText() ([]byte, error) {
 		return []byte("SIGNINGID"), nil
 	case RuleTypeTeamID:
 		return []byte("TEAMID"), nil
+	case RuleTypeCDHash:
+		return []byte("CDHASH"), nil
 	default:
 		return nil, fmt.Errorf("unknown rule_type %d", r)
 	}
@@ -87,6 +95,8 @@ func (r RuleType) MarshalDynamoDBAttributeValue() (awstypes.AttributeValue, erro
 		s = "3"
 	case RuleTypeTeamID:
 		s = "4"
+	case RuleTypeCDHash:
+		s = "5"
 	default:
 		return nil, fmt.Errorf("unknown rule_type value %q", r)
 	}
@@ -118,6 +128,10 @@ func (r *RuleType) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue) e
 		fallthrough
 	case "TEAMID":
 		*r = RuleTypeTeamID
+	case "5":
+		fallthrough
+	case "CDHASH":
+		*r = RuleTypeCDHash
 	default:
 		return fmt.Errorf("unknown rule_type value %q", t)
 	}
