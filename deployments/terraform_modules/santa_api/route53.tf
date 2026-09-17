@@ -59,6 +59,16 @@ resource "aws_api_gateway_domain_name" "api_custom_domain" {
   endpoint_configuration {
     types = ["REGIONAL"]
   }
+
+  # Optional mutual TLS: clients must present a certificate issued by a CA in the truststore. Santa selects its client
+  # certificate with ClientAuthCertificateIssuerCN (or ClientAuthCertificateCN / ClientAuthCertificateFile).
+  dynamic "mutual_tls_authentication" {
+    for_each = local.mtls_enabled ? [1] : []
+    content {
+      truststore_uri     = var.mtls_truststore_uri
+      truststore_version = var.mtls_truststore_version == "" ? null : var.mtls_truststore_version
+    }
+  }
 }
 
 # Example DNS record using Route53.

@@ -29,16 +29,17 @@ then
 fi
 
 # Now create the directory and stuff
-mkdir $NEW_ENV_DIR
-cd $NEW_ENV_DIR
+mkdir "$NEW_ENV_DIR"
+cd "$NEW_ENV_DIR"
 
 # Create a .gitignore file which just ignores this current directory
 echo "*" >> .gitignore
 
-ln -s ../../terraform_modules/default_main.tf ./main.tf
-ln -s ../../terraform_modules/default_variables.tf ./variables.tf
-
-cp $EXAMPLE_ENV_DIR/_backend.tf ./
-cp $EXAMPLE_ENV_DIR/_outputs.tf ./
-cp $EXAMPLE_ENV_DIR/config.auto.tfvars.json ./
-cp $EXAMPLE_ENV_DIR/versions.tf ./
+# Environments have the same layout as the example environment. main.tf sources the local modules through
+# ../../terraform_modules/santa_api, so the new environment deploys the code in this checkout.
+cp "$EXAMPLE_ENV_DIR/main.tf" ./
+cp "$EXAMPLE_ENV_DIR/_variables.tf" ./
+cp "$EXAMPLE_ENV_DIR/_backend.tf" ./
+cp "$EXAMPLE_ENV_DIR/_outputs.tf" ./
+cp "$EXAMPLE_ENV_DIR/config.auto.tfvars.json" ./
+cp "$EXAMPLE_ENV_DIR/versions.tf" ./
