@@ -1,19 +1,25 @@
 # System Risks and Security
 
 ## Unauthorized Clients
-API Gateway is publicly reachable and implements no authorization by default.
+API Gateway is publicly reachable, but every request must carry a bearer token (`Authorization: Bearer <token>`), which
+Santa sends through `SyncExtraHeaders`. A Lambda authorizer compares the token's SHA-256 digest in constant time with
+the digests in `sync_token_sha256` and denies everything when none are configured. Sync routes additionally require a
+UUID machine ID. See [configuring Santa](configuring-santa.md).
 
-Until a more robust authorization plane can be implemented externally to Santa, like enforcement of client-certificates, Rudolph API server is globally available to any resource on the internet.
+Remaining risks:
+ - The token is shared by the fleet. Anyone who extracts it from a host or a configuration profile can, like any host,
+   download rules and configuration, upload events, and sync as any machine ID. Rotate the token when it may have leaked
+   (two digests can be valid at once).
+ - The authorizer's decision is cached per token for `authorizer_result_ttl_in_seconds` (default 5 minutes) and covers
+   all sync routes, so a removed token keeps working for up to that long, and machine ID validation within that window
+   is done by the handlers rather than the authorizer.
+ - The token is visible to anyone with access to the Mac's managed preferences.
 
-Rudolph's API allows external resources to:
- - Upload OS data
- - Download sensor configuration
- - Upload logs
- - Download rules
+For stronger client authentication, enable mutual TLS on the custom domain (`mtls_truststore_uri`) so only hosts with
+a certificate from your CA can connect at all. Enabling mTLS disables the default `execute-api` endpoint, which would
+otherwise bypass it.
 
-The public API in no way allows users to modify rules or sensor configurations. The most concerning case is the
-unauthorized downloading of rules in your system. Depending on your team's security posture, this may be
-considered "within acceptable risks".
+The public API in no way allows clients to modify global rules or configurations.
 
 
 ## Trusting the Wrong Server

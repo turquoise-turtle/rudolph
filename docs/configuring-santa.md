@@ -1,5 +1,8 @@
 # Deploying Santa Agents
-For reference, it's recommended to read over how to [configure Santa](https://santa.dev/deployment/configuration.html).
+For reference, it's recommended to read over how to [configure Santa](https://northpole.dev/configuration/keys/).
+
+Rudolph requires **Santa 2026.8 or newer** on every host. Older clients treat the empty path regexes Rudolph sends
+as match-everything regexes, and cannot authenticate with the settings described below.
 
 Provided here are some accelerated instructions.
 
@@ -23,6 +26,77 @@ The most important parameter to consider is the `SyncBaseURL`. The value here mu
 that is output by your `make deploy` command. This will instruct the Santa sensor to treat your Rudolph sync server
 as its authority.
 
+Santa 2026.8 reads its managed preferences from the `com.northpolesec.santa` domain.
+
+### `SyncExtraHeaders` (required): the sync token
+Rudolph only answers clients that send a bearer token. Santa adds it to every sync request through the
+`SyncExtraHeaders` dictionary:
+
+```xml
+<key>SyncExtraHeaders</key>
+<dict>
+    <key>Authorization</key>
+    <string>Bearer REPLACE-WITH-YOUR-SYNC-TOKEN</string>
+</dict>
+```
+
+Generate a high-entropy token once, and store it in your MDM or secrets manager:
+
+```
+TOKEN="$(openssl rand -base64 32)"
+```
+
+Rudolph never stores the token itself. Deploy its SHA-256 digest instead, via `sync_token_sha256` in your environment's
+`config.auto.tfvars.json`:
+
+```
+printf '%s' "$TOKEN" | shasum -a 256 | cut -d ' ' -f 1
+```
+
+```json
+"sync_token_sha256": ["3f0c...64 hex characters...9a1b"]
+```
+
+Hash exactly the characters that follow `Bearer ` in the header (use `printf '%s'`, not `echo`, so no newline is
+hashed). The authorizer denies every request when no digest is configured, when the header is missing, or when the token
+does not match.
+
+Anyone holding the token can sync as any machine ID, so treat it like a password: deliver it only through configuration
+profiles, and rotate it when it leaks.
+
+#### Rotating the token
+1. Generate a new token and add its digest next to the old one, then deploy:
+   `"sync_token_sha256": ["<old digest>", "<new digest>"]`.
+2. Roll out the configuration profile with the new token and wait until every host has received it.
+3. Remove the old digest and deploy again.
+
+API Gateway caches the authorizer's decision per token for `authorizer_result_ttl_in_seconds` (default 300), so a
+removed token can keep working for up to that long.
+
+### Client certificates (optional mTLS)
+For a stronger guarantee that only managed hosts reach Rudolph, require client certificates on the custom domain:
+
+1. Upload a PEM bundle of the CA certificates that issue your hosts' client certificates (for example the CA of your MDM
+   SCEP/ACME payload) to S3, and set `mtls_truststore_uri` (e.g. `s3://my-bucket/rudolph/truststore.pem`) and, if the
+   bucket is versioned, `mtls_truststore_version` in `config.auto.tfvars.json`. Update the version to roll out a new
+   truststore.
+2. Deploy. When mTLS is enabled, the default `execute-api` endpoint is disabled, so hosts must use the `sync_base_url`
+   custom domain.
+3. Tell Santa which keychain identity to present. `ClientAuthCertificateIssuerCN` is usually the easiest, since it
+   matches any certificate issued by your CA:
+
+```xml
+<key>ClientAuthCertificateIssuerCN</key>
+<string>Acme Device CA</string>
+```
+
+Alternatively use `ClientAuthCertificateCN` (the certificate's common name) or `ClientAuthCertificateFile` plus
+`ClientAuthCertificatePassword` (a PKCS#12 file on disk). mTLS is in addition to the bearer token, not a replacement.
+
+### `SyncClientContentEncoding` and `SyncEnableProtoTransfer`
+Leave `SyncClientContentEncoding` unset: Santa's default (`deflate`) is supported, as are `gzip` and `none`.
+Leave `SyncEnableProtoTransfer` unset (off); Rudolph speaks the JSON sync protocol.
+
 ### `MachineIDPlist` and `MachineIDKey`
 Specifies the `.plist` file and relevant XML key located on a MacOS machine's filesystem that specifies the `MachineID`
 of the Santa agent. This `MachineID` is used to uniquely identify the MacOS machine and all rules, configurations, and
@@ -38,11 +112,11 @@ Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or other
 [configs/com.google.santa.machine-mapping.plist](/configs/com.google.santa.machine-mapping.plist).
 
 We **_highly recommend_** using **UPPER-CASE-HEXADECIMAL-UUID-WITH-SPACES** (e.g. `AAAABBBB-CCCC-DDDD-EEEE-123456780000`)
-for the `MachineID`.
+for the `MachineID`. The `MachineID` must be a UUID: the API rejects sync requests for any other machine ID.
 
 
 ## Installation
-Grab the installation `.dmg` over from https://github.com/google/santa/releases and install it.
+Grab the installation `.dmg` (2026.8 or newer) from https://github.com/northpolesec/santa/releases and install it.
 
 
 ## Verify it Works
@@ -59,6 +133,9 @@ If you receive some messages like:
 > Sync completed successfully
 
 Then you should be good to go.
+
+An HTTP 401 means the `Authorization` header is missing or its token does not match a configured digest. With mTLS
+enabled, a TLS handshake failure means Santa did not find or present a client certificate the truststore accepts.
 
 
 ## Other Miscellaneous
