@@ -3,13 +3,20 @@
 #
 
 locals {
-  handler = "bootstrap"
-  runtime = "provided.al2"
+  handler       = "bootstrap"
+  runtime       = "provided.al2"
+  function_name = "${var.prefix}_rudolph_${var.endpoint}"
 }
 
+# Managed explicitly so logs expire. Lambda would otherwise create this group itself, without retention.
+# Existing deployments must import the group Lambda already created, see docs/deploy.md.
+resource "aws_cloudwatch_log_group" "api_handler" {
+  name              = "/aws/lambda/${local.function_name}"
+  retention_in_days = var.log_retention_in_days
+}
 
 resource "aws_lambda_function" "api_handler" {
-  function_name = "${var.prefix}_rudolph_${var.endpoint}"
+  function_name = local.function_name
   role          = aws_iam_role.api_handler_role.arn
   handler       = local.handler
   runtime       = local.runtime
@@ -37,6 +44,9 @@ resource "aws_lambda_function" "api_handler" {
       variables = var.env_vars
     }
   }
+
+  # Create the log group first so Lambda never creates one without retention
+  depends_on = [aws_cloudwatch_log_group.api_handler]
 }
 
 resource "aws_lambda_alias" "api_handler" {
