@@ -1,6 +1,8 @@
 package ruledownload
 
 import (
+	"log"
+
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 )
@@ -17,26 +19,33 @@ type RuledownloadResponse struct {
 // It duck-types to/from the SantaRule struct type
 // Documentation: https://santa.dev/development/sync-protocol.html#rules-objects
 type RuledownloadRule struct {
-	RuleType      types.RuleType `json:"rule_type"`
-	Policy        types.Policy   `json:"policy"`
-	SHA256        string         `json:"sha256,omitempty"`
-	Identifier    string         `json:"identifier"`
-	CustomMessage string         `json:"custom_msg,omitempty"`
+	RuleType               types.RuleType `json:"rule_type"`
+	Policy                 types.Policy   `json:"policy"`
+	SHA256                 string         `json:"sha256,omitempty"`
+	Identifier             string         `json:"identifier"`
+	CustomMessage          string         `json:"custom_msg,omitempty"`
+	CustomURL              string         `json:"custom_url,omitempty"`
+	NotificationAppName    string         `json:"notification_app_name,omitempty"`
+	CELExpr                string         `json:"cel_expr,omitempty"`
+	EventDetailButtonLabel string         `json:"event_detail_button_label,omitempty"`
 }
 
 // DDBRulesToResponseRules type converts the DynamoDB representation of a rule to an API
 // representation of a Rule, which is returned in an API response.
+// Rules with the ALLOWLIST_TRANSITIVE policy (only possible in rows written by older versions of Rudolph) are
+// omitted: it is not a policy of the Santa sync protocol and Santa would silently ignore them.
 func DDBRulesToResponseRules(rulesList []rules.SantaRule) (responseRules []RuledownloadRule) {
-	responseRules = make([]RuledownloadRule, len(rulesList))
-
-	for i, rule := range rulesList {
-		responseRules[i] = RuledownloadRule(rule)
-		// responseRules[i] = RuledownloadRule{
-		// 	RuleType:      rule.RuleType,
-		//     Policy:        rule.Policy,
-		//     Identifier:    rule.Identifier,
-		//     CustomMessage: rule.CustomMessage,
-		// }
+	responseRules = make([]RuledownloadRule, 0, len(rulesList))
+	skipped := 0
+	for _, rule := range rulesList {
+		if rule.Policy == types.RulePolicyAllowlistTransitive {
+			skipped++
+			continue
+		}
+		responseRules = append(responseRules, RuledownloadRule(rule))
+	}
+	if skipped > 0 {
+		log.Printf("  omitted %d rule(s) with the non-protocol ALLOWLIST_TRANSITIVE policy", skipped)
 	}
 	return
 }

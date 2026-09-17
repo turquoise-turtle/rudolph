@@ -22,6 +22,8 @@ func RuleSortKeyFromTypeIdentifier(identifier string, ruleType types.RuleType) s
 		return fmt.Sprintf("%s%s", teamIDRuleSKPrefix, identifier)
 	case types.RuleTypeSigningID:
 		return fmt.Sprintf("%s%s", signingIDRuleSKPrefix, identifier)
+	case types.RuleTypeCDHash:
+		return fmt.Sprintf("%s%s", cdhashRuleSKPrefix, identifier)
 	default:
 		log.Printf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
 		return ""

@@ -1,8 +1,9 @@
 package feedrules
 
 import (
+	"errors"
+
 	"github.com/airbnb/rudolph/pkg/model/rules"
-	"github.com/airbnb/rudolph/pkg/types"
 )
 
 func (f *FeedRuleRow) feedRuleRowValidation() (bool, error) {
@@ -18,19 +19,15 @@ func (f *FeedRuleRow) feedRuleRowValidation() (bool, error) {
 		return false, err
 	}
 
-	var validRuleIdentifier bool
-	switch f.RuleType {
-	case types.RuleTypeBinary:
-		fallthrough
-	case types.RuleTypeCertificate:
-		validRuleIdentifier = rules.ValidSha256(f.Identifier)
-	case types.RuleTypeTeamID:
-		validRuleIdentifier = rules.ValidTeamID(f.Identifier)
-	case types.RuleTypeSigningID:
-		validRuleIdentifier = rules.ValidSigningID(f.Identifier)
+	// Policy and the fields it depends on
+	// Legacy ALLOWLIST_TRANSITIVE rules must stay removable: their removal is built from the stored rule before its
+	// policy is switched to REMOVE. New rules with that policy are rejected on creation and never sent to hosts.
+	err = rules.ValidatePolicy(f.SantaRule)
+	if err != nil && !errors.Is(err, rules.ErrTransitivePolicy) {
+		return false, err
 	}
 
-	if !validRuleIdentifier {
+	if !rules.ValidIdentifier(f.RuleType, f.Identifier) {
 		return false, nil
 	}
 
