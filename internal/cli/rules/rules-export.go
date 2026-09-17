@@ -10,6 +10,7 @@ import (
 	"github.com/airbnb/rudolph/internal/csv"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	rudolphrules "github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 )
 
@@ -55,11 +56,26 @@ func runExport(
 }
 
 type fileRule struct {
-	RuleType      types.RuleType `json:"type"`
-	Policy        types.Policy   `json:"policy"`
-	Identifier    string         `json:"identifier"`
-	CustomMessage string         `json:"custom_msg,omitempty"`
-	Description   string         `json:"description"`
+	RuleType               types.RuleType `json:"type"`
+	Policy                 types.Policy   `json:"policy"`
+	Identifier             string         `json:"identifier"`
+	CustomMessage          string         `json:"custom_msg,omitempty"`
+	CustomURL              string         `json:"custom_url,omitempty"`
+	EventDetailButtonLabel string         `json:"event_detail_button_label,omitempty"`
+	NotificationAppName    string         `json:"notification_app_name,omitempty"`
+	CELExpr                string         `json:"cel_expr,omitempty"`
+	Description            string         `json:"description"`
+}
+
+// options returns the optional rule fields of a file rule
+func (r fileRule) options() []rudolphrules.RuleOption {
+	return []rudolphrules.RuleOption{
+		rudolphrules.WithCustomMessage(r.CustomMessage),
+		rudolphrules.WithCustomURL(r.CustomURL),
+		rudolphrules.WithEventDetailButtonLabel(r.EventDetailButtonLabel),
+		rudolphrules.WithNotificationAppName(r.NotificationAppName),
+		rudolphrules.WithCELExpr(r.CELExpr),
+	}
 }
 
 func runJsonExport(client dynamodb.QueryAPI, filename string) (err error) {
@@ -67,11 +83,15 @@ func runJsonExport(client dynamodb.QueryAPI, filename string) (err error) {
 	fmt.Println("Querying rules from DynamoDB...")
 	total, err := getRules(client, func(rule globalrules.GlobalRuleRow) (err error) {
 		jsonRules = append(jsonRules, fileRule{
-			Identifier:    rule.Identifier,
-			RuleType:      rule.RuleType,
-			Policy:        rule.Policy,
-			CustomMessage: rule.CustomMessage,
-			Description:   rule.Description,
+			Identifier:             rule.Identifier,
+			RuleType:               rule.RuleType,
+			Policy:                 rule.Policy,
+			CustomMessage:          rule.CustomMessage,
+			CustomURL:              rule.CustomURL,
+			EventDetailButtonLabel: rule.EventDetailButtonLabel,
+			NotificationAppName:    rule.NotificationAppName,
+			CELExpr:                rule.CELExpr,
+			Description:            rule.Description,
 		})
 		return
 	})
@@ -99,11 +119,16 @@ func runCsvExport(
 ) (err error) {
 	csvRules := make(chan []string)
 
+	// Same column names as read by the import command
 	header := []string{
-		"sha256",
+		"identifier",
 		"type",
 		"policy",
 		"custom_msg",
+		"custom_url",
+		"event_detail_button_label",
+		"notification_app_name",
+		"cel_expr",
 		"description",
 	}
 
@@ -128,6 +153,10 @@ func runCsvExport(
 			string(ruleType),
 			string(policy),
 			rule.CustomMessage,
+			rule.CustomURL,
+			rule.EventDetailButtonLabel,
+			rule.NotificationAppName,
+			rule.CELExpr,
 			rule.Description,
 		}
 		if err != nil {

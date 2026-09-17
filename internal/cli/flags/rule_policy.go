@@ -17,6 +17,13 @@ const (
 	silentBlocklist         = "silent_blocklist"
 	silentBlocklistShort    = "silent_block"
 	silentBlocklistShortAlt = "silent-block"
+	silentGUIBlocklist      = "silent_gui_blocklist"
+	silentGUIBlocklistShort = "silent_gui_block"
+	silentGUIBlocklistAlt   = "silent-gui-block"
+	silentTTYBlocklist      = "silent_tty_blocklist"
+	silentTTYBlocklistShort = "silent_tty_block"
+	silentTTYBlocklistAlt   = "silent-tty-block"
+	cel                     = "cel"
 	remove                  = "remove"
 	removeShort             = "delete"
 )
@@ -32,7 +39,7 @@ type RuleUpdateFlags struct {
 func (r *RuleUpdateFlags) AddRuleUpdateFlags(cmd *cobra.Command) {
 
 	// rule-policy is to specify the policy for edit commands
-	cmd.Flags().VarP(&rulePolicyArg, "rule-policy", "p", `type of rule being applied. valid options are: "allowlist", "blocklist", "silent_blocklist" or "remove"`)
+	cmd.Flags().VarP(&rulePolicyArg, "rule-policy", "p", `type of rule being applied. valid options are: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist" or "remove"`)
 	_ = cmd.MarkFlagRequired("rule-policy")
 
 	r.RulePolicy = &rulePolicyArg
@@ -64,10 +71,16 @@ func (i *RulePolicy) Set(s string) error {
 		*i = RulePolicy(types.Blocklist)
 	case silentBlocklist, silentBlocklistShort, silentBlocklistShortAlt:
 		*i = RulePolicy(types.SilentBlocklist)
+	case silentGUIBlocklist, silentGUIBlocklistShort, silentGUIBlocklistAlt:
+		*i = RulePolicy(types.RulePolicySilentGUIBlocklist)
+	case silentTTYBlocklist, silentTTYBlocklistShort, silentTTYBlocklistAlt:
+		*i = RulePolicy(types.RulePolicySilentTTYBlocklist)
+	case cel:
+		*i = RulePolicy(types.RulePolicyCEL)
 	case remove, removeShort:
 		*i = RulePolicy(types.Remove)
 	default:
-		return fmt.Errorf(`invalid rule policy; must be "allowlist", "blocklist", "silent_blocklist" or "remove"`)
+		return fmt.Errorf(`invalid rule policy; must be "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist", "cel" or "remove"`)
 	}
 	return nil
 }
@@ -84,7 +97,13 @@ func (i *RulePolicy) String() string {
 	case types.Blocklist:
 		return blocklist
 	case types.SilentBlocklist:
-		return blocklist
+		return silentBlocklist
+	case types.RulePolicySilentGUIBlocklist:
+		return silentGUIBlocklist
+	case types.RulePolicySilentTTYBlocklist:
+		return silentTTYBlocklist
+	case types.RulePolicyCEL:
+		return cel
 	case types.Remove:
 		return remove
 	}

@@ -21,15 +21,23 @@ type MachineRuleRow struct {
 }
 
 // Fragments
+// The rule fields are not omitempty: the machine rule takes exactly the fields of the rule it falls back to
 type ruleRemovalRequest struct {
-	Policy           types.Policy `dynamodbav:"Policy"`
-	DeleteOnNextSync bool         `dynamodbav:"DeleteOnNextSync"`
+	Policy                 types.Policy `dynamodbav:"Policy"`
+	DeleteOnNextSync       bool         `dynamodbav:"DeleteOnNextSync"`
+	CustomMessage          string       `dynamodbav:"CustomMessage"`
+	CustomURL              string       `dynamodbav:"CustomURL"`
+	NotificationAppName    string       `dynamodbav:"NotificationAppName"`
+	CELExpr                string       `dynamodbav:"CELExpr"`
+	EventDetailButtonLabel string       `dynamodbav:"EventDetailButtonLabel"`
 }
 
 type updateRulePolicyRequest struct {
-	Policy       types.Policy `dynamodbav:"Policy,omitempty"`
-	ExpiresAfter int64        `dynamodbav:"ExpiresAfter,omitempty"`
-	Description  string       `dynamodbav:"Description,omitempty"`
+	Policy types.Policy `dynamodbav:"Policy,omitempty"`
+	// Not omitempty, so that a policy update clears the expression (only CEL rules may have one)
+	CELExpr      string `dynamodbav:"CELExpr"`
+	ExpiresAfter int64  `dynamodbav:"ExpiresAfter,omitempty"`
+	Description  string `dynamodbav:"Description,omitempty"`
 }
 
 func machineRulePK(machineID string) string {

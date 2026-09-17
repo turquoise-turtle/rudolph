@@ -11,6 +11,7 @@ import (
 func init() {
 	tf := flags.TargetFlags{}
 	rf := flags.RuleInfoFlags{}
+	of := flags.RuleOptionFlags{}
 
 	var ruleAllowCmd = &cobra.Command{
 		Use:   "allow [-f <file-path>|-i <identifier/sha256>] -t <rule-type> [-m <machine-id>|--global]",
@@ -24,12 +25,13 @@ func init() {
 			dynamodbClient := dynamodb.GetClient(table, region)
 			time := clock.ConcreteTimeProvider{}
 
-			return applyPolicyForPath(time, dynamodbClient, types.Allowlist, tf, rf)
+			return applyPolicyForPath(time, dynamodbClient, types.Allowlist, tf, rf, of.Options()...)
 		},
 	}
 
 	tf.AddTargetFlags(ruleAllowCmd)
 	rf.AddRuleInfoFlags(ruleAllowCmd)
+	of.AddRuleOptionFlags(ruleAllowCmd)
 
 	RuleCmd.AddCommand(ruleAllowCmd)
 }

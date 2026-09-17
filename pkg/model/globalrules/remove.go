@@ -6,6 +6,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
+	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 	awsdynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
@@ -37,8 +38,17 @@ func RemoveGlobalRule(
 
 	// In order to get non-clean sync clients to pick up the new rule diff, add it to the feed as a "remove"
 	// Subsequent non-clean syncs will use the feed cursor to cross the date
-	feedrule := feedrules.ConstructFeedRuleFromBaseRule(timeProvider, rule.SantaRule)
-	feedrule.Policy = types.Remove
+	// Only the rule's type and identifier are needed to remove it; other stored fields (e.g. a leftover CEL expression
+	// or a legacy ALLOWLIST_TRANSITIVE policy) must not make the removal invalid.
+	feedrule, err := feedrules.ConstructFeedRuleFromBaseRule(timeProvider, rules.SantaRule{
+		RuleType:   rule.RuleType,
+		Policy:     types.RulePolicyRemove,
+		SHA256:     rule.SHA256,
+		Identifier: rule.Identifier,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create the removal of rule with sk (%s) for the feed: %w", ruleSortKey, err)
+	}
 	txnPutItem, err := transacter.CreateTransactPutItem(feedrule)
 	if err != nil {
 		return fmt.Errorf("failed to create txn item to add removal to feed: %w", err)

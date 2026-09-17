@@ -2,6 +2,7 @@ package machinerules
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -9,6 +10,8 @@ import (
 	"github.com/airbnb/rudolph/pkg/types"
 )
 
+// AddNewMachineRule creates a rule for a single machine.
+// Optional rule fields (e.g. custom message, CEL expression) are set with rules.RuleOption values.
 func AddNewMachineRule(
 	client dynamodb.PutItemAPI,
 	machineID string,
@@ -17,13 +20,19 @@ func AddNewMachineRule(
 	policy types.Policy,
 	description string,
 	expires time.Time,
+	options ...rules.RuleOption,
 ) error {
+	santaRule := rules.SantaRule{
+		RuleType:   ruleType,
+		Policy:     policy,
+		Identifier: identifier,
+	}
+	santaRule.ApplyOptions(options...)
+
 	// Input Validation
 	isValid, err := ruleValidation(
 		machineID,
-		identifier,
-		ruleType,
-		policy,
+		santaRule,
 		description,
 		expires,
 	)
@@ -39,12 +48,8 @@ func AddNewMachineRule(
 			PartitionKey: machineRulePK(machineID),
 			SortKey:      machineRuleSK(identifier, ruleType),
 		},
-		Description: description,
-		SantaRule: rules.SantaRule{
-			RuleType:   ruleType,
-			Policy:     policy,
-			Identifier: identifier,
-		},
+		Description:  description,
+		SantaRule:    santaRule,
 		ExpiresAfter: expires.Unix(),
 	}
 
@@ -56,10 +61,8 @@ func AddNewMachineRule(
 }
 
 func ruleValidation(
-	machineID,
-	identifier string,
-	ruleType types.RuleType,
-	policy types.Policy,
+	machineID string,
+	rule rules.SantaRule,
 	description string,
 	expires time.Time,
 ) (bool, error) {
@@ -70,15 +73,26 @@ func ruleValidation(
 	}
 
 	// RuleType validation
-	_, err = ruleType.MarshalText()
+	ruleTypeName, err := rule.RuleType.MarshalText()
 	if err != nil {
 		return false, err
 	}
 
 	// RulePolicy validation
-	_, err = policy.MarshalText()
+	_, err = rule.Policy.MarshalText()
 	if err != nil {
 		return false, err
+	}
+
+	// Policy and the fields it depends on
+	err = rules.ValidatePolicy(rule)
+	if err != nil {
+		return false, err
+	}
+
+	// Identifier validation
+	if !rules.ValidIdentifier(rule.RuleType, rule.Identifier) {
+		return false, fmt.Errorf("invalid identifier %q for rule type %s", rule.Identifier, ruleTypeName)
 	}
 
 	// Expires validation - must be a positive time period
