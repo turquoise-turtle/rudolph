@@ -7,11 +7,10 @@ import (
 	"github.com/airbnb/rudolph/pkg/firehose"
 )
 
-func sendToFirehose(firehoseClient firehose.FirehoseClient, machineID string, events []EventUploadEvent) error {
-	var forwardedEvents = convertRequestEventsToUploadEvents(machineID, events)
+func sendToFirehose(firehoseClient firehose.FirehoseClient, machineID string, forwardedEvents []interface{}) error {
 	err := firehoseClient.Send(machineID, firehose.FirehoseEvents{Items: forwardedEvents})
 	if err != nil {
-		log.Printf("%s\n%s", err.Error(), "upload to firehose was not successful")
+		log.Printf("upload to firehose was not successful: %s", err.Error())
 		return fmt.Errorf("failed to events to AWS Firehose: %w", err)
 	}
 

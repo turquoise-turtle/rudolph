@@ -7,8 +7,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/kinesis"
 )
 
-func sendToKinesis(kinesisClient kinesis.KinesisClient, machineID string, events []EventUploadEvent) error {
-	var forwardedEvents = convertRequestEventsToUploadEvents(machineID, events)
+func sendToKinesis(kinesisClient kinesis.KinesisClient, machineID string, forwardedEvents []interface{}) error {
 	err := kinesisClient.Send(machineID, kinesis.KinesisEvents{Items: forwardedEvents})
 	if err != nil {
 		log.Printf("Kinesis Failed: %s", err)

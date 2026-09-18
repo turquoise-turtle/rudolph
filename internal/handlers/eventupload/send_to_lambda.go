@@ -14,9 +14,8 @@ func sendToLambda(
 	ctx context.Context,
 	lambdaClient lambda.LambdaClient,
 	machineID string,
-	events []EventUploadEvent,
+	forwardedEvents []interface{},
 ) error {
-	var forwardedEvents = convertRequestEventsToUploadEvents(machineID, events)
 	err := lambdaClient.Send(
 		ctx,
 		machineID,
