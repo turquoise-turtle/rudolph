@@ -31,6 +31,9 @@ type SyncState struct {
 	RuledownloadStartedAt  string         `dynamodbav:"RuledownloadStartedAt"`
 	RuledownloadFinishedAt string         `dynamodbav:"RuledownloadFinishedAt"`
 	PostflightAt           string         `dynamodbav:"PostflightAt"`
+	LastSyncType           string         `dynamodbav:"LastSyncType,omitempty"`
+	RulesReceived          int            `dynamodbav:"RulesReceived"`
+	RulesProcessed         int            `dynamodbav:"RulesProcessed"`
 	ExpiresAfter           int64          `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType               types.DataType `dynamodbav:"DataType"`
 }
@@ -40,6 +43,15 @@ type UpdatePostflightItem struct {
 	PostflightAt   string `dynamodbav:"PostflightAt"`
 	FeedSyncCursor string `dynamodbav:"FeedSyncCursor"`
 	ExpiresAfter   int64  `dynamodbav:"ExpiresAfter,omitempty"`
+}
+
+// UpdatePostflightOutcomeItem is UpdatePostflightItem plus what the client reported about the sync it just
+// finished: the sync type it actually performed and how many rules it received and applied.
+type UpdatePostflightOutcomeItem struct {
+	UpdatePostflightItem
+	LastSyncType   string `dynamodbav:"LastSyncType"`
+	RulesReceived  int    `dynamodbav:"RulesReceived"`
+	RulesProcessed int    `dynamodbav:"RulesProcessed"`
 }
 type updateRuledownloadAtItem struct {
 	RuledownloadStartedAt string `dynamodbav:"RuledownloadStartedAt"`

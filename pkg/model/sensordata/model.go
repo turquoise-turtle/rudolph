@@ -20,12 +20,17 @@ type SensorData struct {
 	dynamodb.PrimaryKey
 	MachineID            string           `dynamodbav:"MachineID"`
 	SerialNum            string           `dynamodbav:"SerialNum"`
+	Hostname             string           `dynamodbav:"Hostname"`
+	ModelIdentifier      string           `dynamodbav:"ModelIdentifier"`
+	SIPStatus            uint32           `dynamodbav:"SIPStatus"`
 	OSVersion            string           `dynamodbav:"OSVersion"`
 	OSBuild              string           `dynamodbav:"OSBuild"`
 	SantaVersion         string           `dynamodbav:"SantaVersion"`
 	ClientMode           types.ClientMode `dynamodbav:"ClientMode"`
 	RequestCleanSync     bool             `dynamodbav:"RequestCleanSync"`
 	PrimaryUser          string           `dynamodbav:"PrimaryUser"`
+	PrimaryUserGroups    []string         `dynamodbav:"PrimaryUserGroups,omitempty"`
+	RulesHash            string           `dynamodbav:"RulesHash,omitempty"`
 	RuleCount            int              `dynamodbav:"RuleCount"`
 	CertificateRuleCount int              `dynamodbav:"CertificateRuleCount"`
 	BinaryRuleCount      int              `dynamodbav:"BinaryRuleCount"`

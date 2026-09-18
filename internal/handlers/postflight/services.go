@@ -28,6 +28,14 @@ type syncStateUpdater interface {
 	updatePostflightDate(machineID string) error
 }
 
+// syncOutcomeUpdater is the richer form of syncStateUpdater: besides closing out the sync it also stores
+// what the client reported about it. A syncStateUpdater that implements it is preferred, so that the
+// outcome and the postflight timestamps are written to the sync state row in a single update.
+type syncOutcomeUpdater interface {
+	syncStateUpdater
+	updatePostflightOutcome(machineID string, request *PostflightRequest) error
+}
+
 type concreteSyncStateUpdater struct {
 	updater      dynamodb.UpdateItemAPI
 	timeProvider clock.TimeProvider
@@ -35,6 +43,21 @@ type concreteSyncStateUpdater struct {
 
 func (c concreteSyncStateUpdater) updatePostflightDate(machineID string) (err error) {
 	return syncstate.UpdatePostflightDate(c.timeProvider, c.updater, machineID)
+}
+
+func (c concreteSyncStateUpdater) updatePostflightOutcome(machineID string, request *PostflightRequest) (err error) {
+	if request == nil {
+		// A client that sent no postflight body reported no outcome.
+		return c.updatePostflightDate(machineID)
+	}
+	return syncstate.UpdatePostflightOutcome(
+		c.timeProvider,
+		c.updater,
+		machineID,
+		request.SyncType,
+		request.RulesReceived,
+		request.RulesProcessed,
+	)
 }
 
 type staleRuleDestroyer interface {
