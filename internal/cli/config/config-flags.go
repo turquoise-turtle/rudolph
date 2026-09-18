@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 
@@ -82,8 +83,8 @@ type pathRegexFlags struct {
 }
 
 func (f *pathRegexFlags) addFlags(cmd *cobra.Command) {
-	cmd.Flags().StringArrayVarP(&f.blocked, flagBlockedPaths, "b", nil, `A regex of paths to be blocked. Repeat the flag for several regexes (each value is one regex, commas included); a path is blocked if any of them matches. Santa matches regexes from the start of the path`)
-	cmd.Flags().StringArrayVarP(&f.allowed, flagAllowedPaths, "a", nil, `A regex of paths to be allowed. Repeat the flag for several regexes (each value is one regex, commas included); a path is allowed if any of them matches. Santa matches regexes from the start of the path`)
+	cmd.Flags().StringArrayVarP(&f.blocked, flagBlockedPaths, "b", nil, `A regex of paths to be blocked. Repeat the flag for several regexes (each value is one regex, commas included); a path is blocked if any of them matches. Santa matches regexes from the start of the path; wrap a single regex with "|" in a group, e.g. "^(?:a|b)"`)
+	cmd.Flags().StringArrayVarP(&f.allowed, flagAllowedPaths, "a", nil, `A regex of paths to be allowed. Repeat the flag for several regexes (each value is one regex, commas included); a path is allowed if any of them matches. Santa matches regexes from the start of the path; wrap a single regex with "|" in a group, e.g. "^(?:a|b)"`)
 	cmd.Flags().BoolVar(&f.skipValidation, flagSkipRegexValidation, false, `Do not validate path regexes. Validation uses Go's RE2 syntax, but Santa uses ICU regexes, so valid ICU syntax such as lookahead is rejected. Santa silently ignores a regex that is not valid ICU`)
 }
 
@@ -96,6 +97,7 @@ func (f *pathRegexFlags) allowedPathRegex() (string, error) {
 }
 
 func (f *pathRegexFlags) combine(flag string, patterns []string) (string, error) {
+	warnUnanchoredAlternation(os.Stderr, flag, patterns)
 	if f.skipValidation {
 		return combinePathRegexesUnchecked(patterns), nil
 	}
@@ -104,6 +106,82 @@ func (f *pathRegexFlags) combine(flag string, patterns []string) (string, error)
 		return "", fmt.Errorf("--%s: %w (use --%s for ICU-only syntax)", flag, err, flagSkipRegexValidation)
 	}
 	return regex, nil
+}
+
+// warnUnanchoredAlternation warns when a single path regex has a top-level "|". It is sent unchanged, and Santa
+// only prepends "^" to the whole regex, so only its first alternative is anchored to the start of the path.
+// Several regexes are combined into a fully anchored regex, so they need no warning.
+func warnUnanchoredAlternation(w io.Writer, flag string, patterns []string) {
+	var nonEmpty []string
+	for _, pattern := range patterns {
+		if pattern != "" {
+			nonEmpty = append(nonEmpty, pattern)
+		}
+	}
+	if len(nonEmpty) != 1 || !hasTopLevelAlternation(nonEmpty[0]) {
+		return
+	}
+	fmt.Fprintf(w, "Warning: --%s %q has a top-level \"|\": Santa only anchors its first alternative to the start of the path. "+
+		"Wrap it in a group (e.g. \"^(?:a|b)\") or pass each alternative as a separate --%s flag.\n", flag, nonEmpty[0], flag)
+}
+
+// hasTopLevelAlternation reports whether pattern contains a "|" outside of groups, character classes, escapes and
+// \Q...\E quotes
+func hasTopLevelAlternation(pattern string) bool {
+	depth := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			if strings.HasPrefix(pattern[i:], `\Q`) {
+				end := strings.Index(pattern[i+2:], `\E`)
+				if end < 0 {
+					return false
+				}
+				i += 2 + end + 1
+			} else {
+				i++
+			}
+		case '[':
+			i = endOfCharacterClass(pattern, i)
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '|':
+			if depth == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// endOfCharacterClass returns the index of the "]" closing the character class opened at start (or the end of the
+// pattern). A "]" right after "[" or "[^" is a literal, and classes may nest (ICU sets such as [a-z[0-9]]).
+func endOfCharacterClass(pattern string, start int) int {
+	depth := 0
+	for i := start; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			i++
+		case '[':
+			depth++
+			if strings.HasPrefix(pattern[i+1:], "^") {
+				i++
+			}
+			if strings.HasPrefix(pattern[i+1:], "]") {
+				i++
+			}
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(pattern)
 }
 
 // optionalClientMode is a --client-mode flag without a default: it is only applied when given

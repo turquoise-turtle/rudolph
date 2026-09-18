@@ -264,8 +264,9 @@ func touchesUsbMountSettings(configRequest MachineConfigurationUpdateRequest) bo
 // and only if it still does not exist, so concurrent first updates cannot overwrite each other. If the row changed
 // existence in the meantime, the error satisfies dynamodb.IsConditionalCheckFailed.
 func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, exists bool) (updatedConfig *MachineConfiguration, err error) {
-	// if no items have been changed, return the same configuration
-	if len(changes) == 0 {
+	// if no items of an existing row have been changed, return the same configuration. A missing row is always
+	// created, even if it equals the copied settings: it pins them, e.g. to exempt a machine from a later global change.
+	if exists && len(changes) == 0 {
 		updatedConfig = &newConfig
 		return
 	}
