@@ -1,9 +1,9 @@
 package preflight
 
 import (
-	"encoding/json"
 	"net/http"
 
+	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-lambda-go/events"
@@ -16,12 +16,17 @@ func parseRequest(request events.APIGatewayProxyRequest) (parsedRequest *Preflig
 		return
 	}
 
-	if len(request.Body) <= 0 {
+	body, errorResponse, err := apirequest.GetBody(request)
+	if errorResponse != nil || err != nil {
+		return
+	}
+
+	if len(body) <= 0 {
 		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 		return
 	}
 
-	err = json.Unmarshal([]byte(request.Body), &parsedRequest)
+	err = apirequest.UnmarshalSantaJSON(body, &parsedRequest)
 	if err != nil {
 		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 		return
@@ -31,6 +36,10 @@ func parseRequest(request events.APIGatewayProxyRequest) (parsedRequest *Preflig
 }
 
 // PreflightRequest represents sync payload sent to a sync server from a Santa client.
+//
+// Field names follow santa.sync.v1.PreflightRequest (testdata/santa-2026.8/sync_v1.proto); the fields without
+// a `json_name` there (sip_status, rules_hash) are sent lowerCamelCased by Santa and normalized to the
+// spelling below before unmarshalling. See pkg/request.UnmarshalSantaJSON.
 type PreflightRequest struct {
 	OSBuild              string           `json:"os_build"`
 	SantaVersion         string           `json:"santa_version"`
@@ -41,6 +50,7 @@ type PreflightRequest struct {
 	ClientMode           types.ClientMode `json:"client_mode"`
 	SerialNumber         string           `json:"serial_num"`
 	PrimaryUser          string           `json:"primary_user"`
+	PrimaryUserGroups    []string         `json:"primary_user_groups"`
 	CompilerRuleCount    int              `json:"compiler_rule_count"`
 	TransitiveRuleCount  int              `json:"transitive_rule_count"`
 	CDHashRuleCount      int              `json:"cdhash_rule_count"`
@@ -48,4 +58,7 @@ type PreflightRequest struct {
 	SigningIDRuleCount   int              `json:"signingid_rule_count"`
 	RequestCleanSync     bool             `json:"request_clean_sync"`
 	ModelIdentifier      string           `json:"model_identifier"`
+	SIPStatus            uint32           `json:"sip_status"`
+	RulesHash            string           `json:"rules_hash"`
+	PushNotificationSync bool             `json:"push_notification_sync"`
 }

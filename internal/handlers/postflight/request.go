@@ -1,7 +1,6 @@
 package postflight
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 
@@ -23,11 +22,16 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
-	if len(request.Body) > 0 {
+	body, errorResponse, err := apirequest.GetBody(request)
+	if errorResponse != nil || err != nil {
+		return
+	}
+
+	if len(body) > 0 {
 		// Parse the request
-		err = json.Unmarshal([]byte(request.Body), &parsedRequest)
+		err = apirequest.UnmarshalSantaJSON(body, &parsedRequest)
 		if err != nil {
-			log.Printf("%s\n%s", err.Error(), "request body unmarshal was not successful")
+			log.Printf("postflight: request body could not be parsed")
 			errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 			return
 		}
@@ -36,7 +40,13 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 	return
 }
 
+// PostflightRequest is what a Santa client reports about the sync it has just finished.
+//
+// Santa sends sync_type lowerCamelCased ("syncType"), as it has no `json_name` in sync_v1.proto; the body is
+// normalized to the spelling below before unmarshalling. See pkg/request.UnmarshalSantaJSON.
 type PostflightRequest struct {
-	RulesReceived  int `json:"rules_received"`
-	RulesProcessed int `json:"rules_processed"`
+	RulesReceived  int    `json:"rules_received"`
+	RulesProcessed int    `json:"rules_processed"`
+	SyncType       string `json:"sync_type"`
+	RulesHash      string `json:"rules_hash"`
 }

@@ -1,9 +1,9 @@
 package xsrf
 
 import (
-	"log"
 	"net/http"
 
+	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -21,7 +21,17 @@ func (h *PostXSRFHandler) Handles(request events.APIGatewayProxyRequest) bool {
 }
 
 func (h *PostXSRFHandler) Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	log.Printf("XSRFHandler request:\n%+v\n", request)
+	// Like every other sync stage, refuse a machine ID that is not a canonical UUID
+	_, errorResponse, err := apirequest.GetMachineID(request)
+	if errorResponse != nil || err != nil {
+		return errorResponse, err
+	}
+
+	// The body is not used, but a request Rudolph cannot decode (bad base64 or compression) is still a bad
+	// request rather than an "ok".
+	if _, errorResponse, err = apirequest.GetBody(request); errorResponse != nil || err != nil {
+		return errorResponse, err
+	}
 
 	// FIXME (derek.wang) just returning stub for now
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})

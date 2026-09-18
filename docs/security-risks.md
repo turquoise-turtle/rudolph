@@ -15,8 +15,12 @@ Remaining risks:
  - Machine ID validation relies on the handlers. The authorizer rejects a non-UUID machine ID only for the request
    that fills the cache, and only when it can deny that exact request: a machine ID containing IAM wildcard characters
    (`*`, `?`) gets the normal Allow policy, because any denial would match (or, once cached, block) every host sharing
-   the token. Every sync handler validates the machine ID as a UUID and rejects such requests (UUID validation in all
-   handlers is added together with this authorizer; ruledownload lacked it before, see S3 in the audit).
+   the token. Every sync handler (preflight, eventupload, ruledownload, postflight and xsrf) therefore validates the
+   machine ID before it touches storage and answers `400` otherwise. Only the canonical 36 character UUID form
+   (`8-4-4-4-12` hex) is accepted, in either case; the spellings a UUID parser would normally also take - braces, a
+   `urn:uuid:` prefix, or 32 hex digits without dashes - are refused, so one Mac cannot be addressed under several
+   keys. The case of an ID is never rewritten, so a host keeps the identity it already syncs under, and a fleet that
+   reports the same UUID in two different cases stores two machines.
  - The token is visible to anyone with access to the Mac's managed preferences.
  - **Tokens in logs of older builds.** Older builds of the API router, eventupload and xsrf handlers log the full
    request, including its headers, so the `Authorization` token would be written to CloudWatch Logs. Do not issue a
