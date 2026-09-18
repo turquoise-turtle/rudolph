@@ -3,7 +3,6 @@ package feedrules
 import (
 	"errors"
 	"fmt"
-	"log"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -66,7 +65,6 @@ func GetPaginatedFeedRules(
 			err = fmt.Errorf("failed to unmarshall LastEvaluatedKey: %w", err)
 			return
 		}
-		log.Printf("    lastEvaluatedKey: %+v", lastEvaluatedKey)
 	}
 
 	err = attributevalue.UnmarshalListOfMaps(result.Items, &items)

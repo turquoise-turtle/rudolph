@@ -44,12 +44,10 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 	// Create a sensor sync object to log the FinishedAt time of the rule download process
 	err = syncstate.UpdateRuledownloadFinishedAt(d.timer, d.updater, machineID)
 	if err != nil {
-		log.Printf("Encountered error UpdateItem:")
-		log.Print(err.Error())
+		log.Printf("Encountered error updating RuledownloadFinishedAt: %v", err)
 
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
-	log.Printf("Updated RuledownloadFinishedAt")
 
 	rules := make([]rules.SantaRule, len(*machineRules))
 	for i, rule := range *machineRules {

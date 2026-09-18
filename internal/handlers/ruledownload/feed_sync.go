@@ -54,14 +54,13 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 
-	log.Printf("  lastEvaluatedKey %s", lastEvaluatedKey)
+	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
+	log.Printf("  Ruledownload feed page: %d feed rule(s), more pages: %t", len(feedRules), lastEvaluatedKey != nil)
 
 	nextCursor := cursor.CloneForNextPage()
 	if lastEvaluatedKey == nil {
-		log.Printf("     No more stuff to paginate over; returning magic cursor")
 		nextCursor.SetStrategy(ruledownloadStrategyMachine)
 	} else {
-		log.Printf("     More stuff to paginate over")
 		// Here we inherit the preexisting cursor strategy
 		nextCursor.SetDynamodbLastEvaluatedKey(lastEvaluatedKey)
 	}
