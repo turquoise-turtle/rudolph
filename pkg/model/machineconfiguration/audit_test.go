@@ -7,6 +7,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -36,6 +37,21 @@ func (s *fakeStore) PutItem(item interface{}) (*awsdynamodb.PutItemOutput, error
 	sk := av["SK"].(*awstypes.AttributeValueMemberS).Value
 	s.items[pk+"|"+sk] = av
 	return &awsdynamodb.PutItemOutput{}, nil
+}
+
+// PutItemIfNotExists emulates DynamoDB's conditional put: when an item with the same primary key already
+// exists it fails with the error real DynamoDB returns.
+func (s *fakeStore) PutItemIfNotExists(item interface{}) (*awsdynamodb.PutItemOutput, error) {
+	av, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return nil, err
+	}
+	pk := av["PK"].(*awstypes.AttributeValueMemberS).Value
+	sk := av["SK"].(*awstypes.AttributeValueMemberS).Value
+	if _, exists := s.items[pk+"|"+sk]; exists {
+		return nil, &awstypes.ConditionalCheckFailedException{Message: aws.String("The conditional request failed")}
+	}
+	return s.PutItem(item)
 }
 
 func (s *fakeStore) UpdateItem(key dynamodb.PrimaryKey, item interface{}) (*awsdynamodb.UpdateItemOutput, error) {

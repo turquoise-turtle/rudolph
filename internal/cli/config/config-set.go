@@ -17,23 +17,50 @@ import (
 func init() {
 	var (
 		clientModeArg            flags.ClientMode
-		blockedPathRegexArg      string
-		allowedPathRegexArg      string
+		pathRegexArgs            pathRegexFlags
 		batchSizeArg             int
 		isEnableBundles          bool
 		isEnabledTransitiveRules bool
 		isCleanSync              bool
 		fullSyncIntervalArg      int
 		uploadLogsUrlArgs        string
+		santaSettingsArgs        santaSettingsFlags
+		confirmGlobalLockdown    bool
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configSetCmd = &cobra.Command{
-		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor' or 'lockdown'>|--client-mode]",
+		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode]",
 		Short: "Create a configuration and set globally or a specific machine UUID",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate the flags before connecting to the sync server
+			blockedPathRegex, err := pathRegexArgs.blockedPathRegex()
+			if err != nil {
+				return err
+			}
+			allowedPathRegex, err := pathRegexArgs.allowedPathRegex()
+			if err != nil {
+				return err
+			}
+
+			newConfig := machineconfiguration.MachineConfiguration{
+				ClientMode:             clientModeArg.AsClientMode(),
+				AllowedPathRegex:       allowedPathRegex,
+				BlockedPathRegex:       blockedPathRegex,
+				BatchSize:              batchSizeArg,
+				EnableBundles:          isEnableBundles,
+				EnabledTransitiveRules: isEnabledTransitiveRules,
+				CleanSync:              isCleanSync,
+				FullSyncInterval:       fullSyncIntervalArg,
+				UploadLogsURL:          uploadLogsUrlArgs,
+			}
+			err = santaSettingsArgs.applyTo(cmd, &newConfig)
+			if err != nil {
+				return err
+			}
+
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -45,29 +72,22 @@ func init() {
 			return applyConfig(
 				service,
 				tf,
-				clientModeArg,
-				blockedPathRegexArg,
-				allowedPathRegexArg,
-				batchSizeArg,
-				isEnableBundles,
-				isEnabledTransitiveRules,
-				isCleanSync,
-				uploadLogsUrlArgs,
-				fullSyncIntervalArg,
+				newConfig,
+				confirmGlobalLockdown,
 			)
 		},
 	}
 
 	tf.AddTargetFlags(configSetCmd)
 
-	// client-mode should be one of "monitor" or "lockdown"
-	configSetCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor" or "lockdown"`)
+	// client-mode should be one of "monitor", "lockdown" or "standalone"
+	configSetCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
 	// Mark as a required flag
 	_ = configSetCmd.MarkFlagRequired("client-mode")
+	addConfirmGlobalLockdownFlag(configSetCmd, &confirmGlobalLockdown)
 
 	// Flags defining blocked and allowed regex paths
-	configSetCmd.Flags().StringVarP(&blockedPathRegexArg, "blocked-paths", "b", "", `A comma separated list of regex paths to be blocked`)
-	configSetCmd.Flags().StringVarP(&allowedPathRegexArg, "allowed-paths", "a", "", `A comma separated list of regex paths to be allowed`)
+	pathRegexArgs.addFlags(configSetCmd)
 
 	// Flags defining batchSize and events to sync back to the server
 	configSetCmd.Flags().IntVarP(&batchSizeArg, "batch-size", "s", 50, "Int value to define the number of rules to download per sync request. Defaults to '50'")
@@ -80,26 +100,26 @@ func init() {
 
 	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds (default 600)")
 
+	// Flags for optional Santa settings; settings without a flag are not configured
+	santaSettingsArgs.addFlags(configSetCmd)
+
 	ConfigCmd.AddCommand(configSetCmd)
 }
 
 func applyConfig(
 	service machineconfiguration.MachineConfigurationService,
 	tf flags.TargetFlags,
-	clientModeArg flags.ClientMode,
-	blockedPathRegexArg string,
-	allowedPathRegexArg string,
-	batchSizeArg int,
-	isEnableBundles bool,
-	isEnabledTransitiveRules bool,
-	isCleanSync bool,
-	uploadLogsUrlArgs string,
-	fullSyncIntervalArg int) (err error) {
-	clientMode := clientModeArg.AsClientMode()
+	newConfig machineconfiguration.MachineConfiguration,
+	confirmGlobalLockdown bool) (err error) {
+	clientMode := newConfig.ClientMode
 
 	// Get machineID from flags
 	var machineID string
 	if tf.IsGlobal {
+		// Fail before asking for confirmation; the service enforces this as well
+		if machineconfiguration.RequiresGlobalLockdownConfirmation(clientMode) && !confirmGlobalLockdown {
+			return wrapWriteError(machineconfiguration.ErrGlobalLockdownNotConfirmed)
+		}
 		machineID = "(Global)"
 	} else {
 		machineID, err = tf.GetMachineID()
@@ -126,14 +146,15 @@ func applyConfig(
 	fmt.Fprintln(writer, "Config\t Setting")
 	fmt.Fprintln(writer, "MachineID:\t", machineID, suffix)
 	fmt.Fprintln(writer, "ClientMode:\t", clientMode, "-->(", string(clientModeText), ")")
-	fmt.Fprintln(writer, "BlockedPathRegex:\t \"", blockedPathRegexArg, "\"")
-	fmt.Fprintln(writer, "AllowedPathRegex:\t \"", allowedPathRegexArg, "\"")
-	fmt.Fprintln(writer, "BatchSize:\t", batchSizeArg)
-	fmt.Fprintln(writer, "BundlesEnabled:\t", isEnableBundles)
-	fmt.Fprintln(writer, "EnabledTransitiveRules:\t", isEnabledTransitiveRules)
-	fmt.Fprintln(writer, "CleanSync:\t", isCleanSync)
-	fmt.Fprintln(writer, "FullSyncInterval:\t", fullSyncIntervalArg)
-	fmt.Fprintln(writer, "UploadLogUrl:\t \"", uploadLogsUrlArgs, "\"")
+	fmt.Fprintln(writer, "BlockedPathRegex:\t \"", newConfig.BlockedPathRegex, "\"")
+	fmt.Fprintln(writer, "AllowedPathRegex:\t \"", newConfig.AllowedPathRegex, "\"")
+	fmt.Fprintln(writer, "BatchSize:\t", newConfig.BatchSize)
+	fmt.Fprintln(writer, "BundlesEnabled:\t", newConfig.EnableBundles)
+	fmt.Fprintln(writer, "EnabledTransitiveRules:\t", newConfig.EnabledTransitiveRules)
+	fmt.Fprintln(writer, "CleanSync:\t", newConfig.CleanSync)
+	fmt.Fprintln(writer, "FullSyncInterval:\t", newConfig.FullSyncInterval)
+	fmt.Fprintln(writer, "UploadLogUrl:\t \"", newConfig.UploadLogsURL, "\"")
+	printSantaSettings(writer, newConfig)
 	writer.Flush()
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
@@ -150,26 +171,14 @@ func applyConfig(
 		return
 	}
 
-	newConfig := machineconfiguration.MachineConfiguration{
-		ClientMode:             clientMode,
-		AllowedPathRegex:       allowedPathRegexArg,
-		BlockedPathRegex:       blockedPathRegexArg,
-		BatchSize:              batchSizeArg,
-		EnableBundles:          isEnableBundles,
-		EnabledTransitiveRules: isEnabledTransitiveRules,
-		CleanSync:              isCleanSync,
-		FullSyncInterval:       fullSyncIntervalArg,
-		UploadLogsURL:          uploadLogsUrlArgs,
-	}
-
 	if tf.IsGlobal {
-		err = service.SetGlobalConfig(newConfig)
+		err = service.SetGlobalConfig(newConfig, globalConfigOptions(confirmGlobalLockdown)...)
 	} else {
 		err = service.SetMachineConfig(machineID, newConfig)
 	}
 
 	if err != nil {
-		return fmt.Errorf("error writing the configuration to the sync server: %w", err)
+		return wrapWriteError(err)
 	} else {
 		fmt.Println("Success! Configuration was sent properly to DynamoDB...")
 	}

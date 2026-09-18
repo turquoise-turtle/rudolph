@@ -1,9 +1,7 @@
 package machineconfiguration
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -12,11 +10,11 @@ import (
 )
 
 // SetGlobalConfig writes a global configuration to the DynamoDB table via a PutItem API call
-func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, fullSyncInterval int, uploadLogsURL string) (err error) {
+func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, fullSyncInterval int, uploadLogsURL string, opts ...GlobalConfigOption) (err error) {
 	// This is a safety check to prevent the accidental setting of lockdown mode globally via a config set operation
-	// Nothing is preventing this from being manually performed at the DyanmoDB table itself
-	if !allowGlobalLockdown && clientMode == types.Lockdown {
-		return errors.New("global lockdown configuration is disabled right now")
+	err = checkGlobalClientMode(clientMode, opts)
+	if err != nil {
+		return
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
@@ -35,7 +33,7 @@ func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, bl
 
 	_, err = client.PutItem(globalConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		err = fmt.Errorf("setting global config failed: %w", err)
 	}
 
 	return
@@ -62,7 +60,7 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 
 	_, err = client.PutItem(machineConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		err = fmt.Errorf("setting machine config failed: %w", err)
 	}
 
 	return
@@ -70,12 +68,7 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 
 // buildConfig constructs a MachineConfigurationRow which will represent either a global or machineID specific configuration set to be used in a DynamoDB PutItem API call
 func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string, allowedPathRegex string, batchSize int, isEnableBundles bool, isEnabledTransitiveRules bool, isCleanSync bool, fullSyncInterval int, uploadLogsURL string) (configRow *MachineConfigurationRow) {
-	// Check batchsize just to make sure at least a valid value is provided if not a positive int value
-	if batchSize <= 0 {
-		batchSize = 50
-	}
-
-	config := MachineConfiguration{
+	return buildConfigRow(pk, MachineConfiguration{
 		ClientMode:             clientMode,
 		BlockedPathRegex:       blockedPathRegex,
 		AllowedPathRegex:       allowedPathRegex,
@@ -85,6 +78,14 @@ func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string
 		CleanSync:              isCleanSync,
 		FullSyncInterval:       fullSyncInterval,
 		UploadLogsURL:          uploadLogsURL,
+	})
+}
+
+// buildConfigRow constructs a MachineConfigurationRow containing all settings of the given config for the given pk
+func buildConfigRow(pk string, config MachineConfiguration) (configRow *MachineConfigurationRow) {
+	// Check batchsize just to make sure at least a valid value is provided if not a positive int value
+	if config.BatchSize <= 0 {
+		config.BatchSize = 50
 	}
 
 	if strings.Compare(pk, globalConfigurationPK) == 0 {
@@ -103,14 +104,27 @@ func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string
 	return
 }
 
-func GetConfigurationSetter(client dynamodb.PutItemAPI, timeProvider clock.TimeProvider) ConcreteConfigurationSetter {
+// ConfigurationStore reads and writes configuration rows
+type ConfigurationStore interface {
+	dynamodb.GetItemAPI
+	dynamodb.PutItemAPI
+}
+
+// GetConfigurationSetter returns a setter that does not cache what it writes. The timeProvider is unused.
+func GetConfigurationSetter(client ConfigurationStore, timeProvider clock.TimeProvider) ConcreteConfigurationSetter {
+	return newConfigurationSetter(client, nil)
+}
+
+// newConfigurationSetter returns a setter that stores a written global config in cache, if not nil
+func newConfigurationSetter(client ConfigurationStore, cache Cache) ConcreteConfigurationSetter {
 	return ConcreteConfigurationSetter{
 		global: ConcreteGlobalConfigurationSetter{
 			setter: client,
-			cache:  GetCache(timeProvider),
+			cache:  cache,
 		},
 		machine: ConcreteMachineConfigurationSetter{
 			setter: client,
+			global: UncachedConcreteGlobalConfigurationFetcher{getter: client},
 		},
 	}
 }
@@ -141,7 +155,7 @@ type ConcreteConfigurationSetter struct {
 
 // GlobalConfigurationSetter
 type GlobalConfigurationSetter interface {
-	setGlobalConfig(config MachineConfiguration) error
+	setGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 }
 
 type ConcreteGlobalConfigurationSetter struct {
@@ -149,32 +163,31 @@ type ConcreteGlobalConfigurationSetter struct {
 	cache  Cache
 }
 
-func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfiguration) error {
-	if !allowGlobalLockdown && config.ClientMode == types.Lockdown {
-		return errors.New("global lockdown configuration is disabled right now")
+func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error {
+	err := checkGlobalClientMode(config.ClientMode, opts)
+	if err != nil {
+		return err
+	}
+
+	config.OverrideFileAccessAction, err = normalizeOverrideFileAccessAction(config.OverrideFileAccessAction)
+	if err != nil {
+		return err
+	}
+
+	err = validateRemountUsbMode(config.RemountUsbMode, config.BlockUsbMount)
+	if err != nil {
+		return err
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
-	globalConfigRow := buildConfig(
-		globalConfigurationPK,
-		config.ClientMode,
-		config.BlockedPathRegex,
-		config.AllowedPathRegex,
-		config.BatchSize,
-		config.EnableBundles,
-		config.EnabledTransitiveRules,
-		config.CleanSync,
-		config.FullSyncInterval,
-		config.UploadLogsURL,
-	)
+	globalConfigRow := buildConfigRow(globalConfigurationPK, config)
 
-	_, err := c.setter.PutItem(globalConfigRow)
+	_, err = c.setter.PutItem(globalConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting global config failed: %w", err))
+		return fmt.Errorf("setting global config failed: %w", err)
 	}
 
-	// Attempt to set the new global configuration into cache
-	_ = c.cache.Set(CacheKeyGlobal, &config)
+	setCachedGlobalConfig(c.cache, &globalConfigRow.MachineConfiguration)
 
 	return nil
 }
@@ -186,29 +199,48 @@ type MachineConfigurationSetter interface {
 
 type ConcreteMachineConfigurationSetter struct {
 	setter dynamodb.PutItemAPI
+	// global provides the settings a machine config inherits, for validation
+	global GlobalConfigurationFetcher
 }
 
 func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, config MachineConfiguration) error {
+	var err error
+	config.OverrideFileAccessAction, err = normalizeOverrideFileAccessAction(config.OverrideFileAccessAction)
+	if err != nil {
+		return err
+	}
+
+	blockUsbMount := config.BlockUsbMount
+	if blockUsbMount == nil && len(config.RemountUsbMode) > 0 && c.global != nil {
+		globalConfig, eerr := c.global.GetGlobalConfig()
+		if eerr != nil {
+			return eerr
+		}
+		if globalConfig != nil {
+			blockUsbMount = globalConfig.BlockUsbMount
+		}
+	}
+	err = validateRemountUsbMode(config.RemountUsbMode, blockUsbMount)
+	if err != nil {
+		return err
+	}
+
 	// Create the machineID specific PK
 	machinePK := machineConfigurationPK(machineID)
 
 	// Construct a MachineConfigRow to represent a MachineConfig
-	machineConfigRow := buildConfig(
-		machinePK,
-		config.ClientMode,
-		config.BlockedPathRegex,
-		config.AllowedPathRegex,
-		config.BatchSize,
-		config.EnableBundles,
-		config.EnabledTransitiveRules,
-		config.CleanSync,
-		config.FullSyncInterval,
-		config.UploadLogsURL,
-	)
+	machineConfigRow := buildConfigRow(machinePK, config)
 
-	_, err := c.setter.PutItem(machineConfigRow)
+	_, err = c.setter.PutItem(machineConfigRow)
 	if err != nil {
-		log.Print(fmt.Errorf("setting machine config failed: %w", err))
+		return fmt.Errorf("setting machine config failed: %w", err)
 	}
 	return nil
+}
+
+// setCachedGlobalConfig stores a global config that was just written into cache, if there is one
+func setCachedGlobalConfig(cache Cache, config *MachineConfiguration) {
+	if cache != nil {
+		_ = cache.Set(CacheKeyGlobal, config)
+	}
 }

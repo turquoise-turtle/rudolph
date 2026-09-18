@@ -19,6 +19,9 @@ func (c fakeClient) GetItem(k dynamodb.PrimaryKey, cr bool) (*awsdynamodb.GetIte
 	return c.s.GetItem(k, cr)
 }
 func (c fakeClient) PutItem(i interface{}) (*awsdynamodb.PutItemOutput, error) { return c.s.PutItem(i) }
+func (c fakeClient) PutItemIfNotExists(i interface{}) (*awsdynamodb.PutItemOutput, error) {
+	return c.s.PutItemIfNotExists(i)
+}
 func (c fakeClient) UpdateItem(k dynamodb.PrimaryKey, i interface{}) (*awsdynamodb.UpdateItemOutput, error) {
 	return c.s.UpdateItem(k, i)
 }

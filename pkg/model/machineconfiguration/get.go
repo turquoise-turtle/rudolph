@@ -10,10 +10,15 @@ import (
 )
 
 func GetConfigurationFetcher(client dynamodb.GetItemAPI, timeProvider clock.TimeProvider) ConcreteConfigurationFetcher {
+	return newCachedConfigurationFetcher(client, GetCache(timeProvider))
+}
+
+// newCachedConfigurationFetcher returns a fetcher that caches the global config in cache
+func newCachedConfigurationFetcher(client dynamodb.GetItemAPI, cache Cache) ConcreteConfigurationFetcher {
 	return ConcreteConfigurationFetcher{
 		global: CachedConcreteGlobalConfigurationFetcher{
 			getter: client,
-			cache:  GetCache(timeProvider),
+			cache:  cache,
 		},
 		machine: ConcreteMachineConfigurationFetcher{
 			getter: client,
@@ -55,11 +60,27 @@ type ConcreteConfigurationFetcher struct {
 // - First, looks for a machine-specific config in DynamoDB
 // - Second, looks for a global config for all machines in DynamoDB
 // - Defaults to returning a hardcoded "universal config"
+//
+// A machine-specific config fully overrides the base settings of the global config, but inherits each optional
+// Santa setting (see MachineConfiguration) that it does not configure.
 func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
 	config, err := f.machine.GetMachineSpecificConfig(machineID)
 	if err != nil {
 		err = fmt.Errorf("failed to get machine config: %w", err)
 		return
+	}
+
+	if config != nil {
+		// Optional Santa settings the machine-specific config does not configure are inherited from the global config
+		globalConfig, eerr := f.global.GetGlobalConfig()
+		if eerr != nil {
+			err = fmt.Errorf("failed to get global config for inherited settings: %w", eerr)
+			return
+		}
+		if globalConfig != nil {
+			intendedConfig = inheritOptionalSettings(*config, *globalConfig)
+			return
+		}
 	}
 
 	if config == nil {

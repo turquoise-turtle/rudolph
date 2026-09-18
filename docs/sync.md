@@ -34,7 +34,34 @@ This endpoint allows the Santa Sensor to upload its current configuration and se
     - The Rudolph server’s preflight response overrides many configuration parameters of the Santa sensor when it is received. It can change:
     - The sensor’s MODE (Monitor/lockdown)
     - The number of logs/events uploaded in each POST request
-    - Regex-based DENY and ALLOW rules
+    - Regex-based DENY and ALLOW rules (`allowed_path_regex`, `blocked_path_regex`)
+    - Which events are uploaded (`enable_all_event_upload`, `disable_unknown_event_upload`)
+    - The File Access Authorization override (`override_file_access_action`: `NONE`, `AUDIT_ONLY` or `DISABLE`)
+    - USB mass storage mounting (`block_usb_mount`, `remount_usb_mode`)
+    - The button of block notifications (`event_detail_url`, `event_detail_text`)
+
+Which configuration a machine gets:
+- **Base settings** (client mode, path regexes, batch size, bundles, transitive rules, full sync interval, upload logs URL): a machine-specific configuration fully overrides the global configuration. A machine without one gets the global configuration.
+- **Optional Santa settings** (event upload, file access action, USB mount blocking and remount flags, event detail URL/text): each setting a machine-specific configuration does not configure is inherited from the global configuration, so settings added globally later still reach machines with an override. Settings configured nowhere are left out of the response, and Santa keeps its current value for them. The USB settings are inherited separately: a machine that only configures `--block-usb-mount` still gets the global remount flags; pass `--remount-usb-mode ""` to configure no remount flags.
+- `rudolph config update --machine <uuid>` for a machine without a machine-specific configuration creates one from the global **base** settings at that moment (later global base changes no longer reach that machine) plus the updated settings; its optional settings keep being inherited. The row is created even when the update changes nothing, which is how a machine is pinned to the current settings before a fleet-wide change (e.g. exempting a machine from a later global lockdown).
+
+The path regexes are always sent, because Santa 2026.8 only clears a regex when it receives an empty string; Rudolph requires Santa 2026.8 or later.
+
+Settings are managed with `rudolph config set` / `rudolph config update`. Remount flags (`--remount-usb-mode`) are only accepted when USB mounts are blocked (`--block-usb-mount`, or inherited from the global configuration), because Santa ignores them otherwise.
+
+A path regex flag can be repeated; each value is one regex (commas included). Santa matches a path regex from the start of the path (it prepends `^` when missing), and several regexes are combined into `^(?:(?:regex1)|(?:regex2))`, which matches a path if any of them matches from the start:
+
+```
+rudolph config update --global --blocked-paths '^/Users/[^/]+/Downloads/' --blocked-paths '/tmp/'
+rudolph config update --machine <machine-uuid> --override-file-access-action audit_only --event-detail-url 'https://rudolph.example.com/blocked/%file_sha%'
+```
+
+A **single** regex is sent unchanged, so Santa anchors only what comes before its first top-level `|`: `--allowed-paths '/tmp/|/private/'` reaches Santa as `^/tmp/|/private/` and allows `/Users/bob/private/evil`. The CLI warns about this; wrap the alternation in a group (`'^(?:/tmp/|/private/)'`) or pass each alternative as its own flag, which anchors all of them.
+
+The CLI validates regexes with Go's RE2 syntax, which differs from the ICU syntax Santa uses: for example RE2 has no lookahead (`(?!...)`). Pass `--skip-regex-validation` to set such a regex. Check it carefully, because nothing else will:
+- Santa silently ignores a path regex that is not valid ICU, leaving the setting unset on the host.
+- Combining several regexes wraps each one in `(?:...)`, which does not capture, but capture groups are numbered across the whole combined regex: a backreference such as `\1` in the second regex then refers to a group of the first one. Use only one regex per flag value, or no backreferences.
+- In a regex with the ICU comment flag `(?x)`, a `#` comment runs to the end of the line. As the combined regex is one line, such a comment swallows the regexes after it. Avoid `(?x)` in combined regexes.
 
 More detailed documentation: https://santa.readthedocs.io/en/latest/deployment/configuration/#sync-server-provided-configuration
 
@@ -73,12 +100,20 @@ More info found here: https://santa.readthedocs.io/en/latest/deployment/configur
 ```json
 {
 	"client_mode": "LOCKDOWN",
-	"blocked_path_regex": "(\/tmp)|(\/Users\/.+\/trash)",
-	"allowed_path_regex": "\/usr\/local\/bin",
+	"blocked_path_regex": "^(?:(?:/tmp/)|(?:/Users/[^/]+/Downloads/))",
+	"allowed_path_regex": "^/usr/local/bin/",
 	"batch_size": 37,
 	"enable_bundles": true,
 	"enable_transitive_rules": false,
-	"upload_logs_url": "/aaa"
+	"full_sync_interval": 600,
+	"upload_logs_url": "/aaa",
+	"block_usb_mount": true,
+	"remount_usb_mode": ["rdonly", "noexec"],
+	"sync_type": "normal",
+	"override_file_access_action": "AUDIT_ONLY",
+	"enable_all_event_upload": true,
+	"event_detail_url": "https://rudolph.example.com/blocked/%file_sha%",
+	"event_detail_text": "Request access"
 }
 ```
 

@@ -11,7 +11,6 @@ const (
 	machineConfigurationPKPrefix        = "Machine#"
 	globalConfigurationPK               = "GlobalConfig"
 	currentSK                           = "Config"
-	allowGlobalLockdown                 = false
 	DefaultFullSyncInterval             = 600
 	DefaultSyncTypeNormal        string = SyncTypeNormal
 	SyncTypeNormal               string = "normal"
@@ -38,11 +37,19 @@ type MachineConfiguration struct {
 	CleanSync              bool             `dynamodbav:"CleanSync,omitempty"`
 	FullSyncInterval       int              `dynamodbav:"FullSyncInterval,omitempty"`
 	UploadLogsURL          string           `dynamodbav:"UploadLogsUrl,omitempty"`
-	BlockUsbMount          bool             `dynamodbav:"BlockUsbMount,omitempty"`
-	RemountUsbMode         string           `dynamodbav:"RemountUsbMode,omitempty"`
 	// SyncType                 types.SyncType   `dynamodbav:"SyncType,omitempty"`
-	OverrideFileAccessAction string         `dynamodbav:"OverrideFileAccessAction,omitempty"`
-	DataType                 types.DataType `dynamodbav:"DataType,omitempty"`
+	DataType types.DataType `dynamodbav:"DataType,omitempty"`
+
+	// Optional Santa settings. A nil/"" value means "not configured": a machine-specific config inherits it from
+	// the global config, and if neither configures it, it is not sent to Santa, which keeps its current value.
+	// A non-nil empty RemountUsbMode is configured (no remount flags).
+	EnableAllEventUpload      *bool                  `dynamodbav:"EnableAllEventUpload,omitempty"`
+	DisableUnknownEventUpload *bool                  `dynamodbav:"DisableUnknownEventUpload,omitempty"`
+	OverrideFileAccessAction  types.FileAccessAction `dynamodbav:"OverrideFileAccessAction,omitempty"`
+	BlockUsbMount             *bool                  `dynamodbav:"BlockUsbMount,omitempty"`
+	RemountUsbMode            MountFlags             `dynamodbav:"RemountUsbMode,omitempty"`
+	EventDetailURL            *string                `dynamodbav:"EventDetailURL,omitempty"`
+	EventDetailText           *string                `dynamodbav:"EventDetailText,omitempty"`
 }
 
 type MachineConfigurationUpdateRequest struct {
@@ -54,11 +61,15 @@ type MachineConfigurationUpdateRequest struct {
 	EnableTransitiveRules *bool
 	CleanSync             *bool
 	FullSyncInterval      *int
-	BlockUsbMount         *bool
-	RemountUsbMode        *string
+	UploadLogsURL         *string
 	// SyncType                 *types.SyncType
-	OverrideFileAccessAction *string
-	UploadLogsURL            *string
+	EnableAllEventUpload      *bool
+	DisableUnknownEventUpload *bool
+	OverrideFileAccessAction  *types.FileAccessAction
+	BlockUsbMount             *bool
+	RemountUsbMode            *[]string
+	EventDetailURL            *string
+	EventDetailText           *string
 }
 
 // Fragments for updates
@@ -86,10 +97,7 @@ func GetUniversalDefaultConfig() MachineConfiguration {
 		CleanSync:              false,
 		FullSyncInterval:       DefaultFullSyncInterval,
 		UploadLogsURL:          "",
-		BlockUsbMount:          false,
-		RemountUsbMode:         "",
 		// SyncType:                 types.SyncTypeNormal,
-		OverrideFileAccessAction: "",
-		DataType:                 types.DataTypeGlobalConfig,
+		DataType: types.DataTypeGlobalConfig,
 	}
 }

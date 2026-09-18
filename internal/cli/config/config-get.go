@@ -100,6 +100,7 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
 	fmt.Fprintln(writer, "FullSyncInterval:\t", config.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", config.UploadLogsURL, "\"")
+	printSantaSettings(writer, config)
 	writer.Flush()
 
 	return

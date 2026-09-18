@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -16,16 +17,52 @@ import (
 
 func init() {
 	var (
-		clientModeArg flags.ClientMode
+		clientModeArg         optionalClientMode
+		pathRegexArgs         pathRegexFlags
+		santaSettingsArgs     santaSettingsFlags
+		confirmGlobalLockdown bool
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor' or 'lockdown'>|--client-mode]",
-		Short: "Update the client-mode globally or for a specific machine UUID",
-		Args:  cobra.NoArgs,
+		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]...",
+		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
+		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
+
+A machine without a machine-specific configuration gets one, copied from the global base settings at this moment;
+optional Santa settings it does not configure keep being inherited from the global configuration.
+Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate the flags before connecting to the sync server
+			var updateRequest machineconfiguration.MachineConfigurationUpdateRequest
+			if clientModeArg.set {
+				clientMode := clientModeArg.mode.AsClientMode()
+				updateRequest.ClientMode = &clientMode
+			}
+			if cmd.Flags().Changed(flagBlockedPaths) {
+				blockedPathRegex, err := pathRegexArgs.blockedPathRegex()
+				if err != nil {
+					return err
+				}
+				updateRequest.BlockedPathRegex = &blockedPathRegex
+			}
+			if cmd.Flags().Changed(flagAllowedPaths) {
+				allowedPathRegex, err := pathRegexArgs.allowedPathRegex()
+				if err != nil {
+					return err
+				}
+				updateRequest.AllowedPathRegex = &allowedPathRegex
+			}
+			err := santaSettingsArgs.updateRequest(cmd, &updateRequest)
+			if err != nil {
+				return err
+			}
+			if (updateRequest == machineconfiguration.MachineConfigurationUpdateRequest{}) {
+				return errors.New("no settings to update were given")
+			}
+
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -37,17 +74,23 @@ func init() {
 			return updateConfig(
 				service,
 				tf,
-				clientModeArg,
+				updateRequest,
+				confirmGlobalLockdown,
 			)
 		},
 	}
 
 	tf.AddTargetFlags(configUpdateClientModeCmd)
 
-	// client-mode should be one of "monitor" or "lockdown"
-	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor" or "lockdown"`)
-	// Mark as a required flag
-	_ = configUpdateClientModeCmd.MarkFlagRequired("client-mode")
+	// client-mode should be one of "monitor", "lockdown" or "standalone"; it is only changed when given
+	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
+	addConfirmGlobalLockdownFlag(configUpdateClientModeCmd, &confirmGlobalLockdown)
+
+	// Flags defining blocked and allowed regex paths
+	pathRegexArgs.addFlags(configUpdateClientModeCmd)
+
+	// Flags for optional Santa settings
+	santaSettingsArgs.addFlags(configUpdateClientModeCmd)
 
 	ConfigCmd.AddCommand(configUpdateClientModeCmd)
 }
@@ -55,12 +98,15 @@ func init() {
 func updateConfig(
 	service machineconfiguration.MachineConfigurationService,
 	tf flags.TargetFlags,
-	clientModeArg flags.ClientMode) (err error) {
-	clientMode := clientModeArg.AsClientMode()
-
+	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
+	confirmGlobalLockdown bool) (err error) {
 	// Get machineID from flags
 	var machineID string
 	if tf.IsGlobal {
+		// Fail before asking for confirmation; the service enforces this as well
+		if updateRequest.ClientMode != nil && machineconfiguration.RequiresGlobalLockdownConfirmation(*updateRequest.ClientMode) && !confirmGlobalLockdown {
+			return wrapWriteError(machineconfiguration.ErrGlobalLockdownNotConfirmed)
+		}
 		machineID = "(Global)"
 	} else {
 		machineID, err = tf.GetMachineID()
@@ -74,11 +120,6 @@ func updateConfig(
 		suffix = "-->( This machine )"
 	}
 
-	clientModeText, err := clientMode.MarshalText()
-	if err != nil {
-		return
-	}
-
 	// Print the output for visual confirmation via a nicely tab corrected output
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 0, '\t', tabwriter.AlignRight)
 
@@ -86,7 +127,41 @@ func updateConfig(
 	fmt.Println()
 	fmt.Fprintln(writer, "Config\t Setting")
 	fmt.Fprintln(writer, "MachineID:\t", machineID, suffix)
-	fmt.Fprintln(writer, "ClientMode:\t", clientMode, "-->(", string(clientModeText), ")")
+	if updateRequest.ClientMode != nil {
+		clientMode := *updateRequest.ClientMode
+		clientModeText, eerr := clientMode.MarshalText()
+		if eerr != nil {
+			return eerr
+		}
+		fmt.Fprintln(writer, "ClientMode:\t", clientMode, "-->(", string(clientModeText), ")")
+	}
+	if updateRequest.BlockedPathRegex != nil {
+		fmt.Fprintln(writer, "BlockedPathRegex:\t \"", *updateRequest.BlockedPathRegex, "\"")
+	}
+	if updateRequest.AllowedPathRegex != nil {
+		fmt.Fprintln(writer, "AllowedPathRegex:\t \"", *updateRequest.AllowedPathRegex, "\"")
+	}
+	if updateRequest.EnableAllEventUpload != nil {
+		fmt.Fprintln(writer, "EnableAllEventUpload:\t", *updateRequest.EnableAllEventUpload)
+	}
+	if updateRequest.DisableUnknownEventUpload != nil {
+		fmt.Fprintln(writer, "DisableUnknownEventUpload:\t", *updateRequest.DisableUnknownEventUpload)
+	}
+	if updateRequest.OverrideFileAccessAction != nil {
+		fmt.Fprintln(writer, "OverrideFileAccessAction:\t", *updateRequest.OverrideFileAccessAction)
+	}
+	if updateRequest.BlockUsbMount != nil {
+		fmt.Fprintln(writer, "BlockUsbMount:\t", *updateRequest.BlockUsbMount)
+	}
+	if updateRequest.RemountUsbMode != nil {
+		fmt.Fprintln(writer, "RemountUsbMode:\t", strings.Join(*updateRequest.RemountUsbMode, ","))
+	}
+	if updateRequest.EventDetailURL != nil {
+		fmt.Fprintln(writer, "EventDetailURL:\t \"", *updateRequest.EventDetailURL, "\"")
+	}
+	if updateRequest.EventDetailText != nil {
+		fmt.Fprintln(writer, "EventDetailText:\t \"", *updateRequest.EventDetailText, "\"")
+	}
 	writer.Flush()
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
@@ -102,18 +177,15 @@ func updateConfig(
 		fmt.Println("Confirmation not successful...")
 		return
 	}
-	updateRequest := machineconfiguration.MachineConfigurationUpdateRequest{
-		ClientMode: &clientMode,
-	}
 
 	if tf.IsGlobal {
-		_, err = service.UpdateGlobalConfig(updateRequest)
+		_, err = service.UpdateGlobalConfig(updateRequest, globalConfigOptions(confirmGlobalLockdown)...)
 	} else {
 		_, err = service.UpdateMachineConfig(machineID, updateRequest)
 	}
 
 	if err != nil {
-		return fmt.Errorf("error writing the configuration to the sync server: %w", err)
+		return wrapWriteError(err)
 	} else {
 		fmt.Println("Success! Configuration was sent properly to DynamoDB...")
 	}
