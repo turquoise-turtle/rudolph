@@ -55,10 +55,12 @@ func UpdateGlobalConfigClientMode(client dynamodb.UpdateItemAPI, newClientMode t
 	return nil
 }
 
-// ConfigurationWriter updates existing configuration rows and creates the ones that do not exist yet
+// ConfigurationWriter updates existing configuration rows and creates the ones that do not exist yet.
+// Creating requires a conditional put, so a client that cannot do one atomically is rejected at compile time.
 type ConfigurationWriter interface {
 	dynamodb.UpdateItemAPI
 	dynamodb.PutItemAPI
+	dynamodb.PutItemIfNotExistsAPI
 }
 
 // maxConfigWriteAttempts bounds retries when a concurrent write creates or deletes the row being updated
@@ -273,12 +275,7 @@ func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineC
 
 	if !exists {
 		row := buildConfigRow(pk, newConfig)
-		// The DynamoDB client supports conditional puts; clients without them (e.g. in-memory stores) get a plain put
-		if conditionalClient, ok := client.(dynamodb.PutItemIfNotExistsAPI); ok {
-			_, err = conditionalClient.PutItemIfNotExists(row)
-		} else {
-			_, err = client.PutItem(row)
-		}
+		_, err = client.PutItemIfNotExists(row)
 		if err != nil {
 			return
 		}
