@@ -98,4 +98,3 @@ func mustNormalise(t *testing.T, body string) []byte {
 	}
 	return out
 }
-

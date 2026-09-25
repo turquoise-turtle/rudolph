@@ -144,3 +144,37 @@ func TestReview_PostflightResponseStaysValid(t *testing.T) {
 		t.Fatal("preflight response could not be canonicalised")
 	}
 }
+
+// Raised by the batch 2 implementer: every string a client reports at preflight is stored on the machine's
+// row, so an oversized value (e.g. a 300 KB hostname) could push the row past DynamoDB's 400 KB item limit and
+// break every later sync for that host. Oversized values are rejected before anything is written; normal-sized
+// values keep working.
+func TestReview_PreflightRejectsOversizedClientStrings(t *testing.T) {
+	huge := strings.Repeat("h", 300000)
+	for name, apply := range map[string]func(*fakesanta.Host){
+		"hostname":     func(h *fakesanta.Host) { h.Hostname = huge },
+		"primary user": func(h *fakesanta.Host) { h.PrimaryUser = huge },
+		"serial":       func(h *fakesanta.Host) { h.SerialNumber = huge },
+		"model":        func(h *fakesanta.Host) { h.ModelID = huge },
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := freshServer(t)
+			host := newHost(t, machineA, transport)
+			apply(host)
+
+			_, err := host.Sync(t)
+			stageErr, ok := err.(*fakesanta.StageError)
+			if !ok || stageErr.Stage != "preflight" || (stageErr.Status != 400 && stageErr.Status != 413) {
+				t.Fatalf("expected preflight to reject the oversized %s with 400 or 413, got %v", name, err)
+			}
+			if item := getItem(t, "Machine#"+machineA, "Current"); len(item) != 0 {
+				t.Fatalf("sensor data was written despite the rejected preflight")
+			}
+		})
+	}
+
+	transport := freshServer(t)
+	host := newHost(t, machineA, transport)
+	host.Hostname = strings.Repeat("a", 60) + ".corp.example.com"
+	host.MustSync(t)
+}
