@@ -1,6 +1,8 @@
 package preflight
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 
 	apirequest "github.com/airbnb/rudolph/pkg/request"
@@ -28,6 +30,18 @@ func parseRequest(request events.APIGatewayProxyRequest) (parsedRequest *Preflig
 
 	err = apirequest.UnmarshalSantaJSON(body, &parsedRequest)
 	if err != nil {
+		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+		return
+	}
+
+	if parsedRequest == nil {
+		// A body of "null" parses without error but carries no preflight.
+		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+		return
+	}
+
+	if validationErr := parsedRequest.validate(); validationErr != nil {
+		log.Printf("preflight: refusing request: %v", validationErr)
 		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 		return
 	}
@@ -63,14 +77,55 @@ type PreflightRequest struct {
 	PushNotificationSync bool             `json:"push_notification_sync"`
 }
 
-// maxRulesHashLength bounds a client-controlled value that is stored on the machine's row. Santa reports a
-// hex digest; anything longer is not one, and storing it could push the item past DynamoDB's 400 KB limit.
-const maxRulesHashLength = 128
+// Limits, in bytes, on the client-reported strings preflight stores on the machine's sensor data row.
+//
+// Every one of them is client input written to DynamoDB. Without a bound a single host could push its item past
+// DynamoDB's 400 KB limit, or - for SerialNum, which is a key of a secondary index and limited to 2 KB there -
+// make every preflight fail with a 500, so that the host could never sync again. A preflight that exceeds a
+// limit is refused with HTTP 400 before anything is written. The limits are far above what a Mac reports.
+// Documented in docs/sync.md.
+const (
+	maxSerialNumberLength     = 64  // Apple serial numbers are 10-12 characters
+	maxHostnameLength         = 255 // a fully qualified domain name is at most 253 characters
+	maxModelIdentifierLength  = 64  // e.g. "Mac15,7"
+	maxOSVersionLength        = 32  // e.g. "15.6.1"
+	maxOSBuildLength          = 32  // e.g. "24G90"
+	maxSantaVersionLength     = 64  // e.g. "2026.8.1"
+	maxPrimaryUserLength      = 256 // a user name, or an e-mail address from MachineOwner
+	maxPrimaryUserGroups      = 256
+	maxPrimaryUserGroupLength = 256
+	maxRulesHashLength        = 128 // Santa reports a hex digest
+)
 
-// ReportedRulesHash is the rules hash the client reported, if it is plausibly a digest.
-func (r *PreflightRequest) ReportedRulesHash() string {
-	if r == nil || len(r.RulesHash) > maxRulesHashLength {
-		return ""
+// validate refuses a preflight whose stored strings are larger than a Mac would ever report. The error names
+// the field but never repeats its value.
+func (r *PreflightRequest) validate() error {
+	for _, field := range []struct {
+		name  string
+		value string
+		limit int
+	}{
+		{"serial_num", r.SerialNumber, maxSerialNumberLength},
+		{"hostname", r.Hostname, maxHostnameLength},
+		{"model_identifier", r.ModelIdentifier, maxModelIdentifierLength},
+		{"os_version", r.OSVersion, maxOSVersionLength},
+		{"os_build", r.OSBuild, maxOSBuildLength},
+		{"santa_version", r.SantaVersion, maxSantaVersionLength},
+		{"primary_user", r.PrimaryUser, maxPrimaryUserLength},
+		{"rules_hash", r.RulesHash, maxRulesHashLength},
+	} {
+		if len(field.value) > field.limit {
+			return fmt.Errorf("%s is longer than %d bytes", field.name, field.limit)
+		}
 	}
-	return r.RulesHash
+
+	if len(r.PrimaryUserGroups) > maxPrimaryUserGroups {
+		return fmt.Errorf("primary_user_groups has more than %d entries", maxPrimaryUserGroups)
+	}
+	for _, group := range r.PrimaryUserGroups {
+		if len(group) > maxPrimaryUserGroupLength {
+			return fmt.Errorf("a primary_user_groups entry is longer than %d bytes", maxPrimaryUserGroupLength)
+		}
+	}
+	return nil
 }

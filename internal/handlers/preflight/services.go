@@ -67,7 +67,8 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 	sensorData.ModelIdentifier = request.ModelIdentifier
 	sensorData.SIPStatus = request.SIPStatus
 	sensorData.PrimaryUserGroups = request.PrimaryUserGroups
-	sensorData.RulesHash = request.ReportedRulesHash()
+	// Every string stored here was bounded by PreflightRequest.validate.
+	sensorData.RulesHash = request.RulesHash
 
 	_, err := c.putter.PutItem(sensorData)
 	return err
