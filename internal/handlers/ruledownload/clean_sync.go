@@ -49,7 +49,8 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 	// Marshal the cursor to a string
 	jsonCursor, err := json.Marshal(nextCursor)
 	if err != nil {
-		log.Printf("  json.Marshal Error %s", err.Error())
+		// The error is not logged: json.UnsupportedValueError embeds the value it could not marshal.
+		log.Printf("  Failed to marshal the ruledownload cursor")
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 

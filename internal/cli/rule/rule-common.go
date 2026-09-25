@@ -15,6 +15,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
+	"github.com/airbnb/rudolph/pkg/model/sensordata"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -103,6 +104,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		if tf.IsTargetSelf() {
 			suffix = " (This machine)"
 		}
+		warnIfMachineNeverSynced(client, machineID)
 	}
 
 	fmt.Println("Uploading the following rule:")
@@ -138,6 +140,21 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	fmt.Println("")
 
 	return
+}
+
+// warnIfMachineNeverSynced warns when nothing is known about a machine ID, which means no sensor has ever
+// synced under it. Machine IDs are accepted in any case, so a typo or the wrong case would otherwise create a
+// rule that no host ever reads, without saying anything.
+func warnIfMachineNeverSynced(client dynamodb.GetItemAPI, machineID string) {
+	sensorData, err := sensordata.GetSensorData(client, machineID)
+	if err != nil {
+		fmt.Printf("[WARNING] could not check whether %s has ever synced: %v\n", machineID, err)
+		return
+	}
+	if sensorData == nil {
+		fmt.Printf("[WARNING] no sensor has ever synced as %s. Check the machine UUID: a rule for a machine\n", machineID)
+		fmt.Println("          that never syncs has no effect, and machine IDs are matched exactly, including case.")
+	}
 }
 
 // printRuleOptions prints the optional rule fields that are set
