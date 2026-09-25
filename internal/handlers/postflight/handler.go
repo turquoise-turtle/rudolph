@@ -57,11 +57,7 @@ func (h *PostPostflightHandler) Handle(request events.APIGatewayProxyRequest) (*
 
 	// FIXME (derek.wang) This postflight is not properly setting the FeedSyncCursor; it's just setting it to
 	// like "10 minutes ago and leaving it like that. Pretty dumb, derek!"
-	if updater, ok := h.syncStateUpdater.(syncOutcomeUpdater); ok {
-		err = updater.updatePostflightOutcome(machineID, postflightRequest)
-	} else {
-		err = h.syncStateUpdater.updatePostflightDate(machineID)
-	}
+	err = h.syncStateUpdater.updatePostflight(machineID, postflightRequest)
 	if err != nil {
 		log.Printf("Failed to set final PostflightAt")
 		return response.APIResponse(http.StatusInternalServerError, err)

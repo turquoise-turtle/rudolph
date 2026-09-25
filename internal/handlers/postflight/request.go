@@ -36,6 +36,11 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 			errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 			return
 		}
+		if parsedRequest != nil && len(parsedRequest.RulesHash) > maxRulesHashLength {
+			log.Printf("postflight: refusing request: rules_hash is longer than %d bytes", maxRulesHashLength)
+			errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+			return
+		}
 	}
 
 	return
@@ -50,20 +55,14 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 // client-controlled input that goes into the machine's row, and an item that grows past DynamoDB's 400 KB
 // limit would break every later sync for that host.
 type PostflightRequest struct {
-	RulesReceived  int            `json:"rules_received"`
-	RulesProcessed int            `json:"rules_processed"`
-	SyncType       types.SyncType `json:"sync_type"`
-	RulesHash      string         `json:"rules_hash"`
+	RulesReceived  int `json:"rules_received"`
+	RulesProcessed int `json:"rules_processed"`
+	// Santa reports the sync type Rudolph sent it, which is only ever NORMAL or CLEAN. If Rudolph starts sending
+	// CLEAN_STANDALONE, CLEAN_RULES or CLEAN_FILE_ACCESS_RULES (Santa 2026.8), types.SyncType must learn them.
+	SyncType  types.SyncType `json:"sync_type"`
+	RulesHash string         `json:"rules_hash"`
 }
 
-// maxRulesHashLength bounds the other client-controlled value stored on the sync state row. Santa reports a
-// hex digest; anything longer is not one and is ignored rather than written to the row.
+// maxRulesHashLength bounds the other client-controlled string stored on the sync state row, in bytes. Santa
+// reports a hex digest; a postflight with anything longer is refused, like one with an unknown sync type.
 const maxRulesHashLength = 128
-
-// ReportedRulesHash is the rules hash the client reported, if it is plausibly a digest.
-func (r *PostflightRequest) ReportedRulesHash() string {
-	if r == nil || len(r.RulesHash) > maxRulesHashLength {
-		return ""
-	}
-	return r.RulesHash
-}

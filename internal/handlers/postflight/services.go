@@ -24,16 +24,10 @@ func archiveSyncState(client dynamodb.DynamoDBClient, machineID string) (err err
 	return
 }
 
+// syncStateUpdater closes out a sync: it records the postflight timestamps and what the client reported about
+// the sync it just finished, in a single update of the sync state row.
 type syncStateUpdater interface {
-	updatePostflightDate(machineID string) error
-}
-
-// syncOutcomeUpdater is the richer form of syncStateUpdater: besides closing out the sync it also stores
-// what the client reported about it. A syncStateUpdater that implements it is preferred, so that the
-// outcome and the postflight timestamps are written to the sync state row in a single update.
-type syncOutcomeUpdater interface {
-	syncStateUpdater
-	updatePostflightOutcome(machineID string, request *PostflightRequest) error
+	updatePostflight(machineID string, request *PostflightRequest) error
 }
 
 type concreteSyncStateUpdater struct {
@@ -41,11 +35,7 @@ type concreteSyncStateUpdater struct {
 	timeProvider clock.TimeProvider
 }
 
-func (c concreteSyncStateUpdater) updatePostflightDate(machineID string) (err error) {
-	return syncstate.UpdatePostflightDate(c.timeProvider, c.updater, machineID)
-}
-
-func (c concreteSyncStateUpdater) updatePostflightOutcome(machineID string, request *PostflightRequest) (err error) {
+func (c concreteSyncStateUpdater) updatePostflight(machineID string, request *PostflightRequest) (err error) {
 	if request == nil {
 		// A client that sent no postflight body reported no outcome.
 		return c.updatePostflightDate(machineID)
@@ -57,8 +47,14 @@ func (c concreteSyncStateUpdater) updatePostflightOutcome(machineID string, requ
 		string(request.SyncType),
 		request.RulesReceived,
 		request.RulesProcessed,
-		request.ReportedRulesHash(),
+		request.RulesHash, // bounded by parseRequest
 	)
+}
+
+// updatePostflightDate closes out a sync the client reported nothing about: only the timestamps and the feed
+// cursor are updated.
+func (c concreteSyncStateUpdater) updatePostflightDate(machineID string) (err error) {
+	return syncstate.UpdatePostflightDate(c.timeProvider, c.updater, machineID)
 }
 
 type staleRuleDestroyer interface {
