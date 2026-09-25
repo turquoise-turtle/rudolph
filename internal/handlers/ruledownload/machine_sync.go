@@ -16,10 +16,11 @@ import (
 // On the last page, we always re-send a copy of all machine-specific rules, regardless of whether the client has already received them or not.
 // In this way, we ensure that the machine-specific rules take precedence over any other rules in the system.
 // FIXME(derek.wang)
-//   we don't necessarily have to do it this way; because this makes it really annoying to remove machine rules, as we need complex logic to
-//   DELETE them. We could, as an alternative design, simply add machine-specific rules to the feed, and add an extra column to make the rule
-//   pertinent only to a single machine. We can use filter expressions to omit them from other machines. However, this design makes it very
-//   hard to figure out which rules belong on which machines.
+//
+//	we don't necessarily have to do it this way; because this makes it really annoying to remove machine rules, as we need complex logic to
+//	DELETE them. We could, as an alternative design, simply add machine-specific rules to the feed, and add an extra column to make the rule
+//	pertinent only to a single machine. We can use filter expressions to omit them from other machines. However, this design makes it very
+//	hard to figure out which rules belong on which machines.
 type machineRuleDownloder interface {
 	handle(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error)
 }
