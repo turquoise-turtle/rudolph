@@ -2,7 +2,6 @@ package eventupload
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 
@@ -63,7 +62,6 @@ func (h *PostEventuploadHandler) Handles(request events.APIGatewayProxyRequest) 
 }
 
 func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	log.Printf("EventUploadHandler request:\n%+v\n", request)
 	ctx := context.Background()
 
 	machineID, eventsRequest, errorResponse, err := parseRequest(request)
@@ -73,20 +71,27 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 
 	if !h.enableFirehose && !h.enableKinesis && !h.enableLambda {
 		// Shortcircuit if no handlers are enabled
-		log.Printf("No eventupload handlers are enabled")
+		return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
+	}
+
+	// Execution events, file access events and audit events are all forwarded, each record tagged with the
+	// machine that reported it.
+	forwardedEvents := convertRequestEventsToUploadEvents(machineID, eventsRequest)
+	if len(forwardedEvents) == 0 {
+		// Nothing to forward; sinks reject empty batches.
 		return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
 	}
 
 	if h.enableFirehose {
-		err = sendToFirehose(h.firehoseClient, machineID, eventsRequest.Events)
+		err = sendToFirehose(h.firehoseClient, machineID, forwardedEvents)
 	}
 
 	if err == nil && h.enableKinesis {
-		err = sendToKinesis(h.kinesisClient, machineID, eventsRequest.Events)
+		err = sendToKinesis(h.kinesisClient, machineID, forwardedEvents)
 	}
 
 	if err == nil && h.enableLambda {
-		err = sendToLambda(ctx, h.lambdaClient, machineID, eventsRequest.Events)
+		err = sendToLambda(ctx, h.lambdaClient, machineID, forwardedEvents)
 	}
 
 	if err != nil {

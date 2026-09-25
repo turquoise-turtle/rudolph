@@ -153,6 +153,31 @@ This release changes the Terraform configuration and the Lambda handlers in ways
 - Older builds of the API router, eventupload and xsrf handlers log the full request including its headers, which
   would write the sync token to CloudWatch Logs.
 
+### 0b. Update anything that reads the event stream
+The eventupload handler now forwards everything Santa 2026.8 sends, which changes the records that arrive in Firehose,
+Kinesis or your own Lambda:
+
+- Execution event records gain the fields Rudolph used to drop: `entitlement_info`, `cs_flags`, `signing_status`,
+  `secure_signing_time`, `signing_time`, `static_rule` and the remaining `quarantine_*` fields.
+- Two **new record shapes** share the same stream: file access events (`rule_name`, `rule_version`, `target`,
+  `process_chain`, `access_time`, `decision`) and audit events (`standalone_mode_rule_creation`). They do not have
+  `file_sha256` or `execution_time`, and `decision` on a file access record is a `FILE_ACCESS_DECISION_*` value, not
+  an execution decision.
+- Every record therefore carries **`event_type`**, one of `execution`, `file_access` or `audit`, alongside
+  `machine_id`.
+
+Before deploying, make consumers tolerate unknown record shapes: filter on `event_type = 'execution'` in queries and
+dashboards that assume execution events, and add the new columns to any Glue/Athena schema (a table with a fixed
+schema will otherwise drop the new fields or fail on the new shapes).
+
+### 0c. Alarm on rejected request bodies
+Sync handlers now refuse a request body that decompresses to more than 6 MiB with HTTP 413, so that a compressed
+payload cannot make a Lambda allocate unbounded memory. Normal syncs are orders of magnitude smaller, but a host that
+uploads a very large batch of events (a bundle scan of a huge application, or a long backlog after an outage) could hit
+the limit and then never get those events uploaded. Add a CloudWatch alarm on 413 responses, for example a metric
+filter on the API Gateway access or execution logs, or the `4XXError` metric for the `/eventupload/{machine_id}`
+resource, so a host stuck in that state is noticed rather than silently dropping events.
+
 ### 1. Roll out the sync token
 Once deployed, the API rejects every request without a valid token. Create a token (see above) and add its digest to
 `sync_token_sha256`. Hosts must run Santa 2026.8+ and receive the `SyncExtraHeaders` configuration profile.

@@ -93,6 +93,28 @@ NOTE: Even if the Client requests a clean sync, the server is not obligated to r
 }
 ```
 
+#### Limits on what a host reports
+Preflight stores what the host reports on the machine's sensor data row, so every stored value is bounded. A preflight
+that exceeds any limit below is refused with HTTP 400 and nothing is written; the host keeps its current rules and
+configuration and fails that sync. The limits are far above anything a Mac reports; they exist because an unbounded
+value could push the row past DynamoDB's 400 KB item limit, and an oversized serial number (a secondary index key,
+limited to 2 KB there) would make every preflight for that host fail.
+
+| Field | Limit (bytes) |
+|---|---|
+| `serial_num` | 64 |
+| `hostname` | 255 |
+| `model_identifier` | 64 |
+| `os_version`, `os_build` | 32 each |
+| `santa_version` | 64 |
+| `primary_user` | 256 |
+| `primary_user_groups` | 256 entries of up to 256 bytes each |
+| `rules_hash` | 128 |
+
+Postflight applies the same kind of check to what it stores: `sync_type` must be a sync type Rudolph knows (`NORMAL`,
+`CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
+limited to 6 MiB after decompression (HTTP 413 above that).
+
 ### Response - JSON
 
 More info found here: https://santa.readthedocs.io/en/latest/deployment/configuration/#sync-server-provided-configuration

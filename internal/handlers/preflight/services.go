@@ -61,6 +61,15 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 		request.CompilerRuleCount,
 		request.TransitiveRuleCount,
 	)
+	// The rest of the inventory a sensor reports about its host; the web view and the CLI show it, and it is
+	// the only place an operator can see which Mac a machine ID belongs to.
+	sensorData.Hostname = request.Hostname
+	sensorData.ModelIdentifier = request.ModelIdentifier
+	sensorData.SIPStatus = request.SIPStatus
+	sensorData.PrimaryUserGroups = request.PrimaryUserGroups
+	// Every string stored here was bounded by PreflightRequest.validate.
+	sensorData.RulesHash = request.RulesHash
+
 	_, err := c.putter.PutItem(sensorData)
 	return err
 }

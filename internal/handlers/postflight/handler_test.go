@@ -24,10 +24,10 @@ func (m mockRuleDestroyer) destroyMachineRulesMarkedForDeletion(machineID string
 	return m(machineID)
 }
 
-type mockSyncStateUpdater func(machineID string) error
+type mockSyncStateUpdater func(machineID string, request *PostflightRequest) error
 
-func (m mockSyncStateUpdater) updatePostflightDate(machineID string) error {
-	return m(machineID)
+func (m mockSyncStateUpdater) updatePostflight(machineID string, request *PostflightRequest) error {
+	return m(machineID, request)
 }
 
 // Coerce the mock types
@@ -51,7 +51,7 @@ func TestHandler_OK(t *testing.T) {
 			},
 		),
 		syncStateUpdater: mockSyncStateUpdater(
-			func(machineID string) error {
+			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
 				return nil
 			},
@@ -81,7 +81,7 @@ func TestHandler_Whoops(t *testing.T) {
 			},
 		),
 		syncStateUpdater: mockSyncStateUpdater(
-			func(machineID string) error {
+			func(machineID string, _ *PostflightRequest) error {
 				return nil
 			},
 		),
@@ -112,7 +112,7 @@ func TestHandler_Response(t *testing.T) {
 			},
 		),
 		syncStateUpdater: mockSyncStateUpdater(
-			func(machineID string) error {
+			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
 				return nil
 			},
@@ -144,7 +144,7 @@ func TestHandler_Invalid_RequestBody(t *testing.T) {
 			},
 		),
 		syncStateUpdater: mockSyncStateUpdater(
-			func(machineID string) error {
+			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
 				return nil
 			},

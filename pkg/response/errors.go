@@ -5,6 +5,7 @@ var ErrBlankPathParameterResponse = ErrorResponse{Error: "No path parameter"}
 var ErrInvalidContentTypeResponse = ErrorResponse{Error: "Invalid request content-type"}
 var ErrInvalidMediaTypeResponse = ErrorResponse{Error: "Invalid mediatype"}
 var ErrInvalidBodyResponse = ErrorResponse{Error: "Invalid request body"}
+var ErrBodyTooLargeResponse = ErrorResponse{Error: "Request body too large"}
 var ErrInvalidBodyNoSerialResponse = ErrorResponse{Error: "No serial number provided"}
 var ErrInternalServerErrorResponse = ErrorResponse{Error: "Internal server error"}
 

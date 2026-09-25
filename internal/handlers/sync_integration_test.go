@@ -410,7 +410,8 @@ func TestP8_PostflightRecordsSyncOutcome(t *testing.T) {
 	if err := attributevalue.UnmarshalMap(getItem(t, "Machine#"+machineA, "SyncState"), &state); err != nil {
 		t.Fatal(err)
 	}
-	if state["LastSyncType"] != "CLEAN" || state["RulesProcessed"] != float64(1) {
+	// Stored in Rudolph's canonical spelling (see pkg/types.SyncType), whichever spelling the client reported.
+	if state["LastSyncType"] != string(types.SyncTypeClean) || state["RulesProcessed"] != float64(1) {
 		t.Fatalf("sync state should record the reported sync type and rules processed, got %v", state)
 	}
 }

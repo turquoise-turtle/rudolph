@@ -18,14 +18,21 @@ const (
 // SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
 type SensorData struct {
 	dynamodb.PrimaryKey
-	MachineID            string           `dynamodbav:"MachineID"`
-	SerialNum            string           `dynamodbav:"SerialNum"`
+	MachineID       string `dynamodbav:"MachineID"`
+	SerialNum       string `dynamodbav:"SerialNum"`
+	Hostname        string `dynamodbav:"Hostname"`
+	ModelIdentifier string `dynamodbav:"ModelIdentifier"`
+	// SIPStatus is a pointer so that "SIP disabled" (0) is distinguishable from "the sensor reported none":
+	// omitempty leaves out only a nil pointer, a reported 0 is stored.
+	SIPStatus            *uint32          `dynamodbav:"SIPStatus,omitempty"`
 	OSVersion            string           `dynamodbav:"OSVersion"`
 	OSBuild              string           `dynamodbav:"OSBuild"`
 	SantaVersion         string           `dynamodbav:"SantaVersion"`
 	ClientMode           types.ClientMode `dynamodbav:"ClientMode"`
 	RequestCleanSync     bool             `dynamodbav:"RequestCleanSync"`
 	PrimaryUser          string           `dynamodbav:"PrimaryUser"`
+	PrimaryUserGroups    []string         `dynamodbav:"PrimaryUserGroups,omitempty"`
+	RulesHash            string           `dynamodbav:"RulesHash,omitempty"`
 	RuleCount            int              `dynamodbav:"RuleCount"`
 	CertificateRuleCount int              `dynamodbav:"CertificateRuleCount"`
 	BinaryRuleCount      int              `dynamodbav:"BinaryRuleCount"`

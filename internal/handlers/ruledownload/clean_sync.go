@@ -31,14 +31,13 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 
-	log.Printf("  lastEvaluatedKey %s", lastEvaluatedKey)
+	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
+	log.Printf("  Ruledownload clean page: %d global rule(s), more pages: %t", len(globalRules), lastEvaluatedKey != nil)
 
 	nextCursor := cursor.CloneForNextPage()
 	if lastEvaluatedKey == nil {
-		log.Printf("     No more stuff to paginate over")
 		nextCursor.SetStrategy(ruledownloadStrategyMachine)
 	} else {
-		log.Printf("     More stuff to paginate over")
 		nextCursor.SetDynamodbLastEvaluatedKey(lastEvaluatedKey)
 	}
 
@@ -50,7 +49,8 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 	// Marshal the cursor to a string
 	jsonCursor, err := json.Marshal(nextCursor)
 	if err != nil {
-		log.Printf("  json.Marshal Error %s", err.Error())
+		// The error is not logged: json.UnsupportedValueError embeds the value it could not marshal.
+		log.Printf("  Failed to marshal the ruledownload cursor")
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 

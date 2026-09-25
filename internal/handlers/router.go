@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/handlers/eventupload"
 	"github.com/airbnb/rudolph/internal/handlers/health"
@@ -33,15 +34,26 @@ func newHandlers() []HandlerInterface {
 	}
 }
 
+// ApiRouter dispatches an API Gateway request to the handler that serves it.
+//
+// Requests and responses are never logged: a request carries the fleet's bearer token in its headers and
+// personal data (user names, paths, binaries) in its body, and a response carries every rule a host may see.
+// Only what is needed to operate the API is logged: the route, the machine it is for, the status and how
+// long it took.
 func ApiRouter(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	log.Printf("Api Request: %+v", request)
+	start := time.Now()
 
 	response, err := getResponse(request)
 
-	if err != nil {
-		log.Printf("Api ERROR: %+v", err)
+	status := 0
+	if response != nil {
+		status = response.StatusCode
 	}
-	log.Printf("Api Response: %+v", response)
+	if err != nil {
+		log.Printf("%s %s machine=%s: handler error: %v", request.HTTPMethod, request.Resource, request.PathParameters["machine_id"], err)
+	}
+	log.Printf("%s %s machine=%s status=%d duration=%s",
+		request.HTTPMethod, request.Resource, request.PathParameters["machine_id"], status, time.Since(start))
 
 	return response, err
 }

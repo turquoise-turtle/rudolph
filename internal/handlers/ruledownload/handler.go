@@ -8,6 +8,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -64,18 +65,22 @@ func (h *PostRuledownloadHandler) Handles(request events.APIGatewayProxyRequest)
 }
 
 func (h *PostRuledownloadHandler) Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	machineID, ok := request.PathParameters["machine_id"]
-	if !ok {
-		// Unreachable code; API Gateway will never allow {machine_id} to be blank
-		log.Printf("ASSERTION FAILED: Received blank {machine_id}")
-		return response.APIResponse(http.StatusBadRequest, nil)
+	// Like every other sync stage, refuse a machine ID that is not a canonical UUID before touching storage
+	machineID, errorResponse, err := apirequest.GetMachineID(request)
+	if errorResponse != nil || err != nil {
+		return errorResponse, err
+	}
+
+	body, errorResponse, err := apirequest.GetBody(request)
+	if errorResponse != nil || err != nil {
+		return errorResponse, err
 	}
 
 	// Parse the request
 	var ruledownloadRequest *RuledownloadRequest
-	err := json.Unmarshal([]byte(request.Body), &ruledownloadRequest)
+	err = apirequest.UnmarshalSantaJSON(body, &ruledownloadRequest)
 	if err != nil {
-		log.Printf("  Failed to unmarshall ruledownload request Error %s", err.Error())
+		log.Printf("  Failed to unmarshall ruledownload request")
 		return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 	}
 
@@ -83,7 +88,7 @@ func (h *PostRuledownloadHandler) Handle(request events.APIGatewayProxyRequest) 
 		ruledownloadRequest.Cursor = &ruledownloadCursor{}
 		err = json.Unmarshal([]byte(ruledownloadRequest.RawCursor), ruledownloadRequest.Cursor)
 		if err != nil {
-			log.Printf("  Failed to unmarshall cursor Error %s", err.Error())
+			log.Printf("  Failed to unmarshall cursor")
 			return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 		}
 	}
