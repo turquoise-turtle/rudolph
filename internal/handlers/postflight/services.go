@@ -54,9 +54,10 @@ func (c concreteSyncStateUpdater) updatePostflightOutcome(machineID string, requ
 		c.timeProvider,
 		c.updater,
 		machineID,
-		request.SyncType,
+		string(request.SyncType),
 		request.RulesReceived,
 		request.RulesProcessed,
+		request.ReportedRulesHash(),
 	)
 }
 

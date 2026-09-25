@@ -33,6 +33,7 @@ func UpdatePostflightOutcome(
 	lastSyncType string,
 	rulesReceived int,
 	rulesProcessed int,
+	rulesHashAfterSync string,
 ) (err error) {
 	_, err = client.UpdateItem(
 		dynamodb.PrimaryKey{
@@ -44,6 +45,7 @@ func UpdatePostflightOutcome(
 			LastSyncType:         lastSyncType,
 			RulesReceived:        rulesReceived,
 			RulesProcessed:       rulesProcessed,
+			RulesHashAfterSync:   rulesHashAfterSync,
 		},
 	)
 

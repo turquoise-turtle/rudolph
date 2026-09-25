@@ -6,6 +6,7 @@ import (
 
 	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
+	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-lambda-go/events"
 )
 
@@ -44,9 +45,25 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 //
 // Santa sends sync_type lowerCamelCased ("syncType"), as it has no `json_name` in sync_v1.proto; the body is
 // normalized to the spelling below before unmarshalling. See pkg/request.UnmarshalSantaJSON.
+//
+// SyncType is typed, so that a value Rudolph does not know is refused at the door rather than stored: it is
+// client-controlled input that goes into the machine's row, and an item that grows past DynamoDB's 400 KB
+// limit would break every later sync for that host.
 type PostflightRequest struct {
-	RulesReceived  int    `json:"rules_received"`
-	RulesProcessed int    `json:"rules_processed"`
-	SyncType       string `json:"sync_type"`
-	RulesHash      string `json:"rules_hash"`
+	RulesReceived  int            `json:"rules_received"`
+	RulesProcessed int            `json:"rules_processed"`
+	SyncType       types.SyncType `json:"sync_type"`
+	RulesHash      string         `json:"rules_hash"`
+}
+
+// maxRulesHashLength bounds the other client-controlled value stored on the sync state row. Santa reports a
+// hex digest; anything longer is not one and is ignored rather than written to the row.
+const maxRulesHashLength = 128
+
+// ReportedRulesHash is the rules hash the client reported, if it is plausibly a digest.
+func (r *PostflightRequest) ReportedRulesHash() string {
+	if r == nil || len(r.RulesHash) > maxRulesHashLength {
+		return ""
+	}
+	return r.RulesHash
 }

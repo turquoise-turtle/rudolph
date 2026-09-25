@@ -58,7 +58,19 @@ type PreflightRequest struct {
 	SigningIDRuleCount   int              `json:"signingid_rule_count"`
 	RequestCleanSync     bool             `json:"request_clean_sync"`
 	ModelIdentifier      string           `json:"model_identifier"`
-	SIPStatus            uint32           `json:"sip_status"`
+	SIPStatus            *uint32          `json:"sip_status"`
 	RulesHash            string           `json:"rules_hash"`
 	PushNotificationSync bool             `json:"push_notification_sync"`
+}
+
+// maxRulesHashLength bounds a client-controlled value that is stored on the machine's row. Santa reports a
+// hex digest; anything longer is not one, and storing it could push the item past DynamoDB's 400 KB limit.
+const maxRulesHashLength = 128
+
+// ReportedRulesHash is the rules hash the client reported, if it is plausibly a digest.
+func (r *PreflightRequest) ReportedRulesHash() string {
+	if r == nil || len(r.RulesHash) > maxRulesHashLength {
+		return ""
+	}
+	return r.RulesHash
 }

@@ -67,7 +67,7 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 	sensorData.ModelIdentifier = request.ModelIdentifier
 	sensorData.SIPStatus = request.SIPStatus
 	sensorData.PrimaryUserGroups = request.PrimaryUserGroups
-	sensorData.RulesHash = request.RulesHash
+	sensorData.RulesHash = request.ReportedRulesHash()
 
 	_, err := c.putter.PutItem(sensorData)
 	return err
