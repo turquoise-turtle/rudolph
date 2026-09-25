@@ -90,26 +90,27 @@ func decompressBody(contentEncoding string, body []byte) ([]byte, error) {
 		}
 		return body, nil
 	case "deflate":
-		// Santa uses zlib, which is what RFC 9110 calls "deflate"; some HTTP clients send a raw deflate
-		// stream instead, so fall back to that rather than failing the sync.
-		decompressed, err := readLimited(func() (io.ReadCloser, error) { return zlib.NewReader(bytes.NewReader(body)) })
-		if err != nil && !errors.Is(err, ErrBodyTooLarge) {
-			return readLimited(func() (io.ReadCloser, error) { return flate.NewReader(bytes.NewReader(body)), nil })
+		// Santa uses zlib, which is what RFC 9110 calls "deflate". Only when the body is not a zlib stream at
+		// all do we try a raw deflate stream, which is what some other HTTP clients send under this name; a
+		// zlib stream that is truncated or corrupt is reported as such instead of being decompressed twice.
+		reader, err := zlib.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return readLimited(flate.NewReader(bytes.NewReader(body)))
 		}
-		return decompressed, err
+		return readLimited(reader)
 	case "gzip", "x-gzip":
-		return readLimited(func() (io.ReadCloser, error) { return gzip.NewReader(bytes.NewReader(body)) })
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("request body could not be decompressed: %w", err)
+		}
+		return readLimited(reader)
 	default:
 		return nil, fmt.Errorf("unsupported Content-Encoding %q", encoding)
 	}
 }
 
 // readLimited decompresses a stream, refusing to allocate more than MaxBodySize for it.
-func readLimited(open func() (io.ReadCloser, error)) ([]byte, error) {
-	reader, err := open()
-	if err != nil {
-		return nil, fmt.Errorf("request body could not be decompressed: %w", err)
-	}
+func readLimited(reader io.ReadCloser) ([]byte, error) {
 	defer reader.Close()
 
 	decompressed, err := io.ReadAll(io.LimitReader(reader, MaxBodySize+1))
@@ -120,76 +121,4 @@ func readLimited(open func() (io.ReadCloser, error)) ([]byte, error) {
 		return nil, ErrBodyTooLarge
 	}
 	return decompressed, nil
-}
-
-// normalizeProtoJSONKeys rewrites every lowerCamelCase object key in a JSON document to snake_case. Keys
-// that are already snake_case are left alone, so both spellings of a protobuf JSON field are accepted.
-func normalizeProtoJSONKeys(data []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-
-	var document any
-	if err := decoder.Decode(&document); err != nil {
-		return nil, err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, errors.New("unexpected data after the end of the JSON document")
-	}
-
-	normalized, changed := normalizeValue(document)
-	if !changed {
-		return data, nil
-	}
-	return json.Marshal(normalized)
-}
-
-func normalizeValue(value any) (any, bool) {
-	switch typed := value.(type) {
-	case map[string]any:
-		normalized := make(map[string]any, len(typed))
-		changed := false
-		for key, keyValue := range typed {
-			normalizedValue, valueChanged := normalizeValue(keyValue)
-			normalizedKey := snakeCase(key)
-			changed = changed || valueChanged || normalizedKey != key
-			normalized[normalizedKey] = normalizedValue
-		}
-		return normalized, changed
-	case []any:
-		changed := false
-		for i, element := range typed {
-			normalizedElement, elementChanged := normalizeValue(element)
-			typed[i] = normalizedElement
-			changed = changed || elementChanged
-		}
-		return typed, changed
-	default:
-		return value, false
-	}
-}
-
-func snakeCase(key string) string {
-	var builder strings.Builder
-	for i := 0; i < len(key); i++ {
-		character := key[i]
-		if character < 'A' || character > 'Z' {
-			if builder.Len() > 0 {
-				builder.WriteByte(character)
-			}
-			continue
-		}
-		if builder.Len() == 0 {
-			builder.WriteString(key[:i])
-		}
-		// A leading capital is not a word boundary: "Foo" is "foo", but "fooBar" is "foo_bar".
-		if i > 0 {
-			builder.WriteByte('_')
-		}
-		builder.WriteByte(character - 'A' + 'a')
-	}
-	if builder.Len() == 0 {
-		return key
-	}
-	return builder.String()
 }
