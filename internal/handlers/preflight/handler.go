@@ -137,6 +137,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		lastCleanSyncTime,
 		machineConfiguration.BatchSize,
 		feedSyncCursor,
+		machineRulesDelivered(prevSyncState),
 	)
 
 	if err != nil {

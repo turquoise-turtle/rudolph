@@ -24,7 +24,7 @@ func getCleanSyncService(timeProvider clock.TimeProvider) cleanSyncService {
 type stateTrackingService interface {
 	saveSensorDataFromPreflightRequest(machineID string, request *PreflightRequest) error
 	getSyncState(machineID string) (syncState *syncstate.SyncStateRow, err error)
-	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string) error
+	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, machineRulesDelivered syncstate.MachineRuleKeys) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
 }
 
@@ -78,7 +78,7 @@ func (c concreteStateTrackingService) getSyncState(machineID string) (syncState 
 	return syncstate.GetByMachineID(c.getter, machineID)
 }
 
-func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string) error {
+func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, machineRulesDelivered syncstate.MachineRuleKeys) error {
 	syncState := syncstate.CreateNewSyncState(
 		c.timeProvider,
 		machineID,
@@ -87,6 +87,7 @@ func (c concreteStateTrackingService) saveSyncState(machineID string, requestCle
 		batchSize,
 		feedSyncCursor,
 	)
+	syncState.SetMachineRulesDelivered(machineRulesDelivered)
 	_, err := c.putter.PutItem(syncState)
 	return err
 }

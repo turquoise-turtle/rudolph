@@ -12,6 +12,12 @@ func GetGlobalRuleBySortKey(client dynamodb.GetItemAPI, ruleSortKey string) (*Gl
 	return getItemAsGlobalRule(client, globalRulesPK, ruleSortKey)
 }
 
+// GetGlobalRuleBySortKeyConsistently is GetGlobalRuleBySortKey with a strongly consistent read, for callers that
+// send the result to a Mac right away and must not act on a rule that was just changed or removed.
+func GetGlobalRuleBySortKeyConsistently(client dynamodb.GetItemAPI, ruleSortKey string) (*GlobalRuleRow, error) {
+	return getItemAsGlobalRuleWithConsistency(client, globalRulesPK, ruleSortKey, true)
+}
+
 // @deprecated Use GetGlobalRuleByIdentifier
 func GetGlobalRuleByShaType(client dynamodb.GetItemAPI, sha256 string, ruleType types.RuleType) (*GlobalRuleRow, error) {
 	return GetGlobalRuleByIdentifier(client, sha256, ruleType)
@@ -28,12 +34,21 @@ func getItemAsGlobalRule(
 	partitionKey string,
 	sortKey string,
 ) (rule *GlobalRuleRow, err error) {
+	return getItemAsGlobalRuleWithConsistency(client, partitionKey, sortKey, false)
+}
+
+func getItemAsGlobalRuleWithConsistency(
+	client dynamodb.GetItemAPI,
+	partitionKey string,
+	sortKey string,
+	consistentRead bool,
+) (rule *GlobalRuleRow, err error) {
 	output, err := client.GetItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: partitionKey,
 			SortKey:      sortKey,
 		},
-		false,
+		consistentRead,
 	)
 
 	if err != nil {

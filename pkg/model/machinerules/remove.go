@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 )
 
 // ErrRuleNotFound is returned by RemoveMachineRule when the target rule does not exist in DynamoDB.
@@ -51,14 +52,14 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 	if globalRule != nil {
 		// There is an associated global rule.
 		//
-		// In this case, when we REMOVE the rule, we will want a rule entry to show up on the
-		// next sync that reflects the state of the global rule.
+		// In this case, when we REMOVE the rule, the Mac falls back to the global rule rather than
+		// losing it: a machine rule marked for deletion no longer applies, and ruledownload sends the
+		// Mac the global rule for the same identifier and type instead (read when it is sent, so a
+		// later change to the global rule is honoured), until a completed sync has delivered it.
 		//
-		// The way we achieve this is to change the machine-specific rule to INHERIT the policy
-		// and the fields (e.g. CEL expression, custom message) from the global rule; fields the
-		// global rule does not have are cleared. The next time the machine performs a sync, it
-		// will reach this machine-specific rule on the final page, updating the state. Finally,
-		// the postflight process then delete this record.
+		// The marked row records what the machine falls back to: it INHERITS the policy and the
+		// fields (e.g. CEL expression, custom message) of the global rule; fields the global rule
+		// does not have are cleared.
 		log.Printf("There is a global rule that this machine-rule overwrites. Inheriting...")
 		request.Policy = globalRule.Policy
 		request.CustomMessage = globalRule.CustomMessage
@@ -68,7 +69,8 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 		request.EventDetailButtonLabel = globalRule.EventDetailButtonLabel
 	} else {
 		// There was no associated global rule.
-		// Simply change item to a "REMOVE" (without any other fields) and then delete the DynamoDB record after the next sync
+		// Simply change item to a "REMOVE" (without any other fields); ruledownload sends the Mac a REMOVE until a
+		// completed sync has delivered it, whether or not this record still exists by then
 		request.Policy = types.Remove
 	}
 
@@ -80,6 +82,19 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 	log.Printf("Successfully marked as 'remove'.")
 	return nil
 
+}
+
+// DeleteRuleMarkedForDeletion deletes a machine rule row that RemoveMachineRule marked for deletion. The row is only
+// deleted while it is still marked, so a rule added again in the meantime is kept; it is not an error if it is not.
+//
+// Deleting the row does not lose the removal: which rules a Mac holds is tracked on its sync state, and a rule the
+// Mac holds that has no row is removed from it (or replaced by the global rule) on its next syncs until one completes.
+func DeleteRuleMarkedForDeletion(client dynamodb.DeleteItemIfAPI, key dynamodb.PrimaryKey) error {
+	_, err := client.DeleteItemIf(key, expression.Equal(expression.Name("DeleteOnNextSync"), expression.Value(true)))
+	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
+		return fmt.Errorf("failed to delete a machine rule marked for deletion: %w", err)
+	}
+	return nil
 }
 
 // @deprecated

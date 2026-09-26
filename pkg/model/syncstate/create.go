@@ -30,3 +30,10 @@ func CreateNewSyncState(
 		},
 	}
 }
+
+// SetMachineRulesDelivered records which machine-specific rules the Mac holds as this sync starts. Until
+// ruledownload serves something else, this sync is assumed to serve the same set.
+func (r *SyncStateRow) SetMachineRulesDelivered(delivered MachineRuleKeys) {
+	r.MachineRulesDelivered = delivered
+	r.MachineRulesServed = delivered
+}

@@ -24,8 +24,9 @@ func archiveSyncState(client dynamodb.DynamoDBClient, machineID string) (err err
 	return
 }
 
-// syncStateUpdater closes out a sync: it records the postflight timestamps and what the client reported about
-// the sync it just finished, in a single update of the sync state row.
+// syncStateUpdater closes out a sync: it marks the sync as completed and records what the client reported about
+// the sync it just finished, in a single update of the sync state row. It reads nothing: what the completed sync
+// delivered (feed position, machine-specific rules) is already on the row and is taken over by the next preflight.
 type syncStateUpdater interface {
 	updatePostflight(machineID string, request *PostflightRequest) error
 }
@@ -51,12 +52,17 @@ func (c concreteSyncStateUpdater) updatePostflight(machineID string, request *Po
 	)
 }
 
-// updatePostflightDate closes out a sync the client reported nothing about: only the timestamps and the feed
-// cursor are updated.
+// updatePostflightDate closes out a sync the client reported nothing about: only the timestamps are updated (the
+// feed cursor it writes is superseded, see syncstate.UpdatePostflightItem).
 func (c concreteSyncStateUpdater) updatePostflightDate(machineID string) (err error) {
 	return syncstate.UpdatePostflightDate(c.timeProvider, c.updater, machineID)
 }
 
+// staleRuleDestroyer deletes the machine's rule rows that are marked for deletion.
+//
+// Deleting them is safe at any time: whether a removal still has to reach the Mac is tracked on the sync state, not
+// by the row (see syncstate.SyncState). Ruledownload already deletes the marked rows it reads, so this sweep rarely
+// finds any; it costs a query on every postflight, which puts a steady-state sync one read over the C3 budget.
 type staleRuleDestroyer interface {
 	destroyMachineRulesMarkedForDeletion(machineID string) error
 }

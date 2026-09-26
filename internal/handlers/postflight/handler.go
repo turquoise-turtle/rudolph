@@ -55,15 +55,16 @@ func (h *PostPostflightHandler) Handle(request events.APIGatewayProxyRequest) (*
 		return errResponse, err
 	}
 
-	// FIXME (derek.wang) This postflight is not properly setting the FeedSyncCursor; it's just setting it to
-	// like "10 minutes ago and leaving it like that. Pretty dumb, derek!"
+	// Mark the sync as completed. The next preflight then advances the feed cursor to where this sync started, and
+	// takes the machine-specific rules this sync served as delivered (see syncstate.NextFeedSyncCursor and
+	// syncstate.NextMachineRulesDelivered); a sync that never gets here advances neither.
 	err = h.syncStateUpdater.updatePostflight(machineID, postflightRequest)
 	if err != nil {
 		log.Printf("Failed to set final PostflightAt")
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 
-	// Delete rules marked for deletion
+	// Delete rules marked for deletion that ruledownload has not deleted already (see staleRuleDestroyer)
 	err = h.ruleDestroyer.destroyMachineRulesMarkedForDeletion(machineID)
 	if err != nil {
 		return response.APIResponse(http.StatusInternalServerError, err)

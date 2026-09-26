@@ -13,6 +13,7 @@ import (
 
 type DynamoDBClient interface {
 	DeleteItemAPI
+	DeleteItemIfAPI
 	GetItemAPI
 	PutItemAPI
 	PutItemIfNotExistsAPI

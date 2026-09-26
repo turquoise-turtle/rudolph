@@ -48,22 +48,36 @@ func GetMachineRules(client dynamodb.QueryAPI, machineID string) (items *[]Machi
 		":pk": &types.AttributeValueMemberS{Value: partitionKey},
 	}
 
-	input := &awsdynamodb.QueryInput{
-		ConsistentRead:            aws.Bool(false),
-		ExpressionAttributeValues: expressionAttributeValues,
-		KeyConditionExpression:    keyConditionExpression,
-	}
+	// Every rule of the machine is returned, however many pages DynamoDB splits them into (1 MB each)
+	rows := []MachineRuleRow{}
+	var exclusiveStartKey map[string]types.AttributeValue
+	for {
+		input := &awsdynamodb.QueryInput{
+			ConsistentRead:            aws.Bool(false),
+			ExpressionAttributeValues: expressionAttributeValues,
+			KeyConditionExpression:    keyConditionExpression,
+			ExclusiveStartKey:         exclusiveStartKey,
+		}
 
-	result, err := client.Query(input)
-	if err != nil {
-		err = fmt.Errorf("failed to read rules from DynamoDB for partitionKey %q: %w", partitionKey, err)
-		return
-	}
+		result, eerr := client.Query(input)
+		if eerr != nil {
+			err = fmt.Errorf("failed to read rules from DynamoDB for partitionKey %q: %w", partitionKey, eerr)
+			return
+		}
 
-	err = attributevalue.UnmarshalListOfMaps(result.Items, &items)
-	if err != nil {
-		err = fmt.Errorf("failed to unmarshal result from DynamoDB: %w", err)
-		return
+		var page []MachineRuleRow
+		err = attributevalue.UnmarshalListOfMaps(result.Items, &page)
+		if err != nil {
+			err = fmt.Errorf("failed to unmarshal result from DynamoDB: %w", err)
+			return
+		}
+		rows = append(rows, page...)
+
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		exclusiveStartKey = result.LastEvaluatedKey
 	}
+	items = &rows
 	return
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 )
 
+// UpdatePostflightDate closes out a sync the client reported nothing about. See UpdatePostflightItem.
 func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
 	_, err = client.UpdateItem(
 		dynamodb.PrimaryKey{
@@ -23,9 +24,9 @@ func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.Updat
 	return
 }
 
-// UpdatePostflightOutcome closes out a sync like UpdatePostflightDate, and additionally records what the
-// client reported about the sync it just finished: the sync type it performed, and how many rules it
-// received and successfully applied.
+// UpdatePostflightOutcome closes out a sync: it marks the sync as completed, and records what the client reported
+// about the sync it just finished: the sync type it performed, and how many rules it received and successfully
+// applied. See UpdatePostflightOutcomeItem.
 func UpdatePostflightOutcome(
 	timeProvider clock.TimeProvider,
 	client dynamodb.UpdateItemAPI,
@@ -41,11 +42,12 @@ func UpdatePostflightOutcome(
 			SortKey:      syncStateSK,
 		},
 		UpdatePostflightOutcomeItem{
-			UpdatePostflightItem: newUpdatePostflightItem(timeProvider),
-			LastSyncType:         lastSyncType,
-			RulesReceived:        rulesReceived,
-			RulesProcessed:       rulesProcessed,
-			RulesHashAfterSync:   rulesHashAfterSync,
+			PostflightAt:       clock.RFC3339(timeProvider.Now()),
+			ExpiresAfter:       GetSyncStateExpiresAfter(timeProvider),
+			LastSyncType:       lastSyncType,
+			RulesReceived:      rulesReceived,
+			RulesProcessed:     rulesProcessed,
+			RulesHashAfterSync: rulesHashAfterSync,
 		},
 	)
 
@@ -58,62 +60,27 @@ func UpdatePostflightOutcome(
 func newUpdatePostflightItem(timeProvider clock.TimeProvider) UpdatePostflightItem {
 	return UpdatePostflightItem{
 		PostflightAt: clock.RFC3339(timeProvider.Now()),
-		// FIXME (derek.wang) ok, hear me out here--
-		// Machines sync typically every 10 minutes. Due to DDB's eventual consistency model, there's a small chance for the
-		// following to occur:
-		//
-		// - t=1 Old sensor cursor in database
-		// - t=10 new feed rule added
-		// - t=11 sensor sync starts
-		// - t=12 sensor uses feed cursor "1" to download
-		// - t=13 dynamodb:Query scans t>=1 and accidentally misses the new feed rule due to eventual consistency
-		// - t=14 ruledownlod returns 0 rules
-		// - t=15 postflight saves "15" into the database as the new cursor
-		//
-		// To mitigate against this, we always save a cursor that's 10 minutes EARLIER than the end of the sync.
-		// This forces sensor sync processes to overscan a little. In practice, this will have very minimal impact to
-		// performance, as all dynamodb:Query calls consume 0.5 RCUs + more RCUs based upon the number of items returned.
-		// Redundantly scanning ranges of sort keys that are almost always empty will rarely increase cost.
-		//
-		// For FUTURE Derek to figure out:
-		// The absolute BEST way of doing this is to only move cursor whenever ruledownload returns rules or has a
-		// lastEvaluatedKey. Doing this would require additional writes on /ruledownload which would inofitself increase
-		// WCUs which are way more expensive than RCUs. So yeah, my lame excuse of a spaghetti code will stand here.
+		// Not read for a completed sync: the next preflight derives the cursor from PreflightAt (NextFeedSyncCursor).
 		FeedSyncCursor: clock.RFC3339(timeProvider.Now().Add(time.Minute * -10)),
 		ExpiresAfter:   GetSyncStateExpiresAfter(timeProvider),
 	}
 }
 
-func UpdateRuledownloadStartedAt(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
-	_, err = client.UpdateItem(
+// UpdateMachineRulesServed records which machine-specific rules this sync's ruledownload sent to the Mac. Once the
+// sync completes they become the rules the Mac holds (see NextMachineRulesDelivered).
+//
+// The update is conditional on the sync state row existing, so a machine without one (e.g. whose row was deleted
+// mid-sync) fails the ruledownload rather than getting a partial row.
+func UpdateMachineRulesServed(client dynamodb.UpdateItemAPI, machineID string, served MachineRuleKeys) error {
+	_, err := client.UpdateItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
-		updateRuledownloadAtItem{
-			RuledownloadStartedAt: clock.RFC3339(timeProvider.Now()),
-		},
+		updateMachineRulesServedItem{MachineRulesServed: served},
 	)
-
 	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+		return fmt.Errorf("failed to record the machine rules served: %w", err)
 	}
-	return
-}
-
-func UpdateRuledownloadFinishedAt(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
-	_, err = client.UpdateItem(
-		dynamodb.PrimaryKey{
-			PartitionKey: syncStatePK(machineID),
-			SortKey:      syncStateSK,
-		},
-		updateRuledownloadFinishedAtItem{
-			RuledownloadFinishedAt: clock.RFC3339(timeProvider.Now()),
-		},
-	)
-
-	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
-	}
-	return
+	return nil
 }

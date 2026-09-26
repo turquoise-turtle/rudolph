@@ -20,7 +20,8 @@ type globalRuleDownloader interface {
 }
 
 type concreteGlobalRuleDownloader struct {
-	queryer dynamodb.QueryAPI
+	queryer      dynamodb.QueryAPI
+	machineRules machineRulePage
 }
 
 func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownloadCursor) (*events.APIGatewayProxyResponse, error) {
@@ -34,17 +35,41 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
 	log.Printf("  Ruledownload clean page: %d global rule(s), more pages: %t", len(globalRules), lastEvaluatedKey != nil)
 
-	nextCursor := cursor.CloneForNextPage()
-	if lastEvaluatedKey == nil {
-		nextCursor.SetStrategy(ruledownloadStrategyMachine)
-	} else {
-		nextCursor.SetDynamodbLastEvaluatedKey(lastEvaluatedKey)
-	}
-
 	rules := make([]rules.SantaRule, len(globalRules))
 	for i, rule := range globalRules {
 		rules[i] = rule.SantaRule
 	}
+
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules)
+}
+
+// lastPageOrNext returns a page of global or feed rules. On the last one, the machine-specific rules are appended
+// and no cursor is returned, which ends the sync's ruledownload; otherwise the cursor for the next page is returned.
+func lastPageOrNext(
+	machineID string,
+	cursor ruledownloadCursor,
+	pageRules []rules.SantaRule,
+	lastEvaluatedKey *dynamodb.PrimaryKey,
+	machineRules machineRulePage,
+) (*events.APIGatewayProxyResponse, error) {
+	if lastEvaluatedKey == nil {
+		machineSpecific, err := machineRules.rules(machineID, cursor.syncState)
+		if err != nil {
+			log.Printf("  Failed to build the machine rules page: %v", err)
+			return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		}
+		return response.APIResponse(
+			http.StatusOK,
+			RuledownloadResponse{
+				Rules: DDBRulesToResponseRules(append(pageRules, machineSpecific...)),
+				// Omit the cursor to signal to the sensor that there are no more pages to paginate through
+			},
+		)
+	}
+
+	// Here we inherit the preexisting cursor strategy
+	nextCursor := cursor.CloneForNextPage()
+	nextCursor.SetDynamodbLastEvaluatedKey(lastEvaluatedKey)
 
 	// Marshal the cursor to a string
 	jsonCursor, err := json.Marshal(nextCursor)
@@ -57,7 +82,7 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 	return response.APIResponse(
 		http.StatusOK,
 		RuledownloadResponse{
-			Rules:  DDBRulesToResponseRules(rules),
+			Rules:  DDBRulesToResponseRules(pageRules),
 			Cursor: string(jsonCursor),
 		},
 	)
