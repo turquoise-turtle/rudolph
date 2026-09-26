@@ -69,8 +69,9 @@ func UpdateGlobalRule(
 		CELExpr: updatedRule.CELExpr,
 	}
 
-	// Create the Update the rule by creating a TransactUpdateItem
-	updateItem1, err := client.CreateTransactUpdateItem(primaryKey, updateItem)
+	// Update the rule only if it still exists: a rule removed since it was read above must not be recreated as a
+	// partial row (no RuleType or Identifier), which would break every clean sync
+	updateItem1, err := client.CreateTransactUpdateExistingItem(primaryKey, updateItem)
 	if err != nil {
 		return err
 	}
@@ -89,6 +90,9 @@ func UpdateGlobalRule(
 
 	// Send the TransactWriteRequest
 	_, err = client.TransactWriteItems(transactItems, nil)
+	if dynamodb.IsTransactionConditionalCheckFailed(err) {
+		return fmt.Errorf("no global rule with sk (%s) exists: it was removed while it was being updated", sk)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to update global rule: %w", err)
 	}

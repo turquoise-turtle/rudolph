@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -15,6 +16,7 @@ type TransactWriteItemsAPI interface {
 	TransactWriteItems(items []types.TransactWriteItem, idempotencyToken *string) (*dynamodb.TransactWriteItemsOutput, error)
 	CreateTransactPutItem(item interface{}) (*types.TransactWriteItem, error)
 	CreateTransactUpdateItem(key PrimaryKey, item interface{}) (*types.TransactWriteItem, error)
+	CreateTransactUpdateExistingItem(key PrimaryKey, item interface{}) (*types.TransactWriteItem, error)
 	CreateTransactDeleteItem(key PrimaryKey) (*types.TransactWriteItem, error)
 }
 
@@ -58,6 +60,17 @@ func (dbc concreteDynamoDBClient) CreateTransactPutItem(item interface{}) (write
 }
 
 func (dbc concreteDynamoDBClient) CreateTransactUpdateItem(primaryKey PrimaryKey, updateFields interface{}) (writeItem *types.TransactWriteItem, err error) {
+	return dbc.createTransactUpdateItem(primaryKey, updateFields, false)
+}
+
+// CreateTransactUpdateExistingItem is CreateTransactUpdateItem for an item that must already exist: if it does not
+// (e.g. it was deleted since it was read), the transaction is cancelled instead of creating a partial item, and
+// TransactWriteItems returns an error that satisfies IsTransactionConditionalCheckFailed.
+func (dbc concreteDynamoDBClient) CreateTransactUpdateExistingItem(primaryKey PrimaryKey, updateFields interface{}) (writeItem *types.TransactWriteItem, err error) {
+	return dbc.createTransactUpdateItem(primaryKey, updateFields, true)
+}
+
+func (dbc concreteDynamoDBClient) createTransactUpdateItem(primaryKey PrimaryKey, updateFields interface{}, mustExist bool) (writeItem *types.TransactWriteItem, err error) {
 	key, err := attributevalue.MarshalMap(primaryKey)
 	if err != nil {
 		return nil, err
@@ -73,9 +86,11 @@ func (dbc concreteDynamoDBClient) CreateTransactUpdateItem(primaryKey PrimaryKey
 		updates = updates.Set(expression.Name(key), expression.Value(value))
 	}
 
-	expr, err := expression.NewBuilder().
-		WithUpdate(updates).
-		Build()
+	builder := expression.NewBuilder().WithUpdate(updates)
+	if mustExist {
+		builder = builder.WithCondition(expression.AttributeExists(expression.Name("PK")))
+	}
+	expr, err := builder.Build()
 	if err != nil {
 		return nil, err
 	}
@@ -84,12 +99,28 @@ func (dbc concreteDynamoDBClient) CreateTransactUpdateItem(primaryKey PrimaryKey
 		Update: &types.Update{
 			Key:                       key,
 			UpdateExpression:          expr.Update(),
+			ConditionExpression:       expr.Condition(),
 			ExpressionAttributeNames:  expr.Names(),
 			ExpressionAttributeValues: expr.Values(),
 			TableName:                 aws.String(dbc.tableName),
 		},
 	}
 	return
+}
+
+// IsTransactionConditionalCheckFailed reports whether err is a transaction cancelled because the condition of one of
+// its items was not met
+func IsTransactionConditionalCheckFailed(err error) bool {
+	var cancelled *types.TransactionCanceledException
+	if !errors.As(err, &cancelled) {
+		return false
+	}
+	for _, reason := range cancelled.CancellationReasons {
+		if aws.ToString(reason.Code) == "ConditionalCheckFailed" {
+			return true
+		}
+	}
+	return false
 }
 
 func (dbc concreteDynamoDBClient) CreateTransactDeleteItem(key PrimaryKey) (writeItem *types.TransactWriteItem, err error) {

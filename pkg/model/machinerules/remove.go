@@ -7,6 +7,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 )
 
@@ -40,6 +41,12 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 
 	request := ruleRemovalRequest{
 		DeleteOnNextSync: true,
+	}
+	if globalRule != nil && rules.ValidatePolicy(globalRule.SantaRule) != nil {
+		// A global rule Santa cannot apply (e.g. the legacy ALLOWLIST_TRANSITIVE policy) is never sent to Macs, so
+		// there is nothing to fall back to: the Mac must drop the override.
+		log.Printf("The global rule this machine rule overrides cannot be sent to Santa; removing the rule instead")
+		globalRule = nil
 	}
 	if globalRule != nil {
 		// There is an associated global rule.

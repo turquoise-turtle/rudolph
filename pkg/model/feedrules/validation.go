@@ -2,6 +2,7 @@ package feedrules
 
 import (
 	"github.com/airbnb/rudolph/pkg/model/rules"
+	"github.com/airbnb/rudolph/pkg/types"
 )
 
 func (f *FeedRuleRow) feedRuleRowValidation() (bool, error) {
@@ -23,7 +24,12 @@ func (f *FeedRuleRow) feedRuleRowValidation() (bool, error) {
 		return false, err
 	}
 
-	if !rules.ValidIdentifier(f.RuleType, f.Identifier) {
+	validIdentifier := rules.ValidIdentifier
+	if f.Policy == types.RulePolicyRemove {
+		// A removal only has to name the stored rule, which may predate today's identifier validation
+		validIdentifier = rules.ValidRemovalIdentifier
+	}
+	if !validIdentifier(f.RuleType, f.Identifier) {
 		return false, nil
 	}
 

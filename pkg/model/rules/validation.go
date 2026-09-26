@@ -56,6 +56,37 @@ func ValidIdentifier(ruleType types.RuleType, identifier string) bool {
 	}
 }
 
+// Identifiers that today's validation rejects but that older versions of Rudolph (which only checked the length of a
+// SHA-256) or other tools may have stored, e.g. an upper-case SHA-256. They are accepted when a rule is removed, so
+// that such rules can still be cleaned up; they are the same shapes as above in either case, nothing looser.
+var (
+	legacyHashRegexp      = regexp.MustCompile(`^[A-Fa-f0-9]{64}$`)
+	legacyCDHashRegexp    = regexp.MustCompile(`^[A-Fa-f0-9]{40}$`)
+	legacyTeamIDRegexp    = regexp.MustCompile(`^[A-Za-z0-9]{1,10}$`)
+	legacySigningIDRegexp = regexp.MustCompile(`^([A-Za-z0-9]{1,10}|(?i:platform))(:[\w\-\.]+)$`)
+)
+
+// ValidRemovalIdentifier reports whether the identifier may be used to remove a rule of the given type: any identifier
+// ValidIdentifier accepts, and the same identifier shapes in either case, so that rules stored with identifiers
+// today's validation rejects (e.g. an upper-case SHA-256) can still be removed.
+func ValidRemovalIdentifier(ruleType types.RuleType, identifier string) bool {
+	if ValidIdentifier(ruleType, identifier) {
+		return true
+	}
+	switch ruleType {
+	case types.RuleTypeBinary, types.RuleTypeCertificate:
+		return legacyHashRegexp.MatchString(identifier)
+	case types.RuleTypeTeamID:
+		return legacyTeamIDRegexp.MatchString(identifier)
+	case types.RuleTypeSigningID:
+		return legacySigningIDRegexp.MatchString(identifier)
+	case types.RuleTypeCDHash:
+		return legacyCDHashRegexp.MatchString(identifier)
+	default:
+		return false
+	}
+}
+
 // ValidatePolicy returns an error when the rule's policy, together with the fields it depends on, is not one
 // Santa can apply
 func ValidatePolicy(rule SantaRule) error {
