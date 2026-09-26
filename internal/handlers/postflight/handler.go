@@ -14,7 +14,6 @@ import (
 // PostflightHandler is the entry point for the /postflight API call
 type PostPostflightHandler struct {
 	booted           bool
-	ruleDestroyer    staleRuleDestroyer
 	syncStateUpdater syncStateUpdater
 }
 
@@ -28,10 +27,6 @@ func (h *PostPostflightHandler) Boot() (err error) {
 
 	client := dynamodb.GetClient(dynamodbTableName, awsRegion)
 
-	h.ruleDestroyer = concreteRuleDestroyer{
-		queryer: client,
-		deleter: client,
-	}
 	h.syncStateUpdater = concreteSyncStateUpdater{
 		timeProvider: clock.ConcreteTimeProvider{},
 		updater:      client,
@@ -64,11 +59,8 @@ func (h *PostPostflightHandler) Handle(request events.APIGatewayProxyRequest) (*
 		return response.APIResponse(http.StatusInternalServerError, err)
 	}
 
-	// Delete rules marked for deletion that ruledownload has not deleted already (see staleRuleDestroyer)
-	err = h.ruleDestroyer.destroyMachineRulesMarkedForDeletion(machineID)
-	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, err)
-	}
+	// Machine rules marked for deletion are deleted by ruledownload once delivery is tracked; whether their removal
+	// still has to reach the Mac is decided by the sync state, not by the rows, so postflight reads nothing.
 
 	// Optional: Archive the sync state
 	// _ = archiveSyncState(h.dynamodbClient, machineID)

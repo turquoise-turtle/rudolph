@@ -11,35 +11,6 @@ import (
 )
 
 // @deprecated
-func GetPrimaryKeysByMachineIDWhereMarkedForDeletion(client dynamodb.QueryAPI, machineID string) (keys *[]dynamodb.PrimaryKey, err error) {
-	pk := machineRulePK(machineID)
-
-	input := awsdynamodb.QueryInput{
-		ConsistentRead:         aws.Bool(false),
-		KeyConditionExpression: aws.String("PK = :pk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk": &types.AttributeValueMemberS{
-				Value: pk,
-			},
-			":boo": &types.AttributeValueMemberBOOL{
-				Value: true,
-			},
-		},
-		FilterExpression:     aws.String("DeleteOnNextSync = :boo"),
-		ProjectionExpression: aws.String("PK, SK"),
-	}
-
-	output, err := client.Query(&input)
-
-	if err != nil {
-		return
-	}
-	err = attributevalue.UnmarshalListOfMaps(output.Items, &keys)
-
-	return
-}
-
-// @deprecated
 func GetMachineRules(client dynamodb.QueryAPI, machineID string) (items *[]MachineRuleRow, err error) {
 	partitionKey := machineRulePK(machineID)
 
