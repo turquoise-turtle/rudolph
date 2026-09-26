@@ -18,12 +18,6 @@ func TestHandler_InvalidMethod(t *testing.T) {
 	assert.False(t, h.Handles(request))
 }
 
-type mockRuleDestroyer func(machineID string) error
-
-func (m mockRuleDestroyer) destroyMachineRulesMarkedForDeletion(machineID string) error {
-	return m(machineID)
-}
-
 type mockSyncStateUpdater func(machineID string, request *PostflightRequest) error
 
 func (m mockSyncStateUpdater) updatePostflight(machineID string, request *PostflightRequest) error {
@@ -31,7 +25,6 @@ func (m mockSyncStateUpdater) updatePostflight(machineID string, request *Postfl
 }
 
 // Coerce the mock types
-var _ staleRuleDestroyer = mockRuleDestroyer(nil)
 var _ syncStateUpdater = mockSyncStateUpdater(nil)
 
 func TestHandler_OK(t *testing.T) {
@@ -44,12 +37,6 @@ func TestHandler_OK(t *testing.T) {
 	}
 
 	h := &PostPostflightHandler{
-		ruleDestroyer: mockRuleDestroyer(
-			func(machineID string) error {
-				assert.Equal(t, inputMachineID, machineID)
-				return nil
-			},
-		),
 		syncStateUpdater: mockSyncStateUpdater(
 			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
@@ -75,14 +62,9 @@ func TestHandler_Whoops(t *testing.T) {
 	}
 
 	h := &PostPostflightHandler{
-		ruleDestroyer: mockRuleDestroyer(
-			func(machineID string) error {
-				return errors.New("Yep an error.")
-			},
-		),
 		syncStateUpdater: mockSyncStateUpdater(
 			func(machineID string, _ *PostflightRequest) error {
-				return nil
+				return errors.New("Yep an error.")
 			},
 		),
 	}
@@ -105,12 +87,6 @@ func TestHandler_Response(t *testing.T) {
 	}
 
 	h := &PostPostflightHandler{
-		ruleDestroyer: mockRuleDestroyer(
-			func(machineID string) error {
-				assert.Equal(t, inputMachineID, machineID)
-				return nil
-			},
-		),
 		syncStateUpdater: mockSyncStateUpdater(
 			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
@@ -137,12 +113,6 @@ func TestHandler_Invalid_RequestBody(t *testing.T) {
 	}
 
 	h := &PostPostflightHandler{
-		ruleDestroyer: mockRuleDestroyer(
-			func(machineID string) error {
-				assert.Equal(t, inputMachineID, machineID)
-				return nil
-			},
-		),
 		syncStateUpdater: mockSyncStateUpdater(
 			func(machineID string, _ *PostflightRequest) error {
 				assert.Equal(t, inputMachineID, machineID)
