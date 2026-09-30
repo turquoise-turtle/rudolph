@@ -22,9 +22,10 @@ import (
 // the rules feed (incremental sync), so that they take precedence over them. They are re-sent on every sync.
 //
 // A machine rule that stops applying (it expired, was marked for removal, or its row is gone, e.g. deleted by the
-// table's TTL) must also leave the Mac. The sync state records which machine rules the Mac holds (see
-// syncstate.SyncState); each of those that no longer applies is sent as the global rule for the same identifier and
-// type if there is one, so the Mac falls back to the fleet rule, and as a REMOVE otherwise.
+// table's TTL) must also leave the Mac. Rudolph tracks which machine rules the Mac may hold (see
+// machinerules.GetDeliveries); each of those that no longer applies is sent as the global rule for the same
+// identifier and type if there is one, so the Mac falls back to the fleet rule, and as a REMOVE otherwise, until two
+// completed syncs have sent it (see syncstate.DeliveryConfirmed).
 //
 // FIXME(derek.wang)
 //
@@ -63,15 +64,17 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 
 // machineRulePage builds the machine-specific part of a sync.
 type machineRulePage struct {
-	queryer dynamodb.QueryAPI
-	getter  dynamodb.GetItemAPI
-	updater dynamodb.UpdateItemAPI
-	deleter dynamodb.DeleteItemIfAPI
-	timer   clock.TimeProvider
+	queryer     dynamodb.QueryAPI
+	getter      dynamodb.GetItemAPI
+	batchGetter dynamodb.BatchGetItemAPI
+	batchWriter dynamodb.BatchWriteItemAPI
+	updater     dynamodb.UpdateItemAPI
+	deleter     dynamodb.DeleteItemIfAPI
+	timer       clock.TimeProvider
 }
 
-// rules returns the machine-specific rules to send at the end of the sync's last page, and records on the sync
-// state which of them the Mac will hold if the sync completes.
+// rules returns the machine-specific rules to send at the end of the sync's last page, and records which rules the
+// Mac may hold from now on.
 //
 // syncState is the machine's sync state as read at the start of this ruledownload; when nil, it is read again.
 func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow) ([]rules.SantaRule, error) {
@@ -93,8 +96,7 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 
 	now := p.timer.Now()
 	var page []rules.SantaRule
-	applying := map[string]bool{}
-	var served []string
+	applying := map[string]machinerules.Delivery{}
 	for _, row := range *rows {
 		if !row.AppliesAt(now) {
 			continue
@@ -104,52 +106,27 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			continue
 		}
 		page = append(page, row.SantaRule)
-		applying[row.SortKey] = true
-		served = append(served, row.SortKey)
-	}
-
-	// The rules the Mac may hold from earlier syncs. Sync states written before delivery was tracked do not say; those
-	// versions of Rudolph sent every row of the machine on every sync, whether it still applied or not.
-	var mayHold []string
-	if syncState.MachineRulesDelivered.Known() {
-		mayHold = syncState.MachineRulesDelivered.Keys()
-	} else {
-		for _, row := range *rows {
-			mayHold = append(mayHold, row.SortKey)
-		}
-		sort.Strings(mayHold)
+		applying[row.SortKey] = machinerules.Delivery{}
 	}
 
 	stopped := 0
-	for _, sortKey := range mayHold {
-		if applying[sortKey] {
-			continue
-		}
-		replacement, ok, err := p.replacementFor(sortKey)
+	if machinerules.DeliveryDigest(applying) != syncState.MachineRulesTracked {
+		// Something was added or stopped applying, a removal is pending, or delivery is not tracked yet
+		replacements, err := p.trackDeliveries(machineID, syncState, *rows, applying)
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			continue
-		}
-		page = append(page, replacement)
-		stopped++
+		page = append(page, replacements...)
+		stopped = len(replacements)
 	}
 
 	// Never log the rules themselves: they identify the binaries a machine is allowed or blocked from running.
-	log.Printf("  Ruledownload machine rules: %d in force, %d no longer applying", len(served), stopped)
+	log.Printf("  Ruledownload machine rules: %d in force, %d no longer applying", len(applying), stopped)
 
-	servedKeys := syncstate.NewMachineRuleKeys(served...)
-	if !servedKeys.Equal(syncState.MachineRulesServed) {
-		if err := syncstate.UpdateMachineRulesServed(p.updater, machineID, servedKeys); err != nil {
-			return nil, err
-		}
-	}
-
-	// Rows marked for deletion are no longer needed once delivery is tracked: whether the Mac still has to be told
-	// is decided by the delivered set above, not by the row. Without tracking (rows written by older versions of
-	// Rudolph), the rows are what says the Mac may hold these rules, so they are kept until tracking starts.
-	if syncState.MachineRulesDelivered.Known() {
+	// Rows marked for deletion are no longer needed once delivery is tracked: whether the Mac still has to be told is
+	// decided by the tracked deliveries, not by the row. Without tracking (rows written by older versions of Rudolph,
+	// or a sync numbered by an older preflight) the rows are what says the Mac may hold these rules, so they are kept.
+	if syncState.SyncSeq > 0 {
 		for _, row := range *rows {
 			if !row.DeleteOnNextSync {
 				continue
@@ -162,28 +139,112 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	return page, nil
 }
 
-// replacementFor returns what to send for a machine rule the Mac may hold but that no longer applies: the global rule
-// for the same identifier and type if there is one Santa can apply, and otherwise a REMOVE.
-func (p machineRulePage) replacementFor(sortKey string) (rule rules.SantaRule, ok bool, err error) {
-	ruleType, identifier, ok := rules.RuleTypeIdentifierFromSortKey(sortKey)
-	if !ok {
-		// Only Rudolph writes these keys, from rule sort keys; there is nothing that could be removed on the Mac
-		log.Printf("  Ignoring a delivered machine rule key that is not a rule sort key")
-		return rules.SantaRule{}, false, nil
-	}
-
-	globalRule, err := globalrules.GetGlobalRuleBySortKeyConsistently(p.getter, sortKey)
+// trackDeliveries brings the tracked deliveries up to date with the rules that apply now, and returns what to send for
+// the rules the Mac may hold that no longer apply.
+func (p machineRulePage) trackDeliveries(
+	machineID string,
+	syncState *syncstate.SyncStateRow,
+	rows []machinerules.MachineRuleRow,
+	applying map[string]machinerules.Delivery,
+) ([]rules.SantaRule, error) {
+	tracked, err := machinerules.GetDeliveries(p.queryer, machineID)
 	if err != nil {
-		return rules.SantaRule{}, false, fmt.Errorf("failed to read the global rule a machine rule falls back to: %w", err)
+		return nil, err
 	}
-	if globalRule != nil && globalRule.RuleType == ruleType && rules.ValidatePolicy(globalRule.SantaRule) == nil {
-		return globalRule.SantaRule, true, nil
+	untracked := map[string]bool{}
+	if syncState.MachineRulesTracked == "" {
+		// Not tracked yet. Earlier versions of Rudolph sent every row of the machine on every sync, whether it still
+		// applied or not, so the Mac may hold any of them.
+		for _, row := range rows {
+			if _, ok := tracked[row.SortKey]; !ok {
+				tracked[row.SortKey] = machinerules.Delivery{}
+				untracked[row.SortKey] = true
+			}
+		}
+	}
+	// A sync numbered by an older preflight cannot record removals; it sends them and leaves tracking to later syncs
+	record := syncState.SyncSeq > 0
+
+	set := map[string]machinerules.Delivery{}
+	var forget, stopped []string
+	for sortKey := range applying {
+		if delivery, ok := tracked[sortKey]; !ok || untracked[sortKey] || delivery.RemovalFirstSentInSync != 0 {
+			// Sent for the first time, or applying again after its removal was sent
+			set[sortKey] = machinerules.Delivery{}
+		}
+	}
+	for sortKey, delivery := range tracked {
+		if _, ok := applying[sortKey]; ok {
+			continue
+		}
+		switch {
+		case delivery.RemovalFirstSentInSync == 0:
+			set[sortKey] = machinerules.Delivery{RemovalFirstSentInSync: syncState.SyncSeq}
+			stopped = append(stopped, sortKey)
+		case syncstate.DeliveryConfirmed(delivery.RemovalFirstSentInSync, syncState.CompletedSyncs):
+			forget = append(forget, sortKey)
+		default:
+			stopped = append(stopped, sortKey)
+		}
+	}
+	sort.Strings(stopped)
+
+	replacements, err := p.replacementsFor(stopped)
+	if err != nil {
+		return nil, err
+	}
+	if !record {
+		return replacements, nil
 	}
 
-	// No global rule, or one Santa cannot apply (e.g. the legacy ALLOWLIST_TRANSITIVE policy): the Mac drops the rule
-	return rules.SantaRule{
-		RuleType:   ruleType,
-		Policy:     rudolphtypes.RulePolicyRemove,
-		Identifier: identifier,
-	}, true, nil
+	if len(set) > 0 || len(forget) > 0 {
+		if err := machinerules.WriteDeliveries(p.batchWriter, machineID, set, forget); err != nil {
+			return nil, err
+		}
+	}
+	for sortKey, delivery := range set {
+		tracked[sortKey] = delivery
+	}
+	for _, sortKey := range forget {
+		delete(tracked, sortKey)
+	}
+	if digest := machinerules.DeliveryDigest(tracked); digest != syncState.MachineRulesTracked {
+		if err := syncstate.UpdateMachineRulesTracked(p.updater, machineID, digest); err != nil {
+			return nil, err
+		}
+	}
+	return replacements, nil
+}
+
+// replacementsFor returns what to send for machine rules the Mac may hold but that no longer apply, by rule sort key:
+// the global rule for the same identifier and type if there is one Santa can apply, and otherwise a REMOVE.
+func (p machineRulePage) replacementsFor(sortKeys []string) ([]rules.SantaRule, error) {
+	if len(sortKeys) == 0 {
+		return nil, nil
+	}
+	globalRules, err := globalrules.GetGlobalRulesBySortKeysConsistently(p.batchGetter, sortKeys)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the global rules machine rules fall back to: %w", err)
+	}
+
+	replacements := make([]rules.SantaRule, 0, len(sortKeys))
+	for _, sortKey := range sortKeys {
+		ruleType, identifier, ok := rules.RuleTypeIdentifierFromSortKey(sortKey)
+		if !ok {
+			// Only Rudolph writes these keys, from rule sort keys; there is nothing that could be removed on the Mac
+			log.Printf("  Ignoring a delivered machine rule key that is not a rule sort key")
+			continue
+		}
+		if globalRule := globalRules[sortKey]; globalRule != nil && globalRule.RuleType == ruleType && rules.ValidatePolicy(globalRule.SantaRule) == nil {
+			replacements = append(replacements, globalRule.SantaRule)
+			continue
+		}
+		// No global rule, or one Santa cannot apply (e.g. the legacy ALLOWLIST_TRANSITIVE policy): the Mac drops the rule
+		replacements = append(replacements, rules.SantaRule{
+			RuleType:   ruleType,
+			Policy:     rudolphtypes.RulePolicyRemove,
+			Identifier: identifier,
+		})
+	}
+	return replacements, nil
 }

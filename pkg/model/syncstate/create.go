@@ -31,9 +31,16 @@ func CreateNewSyncState(
 	}
 }
 
-// SetMachineRulesDelivered records which machine-specific rules the Mac holds as this sync starts. Until
-// ruledownload serves something else, this sync is assumed to serve the same set.
-func (r *SyncStateRow) SetMachineRulesDelivered(delivered MachineRuleKeys) {
-	r.MachineRulesDelivered = delivered
-	r.MachineRulesServed = delivered
+// ContinueFrom carries what a sync of the machine hands over to the next one: its number, which syncs completed, and
+// the digest of the machine-specific rules the Mac may hold. prev is nil for a machine without a sync state; the Mac
+// then holds no machine-specific rules from Rudolph (its first sync is a clean sync).
+func (r *SyncStateRow) ContinueFrom(prev *SyncStateRow, emptyMachineRulesDigest string) {
+	if prev == nil {
+		r.SyncSeq = 1
+		r.MachineRulesTracked = emptyMachineRulesDigest
+		return
+	}
+	r.SyncSeq = prev.NextSyncSeq()
+	r.CompletedSyncs = prev.NextCompletedSyncs()
+	r.MachineRulesTracked = prev.MachineRulesTracked
 }

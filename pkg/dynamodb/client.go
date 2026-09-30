@@ -15,6 +15,9 @@ type DynamoDBClient interface {
 	DeleteItemAPI
 	DeleteItemIfAPI
 	GetItemAPI
+	BatchGetItemAPI
+	BatchWriteItemAPI
+	ClockSkewAPI
 	PutItemAPI
 	PutItemIfNotExistsAPI
 	UpdateItemAPI

@@ -50,9 +50,9 @@ func (h *PostPostflightHandler) Handle(request events.APIGatewayProxyRequest) (*
 		return errResponse, err
 	}
 
-	// Mark the sync as completed. The next preflight then advances the feed cursor to where this sync started, and
-	// takes the machine-specific rules this sync served as delivered (see syncstate.NextFeedSyncCursor and
-	// syncstate.NextMachineRulesDelivered); a sync that never gets here advances neither.
+	// Mark the sync as completed. The next preflight records the completion, from which the feed cursor advances and
+	// removals count as delivered once two completed syncs sent them (see syncstate.NextFeedSyncCursor and
+	// syncstate.DeliveryConfirmed); a sync that never gets here advances neither.
 	err = h.syncStateUpdater.updatePostflight(machineID, postflightRequest)
 	if err != nil {
 		log.Printf("Failed to set final PostflightAt")

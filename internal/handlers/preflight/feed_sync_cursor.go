@@ -8,8 +8,8 @@ import (
 func (c concreteStateTrackingService) getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (feedSyncCursor string, performCleanSync bool) {
 	// Check when the last preflight request took place
 	if syncState != nil {
-		// Pick up where the previous sync left off: from where it started if it completed, and otherwise from where
-		// it read the feed itself, so that nothing it did not deliver is skipped
+		// Pick up where earlier syncs left off: from where the syncs known to be completed started, and otherwise from
+		// where the previous sync read the feed itself, so that nothing that was not delivered is skipped
 		feedSyncCursor = syncState.NextFeedSyncCursor()
 	}
 	if feedSyncCursor == "" {
@@ -20,13 +20,4 @@ func (c concreteStateTrackingService) getFeedSyncStateCursor(syncState *syncstat
 	}
 
 	return
-}
-
-// machineRulesDelivered returns the machine-specific rules the Mac may hold as this sync starts, as far as Rudolph
-// knows. A machine without a previous sync state has received none.
-func machineRulesDelivered(prevSyncState *syncstate.SyncStateRow) syncstate.MachineRuleKeys {
-	if prevSyncState == nil {
-		return syncstate.NewMachineRuleKeys()
-	}
-	return prevSyncState.NextMachineRulesDelivered()
 }

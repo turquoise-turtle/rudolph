@@ -66,21 +66,21 @@ func newUpdatePostflightItem(timeProvider clock.TimeProvider) UpdatePostflightIt
 	}
 }
 
-// UpdateMachineRulesServed records which machine-specific rules this sync's ruledownload sent to the Mac. Once the
-// sync completes they become the rules the Mac holds (see NextMachineRulesDelivered).
+// UpdateMachineRulesTracked records the digest of the machine-specific rules tracked as possibly held by the Mac,
+// after ruledownload changed them (see SyncState.MachineRulesTracked).
 //
 // The update is conditional on the sync state row existing, so a machine without one (e.g. whose row was deleted
 // mid-sync) fails the ruledownload rather than getting a partial row.
-func UpdateMachineRulesServed(client dynamodb.UpdateItemAPI, machineID string, served MachineRuleKeys) error {
+func UpdateMachineRulesTracked(client dynamodb.UpdateItemAPI, machineID string, digest string) error {
 	_, err := client.UpdateItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
-		updateMachineRulesServedItem{MachineRulesServed: served},
+		updateMachineRulesTrackedItem{MachineRulesTracked: digest},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to record the machine rules served: %w", err)
+		return fmt.Errorf("failed to record the machine rules tracked: %w", err)
 	}
 	return nil
 }

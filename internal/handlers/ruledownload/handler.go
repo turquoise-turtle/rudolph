@@ -45,11 +45,13 @@ func (h *PostRuledownloadHandler) Boot() (err error) {
 		getter:  client,
 	}
 	machineRules := machineRulePage{
-		queryer: client,
-		getter:  client,
-		updater: client,
-		deleter: client,
-		timer:   clock.ConcreteTimeProvider{},
+		queryer:     client,
+		getter:      client,
+		batchGetter: client,
+		batchWriter: client,
+		updater:     client,
+		deleter:     client,
+		timer:       clock.ConcreteTimeProvider{},
 	}
 	h.ghandler = concreteGlobalRuleDownloader{
 		queryer:      client,

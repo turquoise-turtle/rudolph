@@ -22,15 +22,20 @@ type SyncStateRow struct {
 
 // SyncState encapulsates data within the sync state row that's not the Primary key
 //
-// Every preflight replaces the row and postflight updates it; ruledownload only writes to it when the
-// machine-specific rules it serves differ from those the Mac already holds. How one sync hands over to the next:
+// Every preflight replaces the row and postflight updates it; ruledownload only writes to it when the set of
+// machine-specific rules it tracks for the Mac changes. The row stays small whatever the number of rules: it is
+// written on every sync, and DynamoDB bills a write by the size of the whole item. How one sync hands over to the next:
 //
+//   - SyncSeq numbers the syncs of the machine, and CompletedSyncs holds the last two syncs that completed (reached
+//     postflight) before this one started. Santa sends no sync ID, so a postflight cannot prove which sync it closes:
+//     a stray one (a delayed duplicate, a retry, a second Mac with a cloned machine ID) can mark a sync as completed
+//     whose rules never reached the Mac. Nothing is therefore taken as delivered on the strength of one completion.
 //   - FeedSyncCursor is where this sync reads the rules feed from. Postflight does not move it: the next preflight
-//     derives the next cursor from this sync's PreflightAt, and only if this sync completed (see NextFeedSyncCursor).
-//   - MachineRulesDelivered is the set of machine-specific rules the Mac may hold as this sync starts, and
-//     MachineRulesServed the set this sync's ruledownload sent. The next preflight replaces the delivered set with
-//     the served set only if this sync completed (see NextMachineRulesDelivered). So a rule that stopped applying
-//     keeps being sent as removed until a sync that served its removal has completed.
+//     derives the next cursor from the start of the older of the last two completed syncs (see NextFeedSyncCursor).
+//   - MachineRulesTracked is a digest of the machine-specific rules the Mac may hold, which are recorded one item per
+//     rule in the MachineRuleDelivery#<machine id> partition (see machinerules.GetDeliveries). When the rules that
+//     apply now have the same digest, nothing was added or stopped applying, and ruledownload reads nothing more.
+//     Empty when unknown (rows written by versions of Rudolph that did not track delivery).
 type SyncState struct {
 	MachineID      string `dynamodbav:"MachineID"`
 	BatchSize      int    `dynamodbav:"BatchSize"`
@@ -46,10 +51,17 @@ type SyncState struct {
 	RulesReceived          int             `dynamodbav:"RulesReceived"`
 	RulesProcessed         int             `dynamodbav:"RulesProcessed"`
 	RulesHashAfterSync     string          `dynamodbav:"RulesHashAfterSync,omitempty"`
-	MachineRulesDelivered  MachineRuleKeys `dynamodbav:"MachineRulesDelivered"`
-	MachineRulesServed     MachineRuleKeys `dynamodbav:"MachineRulesServed"`
+	SyncSeq                int             `dynamodbav:"SyncSeq,omitempty"`
+	CompletedSyncs         []CompletedSync `dynamodbav:"CompletedSyncs,omitempty"`
+	MachineRulesTracked    string          `dynamodbav:"MachineRulesTracked,omitempty"`
 	ExpiresAfter           int64           `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType               types.DataType  `dynamodbav:"DataType"`
+}
+
+// CompletedSync identifies a sync that reached postflight
+type CompletedSync struct {
+	Seq         int    `dynamodbav:"Seq"`
+	PreflightAt string `dynamodbav:"PreflightAt"`
 }
 
 // Update fragments
@@ -83,8 +95,8 @@ type UpdatePostflightOutcomeItem struct {
 	RulesHashAfterSync string `dynamodbav:"RulesHashAfterSync,omitempty"`
 }
 
-type updateMachineRulesServedItem struct {
-	MachineRulesServed MachineRuleKeys `dynamodbav:"MachineRulesServed"`
+type updateMachineRulesTrackedItem struct {
+	MachineRulesTracked string `dynamodbav:"MachineRulesTracked"`
 }
 
 func syncStatePK(machineID string) string {
