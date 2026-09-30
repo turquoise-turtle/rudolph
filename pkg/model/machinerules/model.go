@@ -39,6 +39,9 @@ type updateRulePolicyRequest struct {
 	CELExpr      string `dynamodbav:"CELExpr"`
 	ExpiresAfter int64  `dynamodbav:"ExpiresAfter,omitempty"`
 	Description  string `dynamodbav:"Description,omitempty"`
+	// Not omitempty: updating a rule that is being removed brings it back with the new policy. Its optional fields
+	// are the ones it has now (for a rule that overrode a global rule, those of the global rule; see RemoveMachineRule).
+	DeleteOnNextSync bool `dynamodbav:"DeleteOnNextSync"`
 }
 
 // AppliesAt reports whether the rule is in force for its machine at the given time.
