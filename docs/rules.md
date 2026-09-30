@@ -45,6 +45,11 @@ the Mac drops the rule (see [rule-pagination](./rule-pagination.md#machine-speci
 Rules stored by older versions with an identifier today's validation rejects (e.g. an upper-case SHA-256) can still be
 removed with `rudolph rule remove`.
 
+Commands that write rules (`rudolph rule ...`, `rudolph rules import`) first compare the local clock with DynamoDB's and
+refuse when they differ by more than 2 minutes: rule changes are ordered by the writer's clock, and a change written
+with a clock that is far behind can miss Macs that sync incrementally. Fix the clock, or pass `--force` (see
+[rule-pagination](./rule-pagination.md#feed-cursor)).
+
 > **Deploy the API Lambda first.** Deploy the Rudolph version that supports them before creating `CDHASH` rules or rules
 > with the `CEL`, `SILENT_GUI_BLOCKLIST` or `SILENT_TTY_BLOCKLIST` policies. Older Lambdas cannot read these values, so every
 > rule download that reaches such a rule fails; for a global rule that is every host, not just the hosts it matches. For the same reason, do not roll the Lambda

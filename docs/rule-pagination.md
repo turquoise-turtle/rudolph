@@ -34,45 +34,81 @@ Additional calls will use the Pagination Strategy Method which is set in the cur
 Machine-specific rules are sent at the end of the last page of every sync, after the global rules or the feed, so that
 they take precedence. Only rules that apply are sent: a rule that expired (`ExpiresAfter`, which is also the table's
 TTL attribute; DynamoDB can take days to delete an expired row) or that was removed (`rudolph rule remove --machine`)
-is not.
+is not. Updating a rule that is being removed (`rudolph rule update --machine`) brings it back with the new policy.
 
 A rule the Mac holds must also leave the Mac when it stops applying, even if its row is gone by then (deleted by the
-TTL, by `rudolph`, or by anyone else). Rudolph therefore records on the machine's sync state row which
-machine-specific rules the Mac holds, and sends each held rule that no longer applies as the global rule for the same
-identifier and type (so the Mac falls back to the fleet rule), or as a `REMOVE` when there is no global rule Santa can
-apply. This is repeated on every sync until a sync that sent it completes (reaches postflight), so a rule removed while
-a sync is in flight, or a sync that fails half way, does not lose the removal.
+TTL, by `rudolph`, or by anyone else). Rudolph therefore tracks which machine-specific rules the Mac may hold, and
+sends each tracked rule that no longer applies as the global rule for the same identifier and type (so the Mac falls
+back to the fleet rule), or as a `REMOVE` when there is no global rule Santa can apply. It keeps sending it until two
+syncs that sent it have completed (reached postflight), then stops tracking the rule. So a rule removed while a sync is
+in flight, a sync that fails half way, or a single stray postflight (see below) does not lose the removal.
 
-Rows marked for deletion by `rudolph rule remove --machine` are deleted by the next ruledownload that reads them.
+Rows marked for deletion by `rudolph rule remove --machine` are deleted by the ruledownload that reads them, once the
+removal is tracked; that is always the case from the first sync after the upgrade that starts with the new preflight.
+A sync that was already running during the deployment (numbered by the old preflight) sends the removals but leaves the
+rows to the next sync.
+
+### Tracking storage and costs
+Tracking is stored as one item per tracked rule, in its own partition (`PK = MachineRuleDelivery#<machine id>`,
+`SK` = the rule's sort key, e.g. `Binary#<sha256>`; about 130 bytes), with `RemovalFirstSentInSync` set once the
+rule's removal or replacement has been sent. The sync state row only holds a fixed-size digest of these items
+(`MachineRulesTracked`). A sync compares it with the digest of the rules that apply now: when they are equal (nothing
+added, nothing stopped applying, no removal pending) it reads and writes nothing more, so a steady-state sync costs 3
+writes of about 0.5 KB each (sync state and sensor data at preflight, sync state at postflight) and 5 reads, whatever the
+number of machine rules. When they differ, the sync reads the machine's tracking items (one strongly consistent query per
+1 MB, about 8,000 rules), looks the global rules of the rules that stopped applying up with strongly consistent
+`BatchGetItem` requests (100 per request), and writes only the items that changed (`BatchWriteItem`, 25 per request).
+
+Scale: a Mac's machine rules are all sent on the last page of every sync, so their number is bounded by the Lambda
+response size (6 MB, roughly 30,000 binary rules) and by the ruledownload Lambda's run time when many change at once
+(the first sync of a Mac with N machine rules writes N tracking items, N/25 requests). Each machine rule costs about
+130 bytes of storage for tracking while the Mac may hold it. Items of machines that stop syncing for good are not
+expired automatically.
+
+### Known limitation: cloned machine IDs and stray postflights
+Santa sends no sync ID, so Rudolph cannot tell which sync a postflight closes. A stray postflight (a delayed duplicate,
+a retry, or a second Mac with the same machine ID, e.g. a cloned image) can mark a sync as completed although the rules
+it served never reached the Mac. Rudolph therefore only relies on two completed syncs: a removal is tracked until two
+completed syncs sent it, and the feed cursor advances to the start of the older of the last two completed syncs. One
+stray postflight between two real syncs cannot lose a rule. Two Macs sharing a machine ID are not supported: they share
+one sync state, their syncs interleave, and either can miss removals and feed rules until its next clean sync. Give
+every Mac its own machine ID (Santa's `MachineID` setting or the default, the hardware UUID).
 
 ## Feed cursor
-An incremental sync reads the rules feed from the machine's `FeedSyncCursor`. When a sync completes, the next sync
-reads from 10 minutes before the completed sync's preflight (`PreflightAt`), so rules added while a slow sync was
-running, rules stamped by a writer whose clock is a little behind, and rules not yet visible to eventually consistent
-reads are never skipped. A sync that does not complete does not move the cursor. Rules in the overlap are sent again,
-which Santa applies idempotently.
+An incremental sync reads the rules feed from the machine's `FeedSyncCursor`. The next sync reads from 10 minutes
+before the start (`PreflightAt`) of the older of the last two completed syncs, so rules added while a slow sync was
+running, rules stamped by a writer whose clock is a little behind, rules not yet visible to eventually consistent reads,
+and rules served by a sync that a stray postflight closed are never skipped. With a single completed sync (a new Mac),
+the cursor moves to 10 minutes before its start if that is earlier; a sync that does not complete does not move it. Rules
+in the overlap are sent again, which Santa applies idempotently; feed pages hold up to 5000 rules, so the overlap
+normally costs one query.
+
+Feed rows are sorted by the clock of whoever wrote them, including the CLI on an admin's machine. A rule written by a
+CLI whose clock is more than the overlap behind could land before some Macs' cursors and never reach them until their
+next clean sync. The CLI therefore compares the local clock with the `Date` header of a DynamoDB response before it
+writes rules (`rudolph rule ...`, `rudolph rules import`) and refuses when they differ by more than 2 minutes; fix the
+clock (e.g. `sudo sntp -sS time.apple.com`) or pass `--force`.
 
 ## Sync state row
 `PK = Machine#<machine id>`, `SK = SyncState`. Every preflight replaces it, postflight updates it once, and ruledownload
-only writes to it when the machine-specific rules it sends differ from those the Mac holds. A steady-state sync costs
-three writes (sensor data and sync state at preflight, sync state at postflight).
+only writes to it when the tracked machine-specific rules change. It stays about 0.5 KB whatever the number of rules.
 
 | Attribute | Written by | Meaning |
 |---|---|---|
-| `FeedSyncCursor` | preflight | Where this sync reads the feed from. Postflight no longer moves it: the next preflight derives the next cursor from `PreflightAt` if `PostflightAt` is set. |
+| `SyncSeq` | preflight | Number of this sync of the machine, from 1. |
+| `CompletedSyncs` | preflight | The last two syncs (`Seq`, `PreflightAt`) that completed before this one started, newest first. |
+| `FeedSyncCursor` | preflight | Where this sync reads the feed from. Postflight does not move it (a postflight without a body still writes one, which is not read). |
 | `PreflightAt`, `PostflightAt` | preflight, postflight | When this sync started and completed. `PostflightAt` is empty until the sync completes. |
-| `MachineRulesDelivered` | preflight | List of rule sort keys (`Binary#<sha256>`, `TeamID#<team id>`, ...) of the machine-specific rules the Mac may hold as this sync starts. |
-| `MachineRulesServed` | preflight, ruledownload | The same for the rules this sync sent. If the sync completes, the next preflight takes it as `MachineRulesDelivered`; if not, the union of both, since the Mac may have applied them. |
+| `MachineRulesTracked` | preflight, ruledownload | Digest (`<count>:<hash>`) of the tracking items. Absent when delivery is not tracked yet. |
 | `RuledownloadStartedAt`, `RuledownloadFinishedAt` | no longer written | Written by earlier versions (two writes per sync that nothing read). |
 
 ### Upgrading
 Rows written by earlier versions keep working:
-- A sync state without `MachineRulesDelivered` (or with `NULL`) means Rudolph does not know what the Mac holds. Earlier
-  versions sent every machine rule row on every sync, so the first sync after the upgrade assumes the Mac holds every
-  row of the machine, sends a removal (or the global rule) for each row that no longer applies, including expired rows
-  and rows marked for deletion, and starts tracking. Rows whose removal the Mac never received and that DynamoDB
-  already deleted before the upgrade cannot be recovered: run a clean sync (`santactl sync --clean`) on affected Macs.
-- A sync state written by an earlier preflight and completed by an earlier postflight gets its next cursor from its
-  `PreflightAt`, which is earlier than the cursor that postflight wrote, so nothing is skipped.
+- A sync state without `MachineRulesTracked` means Rudolph does not know what the Mac holds. Earlier versions sent every
+  machine rule row on every sync, so the first sync after the upgrade assumes the Mac holds every row of the machine,
+  sends a removal (or the global rule) for each row that no longer applies, including expired rows and rows marked for
+  deletion, and starts tracking. Rows whose removal the Mac never received and that DynamoDB already deleted before the
+  upgrade cannot be recovered: run a clean sync (`santactl sync --clean`) on affected Macs.
+- A sync state without `SyncSeq` or `CompletedSyncs` counts its own completion, if any, as the one completed sync: the
+  next cursor is 10 minutes before its `PreflightAt`, which is earlier than the cursor the earlier postflight wrote.
 - A cursor with strategy 3 issued by the previous version during the deployment is still served.
-
