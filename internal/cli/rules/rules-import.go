@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/csv"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -42,6 +43,9 @@ func addRuleImportCommand() {
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
+			if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
+				return err
+			}
 
 			// Try to prevent stupidity
 			if workers < minWorkers || workers > maxWorkers {
@@ -55,6 +59,7 @@ func addRuleImportCommand() {
 
 	ruleImportCmd.Flags().StringVarP(&filename, "filename", "f", "", "The filename")
 	ruleImportCmd.Flags().IntVarP(&workers, "workers", "w", defaultWorkers, "Number of workers")
+	clockcheck.AddFlag(ruleImportCmd)
 	_ = ruleImportCmd.MarkFlagRequired("filename")
 
 	RulesCmd.AddCommand(ruleImportCmd)

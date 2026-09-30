@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -43,6 +44,9 @@ func init() {
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			client := dynamodb.GetClient(table, region)
+			if err := clockcheck.Check(cmd, client); err != nil {
+				return err
+			}
 			timeProvider := clock.ConcreteTimeProvider{}
 
 			ruleHandler.dynamodbClient = client
