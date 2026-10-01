@@ -7,10 +7,13 @@
 package clockcheck
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/smithy-go"
 	"github.com/spf13/cobra"
 )
 
@@ -31,10 +34,27 @@ func Check(cmd *cobra.Command, client dynamodb.ClockSkewAPI) error {
 		return nil
 	}
 	skew, err := client.ClockSkew()
+	if isClockRejected(err) {
+		// AWS refuses requests signed more than about 5 minutes off; skipping this check would not help
+		return fmt.Errorf("AWS rejected the request because the local clock is too far off; fix the clock "+
+			"(e.g. sudo sntp -sS time.apple.com) and try again: %w", err)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to compare the local clock with DynamoDB's (pass --%s to skip the check): %w", forceFlag, err)
 	}
 	return checkSkew(skew)
+}
+
+// isClockRejected reports whether AWS refused a request because of the time it was signed at
+func isClockRejected(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	message := strings.ToLower(apiErr.ErrorMessage())
+	return apiErr.ErrorCode() == "InvalidSignatureException" && strings.Contains(message, "signature") &&
+		(strings.Contains(message, "expired") || strings.Contains(message, "not yet current")) ||
+		apiErr.ErrorCode() == "RequestTimeTooSkewed"
 }
 
 func checkSkew(skew time.Duration) error {
