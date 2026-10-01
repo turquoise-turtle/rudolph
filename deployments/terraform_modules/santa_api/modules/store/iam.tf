@@ -24,6 +24,8 @@ data "aws_iam_policy_document" "lambda_permissions" {
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",
+      # ruledownload writes machine rule delivery tracking in batches; LeadingKeys applies to every item of a batch
+      "dynamodb:BatchWriteItem",
     ]
 
     resources = [
@@ -34,13 +36,14 @@ data "aws_iam_policy_document" "lambda_permissions" {
     # As an extra precaution, we prevent write operations to be conducted on GLOBAL rules and configurations
     # This prevents bugginess on the main API from propagating bad changes all around
     condition {
-      test = "ForAllValues:StringLike"
+      test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
 
       values = [
-        "Machine#*",      # This needs to be consistent with the machineInfoPKPrefix constant
-        "MachineInfo#*",  # This needs to be consistent with the machineInfoPKPrefix constant
-        "MachineRules#*", # This needs to be consistent with the MachineRulesPKPrefix constant
+        "Machine#*",             # This needs to be consistent with the machineInfoPKPrefix constant
+        "MachineInfo#*",         # This needs to be consistent with the machineInfoPKPrefix constant
+        "MachineRules#*",        # This needs to be consistent with the MachineRulesPKPrefix constant
+        "MachineRuleDelivery#*", # This needs to be consistent with the deliveryPKPrefix constant (machinerules)
       ]
     }
   }
