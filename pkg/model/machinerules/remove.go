@@ -55,7 +55,8 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 		// In this case, when we REMOVE the rule, the Mac falls back to the global rule rather than
 		// losing it: a machine rule marked for deletion no longer applies, and ruledownload sends the
 		// Mac the global rule for the same identifier and type instead (read when it is sent, so a
-		// later change to the global rule is honoured), until a completed sync has delivered it.
+		// later change to the global rule is honoured), until two completed syncs have sent it (see
+		// the delivery tracking in delivery.go).
 		//
 		// The marked row records what the machine falls back to: it INHERITS the policy and the
 		// fields (e.g. CEL expression, custom message) of the global rule; fields the global rule
@@ -69,8 +70,8 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 		request.EventDetailButtonLabel = globalRule.EventDetailButtonLabel
 	} else {
 		// There was no associated global rule.
-		// Simply change item to a "REMOVE" (without any other fields); ruledownload sends the Mac a REMOVE until a
-		// completed sync has delivered it, whether or not this record still exists by then
+		// Simply change item to a "REMOVE" (without any other fields); ruledownload sends the Mac a REMOVE until two
+		// completed syncs have sent it, whether or not this record still exists by then (see delivery.go)
 		request.Policy = types.Remove
 	}
 
@@ -87,8 +88,9 @@ func RemoveMachineRule(getter dynamodb.GetItemAPI, updater dynamodb.UpdateItemAP
 // DeleteRuleMarkedForDeletion deletes a machine rule row that RemoveMachineRule marked for deletion. The row is only
 // deleted while it is still marked, so a rule added again in the meantime is kept; it is not an error if it is not.
 //
-// Deleting the row does not lose the removal: which rules a Mac holds is tracked on its sync state, and a rule the
-// Mac holds that has no row is removed from it (or replaced by the global rule) on its next syncs until one completes.
+// Deleting the row does not lose the removal: which rules a Mac may hold is tracked by the delivery items (see
+// GetDeliveries), and a rule the Mac may hold that no longer applies, row or not, is removed from it (or replaced by
+// the global rule) on its next syncs until two completed syncs have sent that.
 func DeleteRuleMarkedForDeletion(client dynamodb.DeleteItemIfAPI, key dynamodb.PrimaryKey) error {
 	_, err := client.DeleteItemIf(key, expression.Equal(expression.Name("DeleteOnNextSync"), expression.Value(true)))
 	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {

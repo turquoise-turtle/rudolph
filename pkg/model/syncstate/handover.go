@@ -25,7 +25,7 @@ func (s SyncState) Completed() bool {
 	return s.PostflightAt != ""
 }
 
-// NextSyncSeq returns the number of the next sync of this machine. Syncs are numbered from 1.
+// NextSyncSeq returns the smallest identifier the next sync of this machine may have (see ContinueFrom).
 func (s SyncState) NextSyncSeq() int {
 	return s.SyncSeq + 1
 }

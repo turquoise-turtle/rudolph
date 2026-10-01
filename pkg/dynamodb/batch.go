@@ -15,8 +15,10 @@ const (
 	// DynamoDB limits: keys per BatchGetItem, and requests per BatchWriteItem
 	batchGetLimit   = 100
 	batchWriteLimit = 25
-	// How many times unprocessed keys or items (throttling) are retried before giving up
-	batchMaxAttempts = 8
+	// How many times a request is sent while DynamoDB leaves keys or items unprocessed (throttling) before giving up.
+	// The waits between attempts add up to 0.75 s per request, well within the API Lambda's 10 s timeout; a caller that
+	// gives up (or times out) must leave its data in a state the next attempt can recover from.
+	batchMaxAttempts = 5
 )
 
 // BatchGetItemAPI reads several items by primary key

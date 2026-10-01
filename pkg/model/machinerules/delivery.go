@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,9 +21,20 @@ import (
 // deletes it once that has been delivered. Items are only written when this changes, and only read when the digest
 // on the sync state says something changed (see DeliveryDigest), so a steady-state sync reads or writes none.
 //
-// Items have no TTL: the protocol removes each one once the Mac no longer holds the rule. A machine that stops
-// syncing for good leaves its items behind (about 100 bytes per machine rule).
+// Items expire (ExpiresAfter, the table's TTL attribute) DeliveryExpiry after they were last written, and
+// ruledownload rewrites all of a machine's items at least every DeliveryRefreshInterval, so they outlive the
+// machine's sync state (which expires 90 days after its last sync) while the Mac keeps syncing, and disappear once it
+// stops. A Mac whose sync state expired is told to clean sync, after which it holds no machine rule from Rudolph, so
+// an expired item never hides a rule the Mac still has.
 const deliveryPKPrefix = "MachineRuleDelivery#"
+
+const (
+	// DeliveryRefreshInterval is how often ruledownload extends the expiry of a machine's tracking items
+	DeliveryRefreshInterval = 30 * 24 * time.Hour
+	// DeliveryExpiry is how long after it was last written a tracking item expires: longer than
+	// DeliveryRefreshInterval plus the 90 days a sync state lives after the last sync
+	DeliveryExpiry = 120 * 24 * time.Hour
+)
 
 // Delivery is what is tracked about a machine-specific rule the Mac may hold
 type Delivery struct {
@@ -33,7 +45,8 @@ type Delivery struct {
 
 type deliveryRow struct {
 	dynamodb.PrimaryKey
-	RemovalFirstSentInSync int `dynamodbav:"RemovalFirstSentInSync,omitempty"`
+	RemovalFirstSentInSync int   `dynamodbav:"RemovalFirstSentInSync,omitempty"`
+	ExpiresAfter           int64 `dynamodbav:"ExpiresAfter,omitempty"`
 }
 
 func deliveryPK(machineID string) string {
@@ -71,13 +84,16 @@ func GetDeliveries(client dynamodb.QueryAPI, machineID string) (map[string]Deliv
 	}
 }
 
-// WriteDeliveries records the given deliveries and forgets the given rules, by rule sort key
-func WriteDeliveries(client dynamodb.BatchWriteItemAPI, machineID string, set map[string]Delivery, forget []string) error {
+// WriteDeliveries records the given deliveries and forgets the given rules, by rule sort key. The items written expire
+// DeliveryExpiry after now.
+func WriteDeliveries(client dynamodb.BatchWriteItemAPI, machineID string, set map[string]Delivery, forget []string, now time.Time) error {
+	expiresAfter := now.Add(DeliveryExpiry).Unix()
 	puts := make([]interface{}, 0, len(set))
 	for sortKey, delivery := range set {
 		puts = append(puts, deliveryRow{
 			PrimaryKey:             dynamodb.PrimaryKey{PartitionKey: deliveryPK(machineID), SortKey: sortKey},
 			RemovalFirstSentInSync: delivery.RemovalFirstSentInSync,
+			ExpiresAfter:           expiresAfter,
 		})
 	}
 	deletes := make([]dynamodb.PrimaryKey, len(forget))

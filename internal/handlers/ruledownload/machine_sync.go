@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -68,7 +69,7 @@ type machineRulePage struct {
 	getter      dynamodb.GetItemAPI
 	batchGetter dynamodb.BatchGetItemAPI
 	batchWriter dynamodb.BatchWriteItemAPI
-	updater     dynamodb.UpdateItemAPI
+	updater     dynamodb.UpdateItemIfAPI
 	deleter     dynamodb.DeleteItemIfAPI
 	timer       clock.TimeProvider
 }
@@ -110,9 +111,11 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	}
 
 	stopped := 0
-	if machinerules.DeliveryDigest(applying) != syncState.MachineRulesTracked {
-		// Something was added or stopped applying, a removal is pending, or delivery is not tracked yet
-		replacements, err := p.trackDeliveries(machineID, syncState, *rows, applying)
+	refresh := trackingNeedsRefresh(syncState, now)
+	if refresh || machinerules.DeliveryDigest(applying) != syncState.MachineRulesTracked {
+		// Something was added or stopped applying, a removal is pending, delivery is not tracked yet, the summary may
+		// be stale (MachineRulesTrackedDirty), or the tracking items' expiry must be extended
+		replacements, err := p.trackDeliveries(machineID, syncState, *rows, applying, refresh, now)
 		if err != nil {
 			return nil, err
 		}
@@ -139,13 +142,32 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	return page, nil
 }
 
+// trackingNeedsRefresh reports whether the machine's tracking items must be rewritten to extend their expiry (see
+// machinerules.DeliveryRefreshInterval).
+func trackingNeedsRefresh(syncState *syncstate.SyncStateRow, now time.Time) bool {
+	if syncState.MachineRulesTracked == "" || syncState.SyncSeq == 0 {
+		// Not tracked yet (every item is written when tracking starts), or a sync that cannot record anything
+		return false
+	}
+	refreshedAt, err := clock.ParseRFC3339(syncState.MachineRulesTrackingRefreshedAt)
+	return err != nil || now.Sub(refreshedAt) >= machinerules.DeliveryRefreshInterval
+}
+
 // trackDeliveries brings the tracked deliveries up to date with the rules that apply now, and returns what to send for
 // the rules the Mac may hold that no longer apply.
+//
+// The tracking items and the summary on the sync state cannot be written atomically. So before changing any item,
+// the summary is set to MachineRulesTrackedDirty, which never matches the rules that apply; if this ruledownload dies
+// before it writes the new summary, the next sync reads the items again instead of trusting a stale summary. Both
+// summary writes are conditional on the sync state still being this sync's and holding the value this sync last saw
+// or wrote, so a ruledownload overtaken by a newer sync of the machine fails rather than overwriting its summary.
 func (p machineRulePage) trackDeliveries(
 	machineID string,
 	syncState *syncstate.SyncStateRow,
 	rows []machinerules.MachineRuleRow,
 	applying map[string]machinerules.Delivery,
+	refresh bool,
+	now time.Time,
 ) ([]rules.SantaRule, error) {
 	tracked, err := machinerules.GetDeliveries(p.queryer, machineID)
 	if err != nil {
@@ -197,8 +219,31 @@ func (p machineRulePage) trackDeliveries(
 		return replacements, nil
 	}
 
+	refreshedAt := ""
+	if refresh || syncState.MachineRulesTracked == "" {
+		// Extend the expiry of every item kept (when tracking starts, every item kept is written anyway)
+		forgotten := map[string]bool{}
+		for _, sortKey := range forget {
+			forgotten[sortKey] = true
+		}
+		for sortKey, delivery := range tracked {
+			if _, ok := set[sortKey]; !ok && !forgotten[sortKey] {
+				set[sortKey] = delivery
+			}
+		}
+		refreshedAt = clock.RFC3339(now)
+	}
+
+	summary := syncState.MachineRulesTracked
 	if len(set) > 0 || len(forget) > 0 {
-		if err := machinerules.WriteDeliveries(p.batchWriter, machineID, set, forget); err != nil {
+		if summary != "" && summary != syncstate.MachineRulesTrackedDirty {
+			// "" (not tracked yet) already makes every sync read the items and the rows, so it is kept until the end
+			if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, syncstate.MachineRulesTrackedDirty, ""); err != nil {
+				return nil, err
+			}
+			summary = syncstate.MachineRulesTrackedDirty
+		}
+		if err := machinerules.WriteDeliveries(p.batchWriter, machineID, set, forget, now); err != nil {
 			return nil, err
 		}
 	}
@@ -208,8 +253,8 @@ func (p machineRulePage) trackDeliveries(
 	for _, sortKey := range forget {
 		delete(tracked, sortKey)
 	}
-	if digest := machinerules.DeliveryDigest(tracked); digest != syncState.MachineRulesTracked {
-		if err := syncstate.UpdateMachineRulesTracked(p.updater, machineID, digest); err != nil {
+	if digest := machinerules.DeliveryDigest(tracked); digest != summary || refreshedAt != "" {
+		if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, digest, refreshedAt); err != nil {
 			return nil, err
 		}
 	}

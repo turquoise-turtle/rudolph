@@ -21,6 +21,7 @@ type DynamoDBClient interface {
 	PutItemAPI
 	PutItemIfNotExistsAPI
 	UpdateItemAPI
+	UpdateItemIfAPI
 	QueryAPI
 	TransactWriteItemsAPI
 	ScanAPI

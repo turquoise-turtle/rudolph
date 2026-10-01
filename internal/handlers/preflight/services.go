@@ -88,7 +88,7 @@ func (c concreteStateTrackingService) saveSyncState(machineID string, requestCle
 		batchSize,
 		feedSyncCursor,
 	)
-	syncState.ContinueFrom(prevSyncState, machinerules.DeliveryDigest(nil))
+	syncState.ContinueFrom(prevSyncState, machinerules.DeliveryDigest(nil), c.timeProvider.Now())
 	_, err := c.putter.PutItem(syncState)
 	return err
 }

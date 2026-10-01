@@ -1,11 +1,12 @@
 package syncstate
 
 import (
+	"errors"
 	"fmt"
-	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 )
 
 // UpdatePostflightDate closes out a sync the client reported nothing about. See UpdatePostflightItem.
@@ -60,25 +61,35 @@ func UpdatePostflightOutcome(
 func newUpdatePostflightItem(timeProvider clock.TimeProvider) UpdatePostflightItem {
 	return UpdatePostflightItem{
 		PostflightAt: clock.RFC3339(timeProvider.Now()),
-		// Not read for a completed sync: the next preflight derives the cursor from PreflightAt (NextFeedSyncCursor).
-		FeedSyncCursor: clock.RFC3339(timeProvider.Now().Add(time.Minute * -10)),
-		ExpiresAfter:   GetSyncStateExpiresAfter(timeProvider),
+		ExpiresAfter: GetSyncStateExpiresAfter(timeProvider),
 	}
 }
 
-// UpdateMachineRulesTracked records the digest of the machine-specific rules tracked as possibly held by the Mac,
-// after ruledownload changed them (see SyncState.MachineRulesTracked).
-//
-// The update is conditional on the sync state row existing, so a machine without one (e.g. whose row was deleted
-// mid-sync) fails the ruledownload rather than getting a partial row.
-func UpdateMachineRulesTracked(client dynamodb.UpdateItemAPI, machineID string, digest string) error {
-	_, err := client.UpdateItem(
+// ErrSyncSuperseded is returned when the sync state row no longer belongs to the sync updating it: a newer sync of
+// the machine started (or the summary was changed by someone else) in the meantime.
+var ErrSyncSuperseded = errors.New("the sync state was replaced by a newer sync of the machine")
+
+// SetMachineRulesTracked replaces the tracking summary (see SyncState.MachineRulesTracked), and the time the tracking
+// items' expiry was extended when refreshedAt is not empty. It only does so while the row still belongs to the sync
+// syncSeq and the summary is still expected ("" for none); otherwise it returns ErrSyncSuperseded and changes nothing.
+func SetMachineRulesTracked(client dynamodb.UpdateItemIfAPI, machineID string, syncSeq int, expected, summary, refreshedAt string) error {
+	condition := expression.Equal(expression.Name("SyncSeq"), expression.Value(syncSeq))
+	if expected == "" {
+		condition = condition.And(expression.AttributeNotExists(expression.Name("MachineRulesTracked")))
+	} else {
+		condition = condition.And(expression.Equal(expression.Name("MachineRulesTracked"), expression.Value(expected)))
+	}
+	_, err := client.UpdateItemIf(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
-		updateMachineRulesTrackedItem{MachineRulesTracked: digest},
+		updateMachineRulesTrackedItem{MachineRulesTracked: summary, MachineRulesTrackingRefreshedAt: refreshedAt},
+		condition,
 	)
+	if dynamodb.IsConditionalCheckFailed(err) {
+		return ErrSyncSuperseded
+	}
 	if err != nil {
 		return fmt.Errorf("failed to record the machine rules tracked: %w", err)
 	}
