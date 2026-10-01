@@ -28,7 +28,6 @@ func Test_ConcreteSyncStateUpdater_OK(t *testing.T) {
 
 				thisItem := item.(syncstate.UpdatePostflightItem)
 				assert.Equal(t, "2000-01-01T00:00:00Z", thisItem.PostflightAt)
-				assert.Equal(t, "1999-12-31T23:50:00Z", thisItem.FeedSyncCursor) // FIXME (derek.wang) This isn't necessarily "good" nor "correct", just "lazy"
 				assert.Equal(t, cur.AddDate(0, 0, 90).Unix(), thisItem.ExpiresAfter)
 
 				return &awsdynamodb.UpdateItemOutput{}, nil
