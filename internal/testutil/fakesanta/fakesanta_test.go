@@ -17,7 +17,10 @@ type scriptedServer struct {
 	preflight string
 	pages     []string
 	status    map[string]int
-	requests  map[string][]string
+	// statuses are answered in turn for a stage's requests before status and the canned bodies apply.
+	statuses map[string][]int
+	requests map[string][]string
+	headers  map[string][]map[string]string
 }
 
 func (s *scriptedServer) handle(req events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
@@ -35,6 +38,16 @@ func (s *scriptedServer) handle(req events.APIGatewayProxyRequest) (*events.APIG
 		s.requests = map[string][]string{}
 	}
 	s.requests[stage] = append(s.requests[stage], body)
+	if s.headers == nil {
+		s.headers = map[string][]map[string]string{}
+	}
+	s.headers[stage] = append(s.headers[stage], req.Headers)
+	if queue := s.statuses[stage]; len(queue) > 0 {
+		s.statuses[stage] = queue[1:]
+		if queue[0] != http.StatusOK {
+			return &events.APIGatewayProxyResponse{StatusCode: queue[0], Body: `{}`}, nil
+		}
+	}
 	if code, ok := s.status[stage]; ok {
 		return &events.APIGatewayProxyResponse{StatusCode: code, Body: `{}`}, nil
 	}
@@ -43,7 +56,12 @@ func (s *scriptedServer) handle(req events.APIGatewayProxyRequest) (*events.APIG
 		return &events.APIGatewayProxyResponse{StatusCode: http.StatusOK, Body: s.preflight}, nil
 	case "ruledownload":
 		page := len(s.requests[stage]) - 1
+		if page >= len(s.pages) {
+			page = len(s.pages) - 1
+		}
 		return &events.APIGatewayProxyResponse{StatusCode: http.StatusOK, Body: s.pages[page]}, nil
+	case "xsrf":
+		return &events.APIGatewayProxyResponse{StatusCode: http.StatusOK, Headers: map[string]string{"X-XSRF-TOKEN": "token-1"}}, nil
 	default:
 		return &events.APIGatewayProxyResponse{StatusCode: http.StatusOK, Body: `{}`}, nil
 	}

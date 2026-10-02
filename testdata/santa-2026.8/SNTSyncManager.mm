@@ -1,0 +1,1000 @@
+/// Copyright 2016 Google Inc. All rights reserved.
+/// Copyright 2025 North Pole Security, Inc.
+///
+/// Licensed under the Apache License, Version 2.0 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     http://www.apache.org/licenses/LICENSE-2.0
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+
+#import "Source/santasyncservice/SNTSyncManager.h"
+
+#import <Network/Network.h>
+
+#include <atomic>
+#include <memory>
+
+#import "Source/common/MOLAuthenticatingURLSession.h"
+#import "Source/common/MOLXPCConnection.h"
+#include "Source/common/Pinning.h"
+#import "Source/common/SNTCommonEnums.h"
+#import "Source/common/SNTConfigurator.h"
+#import "Source/common/SNTLogging.h"
+#import "Source/common/SNTStoredEvent.h"
+#import "Source/common/SNTStoredSignalReport.h"
+#import "Source/common/SNTStrengthify.h"
+#import "Source/common/SNTSyncConstants.h"
+#import "Source/common/SNTXPCBundleServiceInterface.h"
+#import "Source/common/SNTXPCControlInterface.h"
+#import "Source/santasyncservice/SNTPushClientFCM.h"
+#import "Source/santasyncservice/SNTPushClientNATS.h"
+#import "Source/santasyncservice/SNTPushNotifications.h"
+#import "Source/santasyncservice/SNTSantaCommandHandler.h"
+#import "Source/santasyncservice/SNTSyncCommands.h"
+#import "Source/santasyncservice/SNTSyncConfigBundle.h"
+#import "Source/santasyncservice/SNTSyncEventUpload.h"
+#import "Source/santasyncservice/SNTSyncLogging.h"
+#import "Source/santasyncservice/SNTSyncPostflight.h"
+#import "Source/santasyncservice/SNTSyncPreflight.h"
+#import "Source/santasyncservice/SNTSyncPublishMetrics.h"
+#import "Source/santasyncservice/SNTSyncRuleDownload.h"
+#import "Source/santasyncservice/SNTSyncSignalUpload.h"
+#import "Source/santasyncservice/SNTSyncState.h"
+#include "absl/cleanup/cleanup.h"
+
+static const uint8_t kMaxEnqueuedSyncs = 2;
+
+@interface SNTSyncManager () <SNTPushNotificationsSyncDelegate>
+
+@property(nonatomic) dispatch_source_t fullSyncTimer;
+@property(nonatomic) dispatch_source_t ruleSyncTimer;
+
+@property(nonatomic, readonly) dispatch_queue_t syncQueue;
+@property(nonatomic, readonly) dispatch_semaphore_t syncLimiter;
+
+// Serial queue for out-of-band event uploads (NATS EventUpload command). Kept
+// separate from syncQueue so uploads can't starve regular syncs, and serial so a
+// single command carrying many paths processes them one at a time instead of
+// fanning out into concurrent bundle-service connections and sync POSTs.
+@property(nonatomic, readonly) dispatch_queue_t eventUploadQueue;
+
+// Serial queue for the end-of-sync command drain. The drain can block for a long
+// time (event-upload commands wait for the upload to complete), so it runs off
+// the syncQueue to let the sync finish. Serial so only one drain runs at a time;
+// a redundant drain dispatched while one is running finds the server queue
+// already emptied and returns after a single fetch.
+@property(nonatomic, readonly) dispatch_queue_t commandsQueue;
+
+@property(nonatomic) MOLXPCConnection* daemonConn;
+
+@property(nonatomic) BOOL reachable;
+@property nw_path_monitor_t pathMonitor;
+// Whether the current path monitor has delivered its initial path update.
+// nw_path_monitor reports the current path state once on start; that first
+// update is a baseline and must not trigger a sync. Only a subsequent
+// down->up transition should.
+@property(nonatomic) BOOL hasInitialPathState;
+
+// If set, push notifications are being used.
+@property id<SNTPushNotificationsClientDelegate> pushNotifications;
+
+// Transport-agnostic command execution shared with the NATS push client. Used
+// by the end-of-sync command drain stage.
+@property(nonatomic) SNTSantaCommandHandler* commandHandler;
+
+@property NSUInteger eventBatchSize;
+
+@property NSString* xsrfToken;
+@property NSString* xsrfTokenHeader;
+
+// Persisted full sync interval read from the daemon on startup.
+// Used as fallback when the server doesn't provide full_sync_interval_seconds in preflight.
+// Updated when the server provides a new value so the fallback stays current.
+@property NSUInteger persistedFullSyncInterval;
+
+@property(nonatomic, readonly) dispatch_queue_t metricsQueue;
+
+@end
+
+@implementation SNTSyncManager
+
+#pragma mark init
+
+- (instancetype)initWithDaemonConnection:(MOLXPCConnection*)daemonConn {
+  self = [super init];
+  if (self) {
+    _daemonConn = daemonConn;
+
+    // Read the daemon's persisted full sync interval. This reflects the last value
+    // the server provided and serves as a fallback when the server doesn't include
+    // full_sync_interval_seconds in a preflight response. The XPC call is synchronous
+    // (reply block executes before the method returns).
+    __block NSUInteger persistedFull = kDefaultFullSyncInterval;
+    [[_daemonConn synchronousRemoteObjectProxy] fullSyncInterval:^(NSUInteger interval) {
+      persistedFull = interval;
+    }];
+    _persistedFullSyncInterval = persistedFull;
+    LOGD(@"Read persisted full sync interval from daemon: %lu", _persistedFullSyncInterval);
+
+    SNTConfigurator* config = [SNTConfigurator configurator];
+
+    if (config.fcmEnabled) {
+      LOGD(@"Using FCM push notifications");
+      _pushNotifications = [[SNTPushClientFCM alloc] initWithSyncDelegate:self];
+    }
+    // NATS push client is created dynamically in preflightWithSyncState: after
+    // the server provides a validated token chain (isSyncV2) and push config.
+
+    _fullSyncTimer = [self createSyncTimerWithBlock:^{
+      // Reschedule as a fallback before starting the sync. On success,
+      // preflightWithSyncState: will override with the server-informed interval.
+      // On failure, the failed-preflight path corrects it as well. This is just
+      // a safety net for the case where the sync fails before reaching any
+      // rescheduling logic.
+      NSUInteger interval = self.pushNotifications ? self.pushNotifications.fullSyncInterval
+                                                   : self.persistedFullSyncInterval;
+      [self rescheduleTimerQueue:self.fullSyncTimer secondsFromNow:interval];
+      [self syncType:SNTSyncTypeNormal withReply:NULL];
+    }];
+    _ruleSyncTimer = [self createSyncTimerWithBlock:^{
+      dispatch_source_set_timer(self.ruleSyncTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER,
+                                0);
+      [self ruleSyncImpl];
+    }];
+    _syncQueue = dispatch_queue_create("com.northpolesec.santa.syncservice", DISPATCH_QUEUE_SERIAL);
+    _syncLimiter = dispatch_semaphore_create(kMaxEnqueuedSyncs);
+    _eventUploadQueue = dispatch_queue_create("com.northpolesec.santa.syncservice.eventupload",
+                                              DISPATCH_QUEUE_SERIAL);
+    _commandsQueue =
+        dispatch_queue_create("com.northpolesec.santa.syncservice.commands", DISPATCH_QUEUE_SERIAL);
+
+    _commandHandler = [[SNTSantaCommandHandler alloc] initWithSyncDelegate:self];
+
+    _eventBatchSize = kDefaultEventBatchSize;
+    _metricsQueue = dispatch_queue_create_with_target(
+        "com.northpolesec.santa.syncservice.metrics", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL,
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+  }
+  return self;
+}
+
+#pragma mark SNTSyncServiceXPC methods
+
+- (void)postEventsToSyncServer:(NSArray<SNTStoredEvent*>*)events reply:(void (^)(BOOL))reply {
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    LOGE(@"Events upload failed to create sync state: %ld", status);
+    if (reply) reply(NO);
+    return;
+  }
+  syncState.eventBatchSize = self.eventBatchSize;
+  SNTSyncEventUpload* p = [[SNTSyncEventUpload alloc] initWithState:syncState];
+  BOOL success;
+  if (events && [p uploadEvents:events]) {
+    LOGD(@"Events upload complete");
+    success = YES;
+  } else {
+    LOGE(@"Events upload failed.  Will retry again once %@ is reachable",
+         [[SNTConfigurator configurator] syncBaseURL].absoluteString);
+    [self startReachability];
+    success = NO;
+  }
+  self.xsrfToken = syncState.xsrfToken;
+  self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+  if (reply) reply(success);
+}
+
+- (void)uploadSignalReportsToSyncServer:(NSArray<SNTStoredSignalReport*>*)reports
+                                  reply:(void (^)(BOOL))reply {
+  if (!reports.count) {
+    if (reply) reply(YES);
+    return;
+  }
+
+  // Run on syncQueue so this out-of-band upload can't overlap a scheduled
+  // sync's signalupload stage. Both paths read the pending set from the DB at
+  // upload time via [p sync], so whichever runs first uploads and deletes the
+  // rows and the other finds nothing pending — the server never receives
+  // duplicates. The passed-in reports just signal that there is work to do;
+  // they are already persisted in the DB.
+  dispatch_async(self.syncQueue, ^() {
+    SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+    SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+    if (!syncState) {
+      LOGE(@"Signal report upload failed to create sync state: %ld", status);
+      if (reply) reply(NO);
+      return;
+    }
+
+    // Signal report upload is only supported in sync v2. Leave the reports pending for the next
+    // (v2) sync if v2 is not enabled.
+    if (!syncState.isSyncV2) {
+      LOGD(@"Signal report upload skipped: sync v2 not enabled. Reports remain pending.");
+      if (reply) reply(NO);
+      return;
+    }
+
+    SNTSyncSignalUpload* p = [[SNTSyncSignalUpload alloc] initWithState:syncState];
+    BOOL success = [p sync];
+    if (success) {
+      LOGD(@"Signal report upload complete");
+    } else {
+      LOGE(@"Signal report upload failed. Reports remain pending for the next sync.");
+      [self startReachability];
+    }
+    self.xsrfToken = syncState.xsrfToken;
+    self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+    if (reply) reply(success);
+  });
+}
+
+- (void)postBundleEventToSyncServer:(SNTStoredExecutionEvent*)event
+                              reply:(void (^)(SNTBundleEventAction))reply {
+  if (!event) {
+    reply(SNTBundleEventActionDropEvents);
+    return;
+  }
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    LOGE(@"Bundle event upload failed to create sync state: %ld", status);
+    reply(SNTBundleEventActionDropEvents);
+    return;
+  }
+  SNTSyncEventUpload* p = [[SNTSyncEventUpload alloc] initWithState:syncState];
+  if ([p uploadEvents:@[ event ]]) {
+    if ([syncState.bundleBinaryRequests containsObject:event.fileBundleHash]) {
+      reply(SNTBundleEventActionSendEvents);
+      LOGD(@"Needs related events");
+    } else {
+      reply(SNTBundleEventActionDropEvents);
+      LOGD(@"Bundle event upload complete");
+    }
+  } else {
+    // Related bundle events will be stored and eventually synced, whether the server actually
+    // wanted them or not.  If they weren't needed the server will simply ignore them.
+    reply(SNTBundleEventActionStoreEvents);
+    LOGE(@"Bundle event upload failed.  Will retry again once %@ is reachable",
+         [[SNTConfigurator configurator] syncBaseURL].absoluteString);
+    [self startReachability];
+  }
+  self.xsrfToken = syncState.xsrfToken;
+  self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+}
+
+- (void)pushNotificationStatus:(void (^)(SNTPushNotificationStatus))reply {
+  if (!self.pushNotifications) {
+    reply(SNTPushNotificationStatusDisabled);
+    return;
+  }
+  if (!self.pushNotifications.isConnected) {
+    reply(SNTPushNotificationStatusDisconnected);
+    return;
+  }
+  // Check if using NATS push client
+  if ([self.pushNotifications isKindOfClass:[SNTPushClientNATS class]]) {
+    reply(SNTPushNotificationStatusConnectedNATS);
+    return;
+  }
+  reply(SNTPushNotificationStatusConnected);
+}
+
+- (void)pushNotificationServerAddress:(void (^)(NSString*))reply {
+  // Only return server address if using NATS and connected
+  if ([self.pushNotifications isKindOfClass:[SNTPushClientNATS class]] &&
+      self.pushNotifications.isConnected) {
+    SNTPushClientNATS* natsClient = (SNTPushClientNATS*)self.pushNotifications;
+    NSString* serverAddress = natsClient.pushServer;
+    reply(serverAddress);
+    return;
+  }
+  reply(nil);
+}
+
+- (void)pushNotificationReconnect {
+  if (!self.pushNotifications) {
+    LOGD(@"Push notifications not configured, nothing to reconnect");
+    return;
+  }
+
+  LOGD(@"Force reconnecting push notification client");
+
+  // First, reset the push client's connection state (cancel retry timers, close connection)
+  // Then trigger a sync which will call handlePreflightSyncState with fresh credentials
+  // and reconnect the push client. Give a small amount of time before doing another sync
+  // since right now the force reconnect happens when enabling the network extension which
+  // can cause connections to reset and a flood of network activity.
+  if ([self.pushNotifications respondsToSelector:@selector(forceReconnect)]) {
+    [self.pushNotifications forceReconnect];
+  }
+  [self syncSecondsFromNow:2];
+}
+
+- (void)publishMetrics:(NSDictionary*)metrics reply:(void (^)(BOOL))reply {
+  if (!metrics) {
+    LOGE(@"Nil metrics dictionary");
+    if (reply) reply(NO);
+    return;
+  }
+  dispatch_async(self.metricsQueue, ^{
+    SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+    SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+    if (!syncState) {
+      LOGE(@"Publish metrics failed to create sync state: %ld", status);
+      if (reply) reply(NO);
+      return;
+    }
+    SNTSyncPublishMetrics* p = [[SNTSyncPublishMetrics alloc] initWithState:syncState];
+    BOOL success = [p publishMetrics:metrics];
+    if (success) {
+      LOGD(@"Publish metrics complete");
+    } else {
+      LOGE(@"Publish metrics failed");
+    }
+    self.xsrfToken = syncState.xsrfToken;
+    self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+    if (reply) reply(success);
+  });
+}
+
+- (void)checkSyncServerStatus:(void (^)(NSInteger statusCode, NSString* description,
+                                        MOLCertificate* clientCertificate))reply {
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    SLOGE(@"Failed to create sync state: %ld", (long)status);
+    reply(0, [NSString stringWithFormat:@"Failed to create sync state: %ld", (long)status], nil);
+    return;
+  }
+
+  // The MOLAuthenticatingURLSession is the session's delegate. It records the client certificate it
+  // presents during the TLS handshake, which lets the caller inspect the exact certificate the
+  // server received (e.g. to detect expiry), including when it was selected based on the
+  // certificate authority names the server sent.
+  MOLAuthenticatingURLSession* authURLSession =
+      (MOLAuthenticatingURLSession*)syncState.session.delegate;
+
+  NSURL* url = [NSURL URLWithString:@"preflight/santactl-doctor-test"
+                      relativeToURL:syncState.syncBaseURL];
+  NSMutableURLRequest* req = [[NSMutableURLRequest alloc] initWithURL:url];
+  req.HTTPMethod = @"POST";
+
+  SLOGD(@"Sending preflight request to %@", url.absoluteString);
+
+  // Guard against reply() being called twice: the completion handler and the
+  // timeout path can race when the response arrives near the 30s deadline.
+  // reply is an XPC reply block; invoking it twice crashes the process.
+  auto replied = std::make_shared<std::atomic<bool>>(false);
+  void (^guardedReply)(NSInteger, NSString*) = ^(NSInteger code, NSString* desc) {
+    if (replied->exchange(true)) return;
+    // The client certificate (if any) is captured during the handshake, so it is available
+    // regardless of whether the request ultimately succeeded or failed.
+    reply(code, desc, authURLSession.clientCertificate);
+  };
+
+  dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+  NSURLSessionDataTask* task = [syncState.session
+      dataTaskWithRequest:req
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+          if (error) {
+            SLOGE(@"Request error: %@", error.localizedDescription);
+            guardedReply(0, error.localizedDescription);
+            dispatch_semaphore_signal(sema);
+            return;
+          }
+          NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
+          NSInteger code = httpResponse.statusCode;
+          NSString* desc;
+          if (code == 301) {
+            NSString* location = [httpResponse valueForHTTPHeaderField:@"Location"];
+            desc = [NSString stringWithFormat:@"HTTP 301, new location: %@", location];
+          } else {
+            desc = [NSHTTPURLResponse localizedStringForStatusCode:code];
+          }
+          guardedReply(code, desc);
+          dispatch_semaphore_signal(sema);
+        }];
+  [task resume];
+  if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC))) {
+    [task cancel];
+    SLOGE(@"Request timed out after 30s");
+    guardedReply(0, @"Request timed out");
+  }
+}
+
+#pragma mark sync control / SNTPushNotificationsDelegate methods
+
+- (void)sync {
+  [self syncSecondsFromNow:0];
+}
+
+- (void)syncSecondsFromNow:(uint64_t)seconds {
+  [self rescheduleTimerQueue:self.fullSyncTimer secondsFromNow:seconds];
+}
+
+- (void)syncType:(SNTSyncType)syncType withReply:(void (^)(SNTSyncStatusType))reply {
+  if (dispatch_semaphore_wait(self.syncLimiter, DISPATCH_TIME_NOW)) {
+    if (reply) reply(SNTSyncStatusTypeTooManySyncsInProgress);
+    return;
+  }
+  dispatch_async(self.syncQueue, ^() {
+    absl::Cleanup signalLimiter = ^{
+      dispatch_semaphore_signal(self.syncLimiter);
+    };
+    SLOGI(@"Starting sync...");
+    if (syncType != SNTSyncTypeNormal) {
+      dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+      [[self.daemonConn remoteObjectProxy] updateSyncSettings:SyncTypeConfigBundle(syncType)
+                                                        reply:^() {
+                                                          dispatch_semaphore_signal(sema);
+                                                        }];
+      if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) {
+        SLOGE(@"Timeout waiting for daemon");
+        if (reply) reply(SNTSyncStatusTypeDaemonTimeout);
+        return;
+      }
+    }
+    if (reply) reply(SNTSyncStatusTypeSyncStarted);
+    SNTSyncStatusType status = [self preflight];
+    if (reply) reply(status);
+  });
+}
+
+- (void)ruleSync {
+  [self ruleSyncSecondsFromNow:0];
+}
+
+- (void)ruleSyncSecondsFromNow:(uint64_t)seconds {
+  [self rescheduleTimerQueue:self.ruleSyncTimer secondsFromNow:seconds];
+}
+
+- (void)rescheduleTimerQueue:(dispatch_source_t)timerQueue secondsFromNow:(uint64_t)seconds {
+  uint64_t interval = seconds * NSEC_PER_SEC;
+  uint64_t leeway = 5 * NSEC_PER_SEC;
+  dispatch_source_set_timer(timerQueue, dispatch_walltime(NULL, interval), interval, leeway);
+}
+
+- (void)ruleSyncImpl {
+  // Rule only syncs are exclusively scheduled by self.ruleSyncTimer. We do not need to worry about
+  // using self.syncLimiter here. However we do want to do the work on self.syncQueue so we do not
+  // overlap with a full sync.
+  dispatch_async(self.syncQueue, ^() {
+    if (![[SNTConfigurator configurator] syncBaseURL]) return;
+    SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+    SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+    if (!syncState) {
+      LOGE(@"Rule sync failed to create sync state: %ld", status);
+      return;
+    }
+    SNTSyncRuleDownload* p = [[SNTSyncRuleDownload alloc] initWithState:syncState];
+    BOOL ret = [p sync];
+    LOGD(@"Rule download %@", ret ? @"complete" : @"failed");
+    self.xsrfToken = syncState.xsrfToken;
+    self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+  });
+}
+
+- (void)preflightSync {
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    LOGE(@"Unable to create sync state: %lu", status);
+    return;
+  }
+  syncState.preflightOnly = YES;
+  [self preflightWithSyncState:syncState];
+}
+
+- (void)pushNotificationSyncSecondsFromNow:(uint64_t)seconds {
+  if (seconds > 0) {
+    [self rescheduleTimerQueue:self.fullSyncTimer secondsFromNow:seconds];
+    return;
+  }
+
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    LOGE(@"Unable to create sync state: %lu", status);
+    return;
+  }
+  syncState.pushNotificationSync = YES;
+  [self preflightWithSyncState:syncState];
+}
+
+- (MOLXPCConnection*)daemonConnection {
+  return self.daemonConn;
+}
+
+- (void)eventUploadForPaths:(NSArray<NSString*>*)paths reply:(void (^)(NSError* error))reply {
+  // Enqueue each path individually. eventUploadForPath: dispatches onto the serial
+  // eventUploadQueue, so the paths are processed one at a time rather than fanning out.
+  for (NSString* path in paths) {
+    [self eventUploadForPath:path reply:reply];
+  }
+}
+
+- (void)eventUploadForPath:(NSString*)path reply:(void (^)(NSError* error))reply {
+  if (path.length == 0) {
+    reply([NSError errorWithDomain:@"com.northpolesec.santa.syncservice"
+                              code:1
+                          userInfo:@{NSLocalizedDescriptionKey : @"Empty path"}]);
+    return;
+  }
+
+  // Run on the dedicated serial event-upload queue: it avoids blocking syncQueue (which would
+  // starve regular syncs), and serializing here means a single EventUpload command carrying many
+  // paths processes them one at a time rather than fanning out into concurrent bundle-service
+  // connections and sync POSTs. postEventsToSyncServer: is thread-safe and doesn't require
+  // syncQueue serialization.
+  dispatch_async(self.eventUploadQueue, ^{
+    auto replied = std::make_shared<std::atomic<bool>>(false);
+    void (^guardedReply)(NSError*) = ^(NSError* e) {
+      if (replied->exchange(true)) return;
+      if (reply) reply(e);
+    };
+
+    // Check enableBundles via daemon XPC
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    __block BOOL enableBundles = NO;
+    [[self.daemonConn remoteObjectProxy] enableBundles:^(BOOL response) {
+      enableBundles = response;
+      dispatch_semaphore_signal(sema);
+    }];
+    if (dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+      LOGE(@"EventUpload: Timeout checking enableBundles, proceeding without bundles");
+    }
+
+    // Connect to bundle service
+    MOLXPCConnection* bs = [SNTXPCBundleServiceInterface configuredConnection];
+
+    dispatch_semaphore_t eventSema = dispatch_semaphore_create(0);
+    __block BOOL expectedInvalidation = NO;
+    bs.invalidationHandler = ^{
+      if (!expectedInvalidation) {
+        LOGE(@"EventUpload: Bundle service connection invalidated unexpectedly");
+      }
+      dispatch_semaphore_signal(eventSema);
+    };
+
+    [bs resume];
+
+    __block NSArray<SNTStoredExecutionEvent*>* resultEvents;
+    [[bs remoteObjectProxy] generateEventsFromPath:path
+                                     enableBundles:enableBundles
+                                             reply:^(NSArray<SNTStoredExecutionEvent*>* events) {
+                                               resultEvents = events;
+                                               dispatch_semaphore_signal(eventSema);
+                                             }];
+
+    // Bound the wait to 10 minutes to avoid blocking forever
+    if (dispatch_semaphore_wait(eventSema, dispatch_time(DISPATCH_TIME_NOW, 600 * NSEC_PER_SEC)) !=
+        0) {
+      LOGE(@"EventUpload: Timeout waiting for bundle service to generate events");
+      expectedInvalidation = YES;
+      [bs invalidate];
+      guardedReply([NSError
+          errorWithDomain:@"com.northpolesec.santa.syncservice"
+                     code:3
+                 userInfo:@{NSLocalizedDescriptionKey : @"Timeout generating events"}]);
+      return;
+    }
+
+    if (!resultEvents) {
+      LOGE(@"EventUpload: Bundle service failed to generate events (connection lost)");
+      expectedInvalidation = YES;
+      [bs invalidate];
+      guardedReply([NSError
+          errorWithDomain:@"com.northpolesec.santa.syncservice"
+                     code:2
+                 userInfo:@{NSLocalizedDescriptionKey : @"Bundle service connection lost"}]);
+      return;
+    }
+
+    if (!resultEvents.count) {
+      expectedInvalidation = YES;
+      [bs invalidate];
+      guardedReply(nil);
+      return;
+    }
+
+    // Upload events to sync server
+    [self postEventsToSyncServer:resultEvents
+                           reply:^(BOOL success) {
+                             if (success) {
+                               guardedReply(nil);
+                             } else {
+                               guardedReply([NSError
+                                   errorWithDomain:@"com.northpolesec.santa.syncservice"
+                                              code:4
+                                          userInfo:@{
+                                            NSLocalizedDescriptionKey : @"Failed to upload events"
+                                          }]);
+                             }
+                             expectedInvalidation = YES;
+                             [bs invalidate];
+                           }];
+  });
+}
+
+#pragma mark syncing chain
+
+- (SNTSyncStatusType)preflight {
+  SNTSyncStatusType status = SNTSyncStatusTypeUnknown;
+  SNTSyncState* syncState = [self createSyncStateWithStatus:&status];
+  if (!syncState) {
+    return status;
+  }
+  return [self preflightWithSyncState:syncState];
+}
+
+- (SNTSyncStatusType)preflightWithSyncState:(SNTSyncState*)syncState {
+  SLOGD(@"Preflight starting");
+  SNTSyncPreflight* p = [[SNTSyncPreflight alloc] initWithState:syncState];
+  if ([p sync]) {
+    SLOGD(@"Preflight complete");
+    self.xsrfToken = syncState.xsrfToken;
+    self.xsrfTokenHeader = syncState.xsrfTokenHeader;
+
+    // Clean up reachability if it was started for a non-network error
+    [self stopReachability];
+
+    self.eventBatchSize = syncState.eventBatchSize;
+
+    // Keep the persisted fallback current when the server provides a value.
+    if (syncState.fullSyncInterval) {
+      self.persistedFullSyncInterval = syncState.fullSyncInterval.unsignedIntegerValue;
+    }
+
+    // Dynamic NATS lifecycle: create when server validates sync v2,
+    // tear down when sync v2 is no longer valid.
+    if (syncState.isSyncV2 && !self.pushNotifications) {
+      // Check kill switch — respect explicit admin disable
+      if ([[SNTConfigurator configurator] enablePushNotifications]) {
+        LOGI(@"Creating NATS push client after successful sync v2 preflight");
+        self.pushNotifications = [[SNTPushClientNATS alloc] initWithSyncDelegate:self];
+      }
+    } else if (!syncState.isSyncV2 && self.pushNotifications &&
+               [self.pushNotifications isKindOfClass:[SNTPushClientNATS class]]) {
+      // Token chain no longer valid — tear down NATS client.
+      // The NATS C library holds unretained pointers to the client via __bridge
+      // callbacks, so we must disconnect (which destroys the C-level connection)
+      // before the object is deallocated. disconnectWithCompletion: dispatches
+      // async onto connectionQueue and the block's implicit capture of self (the
+      // NATS client) keeps it alive until cleanup completes.
+      LOGI(@"Sync v2 no longer active, tearing down NATS push client");
+      [(SNTPushClientNATS*)self.pushNotifications disconnectWithCompletion:nil];
+      self.pushNotifications = nil;
+    }
+
+    // Hand off push credentials to the push client (if present).
+    if (self.pushNotifications) {
+      NSUInteger oldInterval = self.pushNotifications.fullSyncInterval;
+      [self.pushNotifications handlePreflightSyncState:syncState];
+
+      // Clear NATS connection secrets from syncState now that the push client
+      // has captured them. pushJWT and pushIssuerJWT are kept so postflight
+      // can include them in pushTokenChain for the daemon to persist.
+      syncState.pushNKey = nil;
+      syncState.pushHMACKey = nil;
+
+      if (oldInterval != self.pushNotifications.fullSyncInterval) {
+        LOGD(
+            @"Push notification sync interval changed from %lu to %lu seconds. Rescheduling timer.",
+            oldInterval, self.pushNotifications.fullSyncInterval);
+      }
+    } else {
+      // pushNotificationsFullSyncInterval is only meaningful when push notifications
+      // are in use. Clear it so the postflight persists 0 to the daemon,
+      // overriding any stale default (14400).
+      syncState.pushNotificationsFullSyncInterval = @(0);
+    }
+
+    // Use the push notification interval when the server provided one and we
+    // have an active push client. syncState.pushNotificationsFullSyncInterval
+    // is nil when the server does not set push_notification_full_sync_interval_seconds
+    // (e.g. sync v1). In that case, fall back to the server's regular full_sync_interval.
+    if (self.pushNotifications && syncState.pushNotificationsFullSyncInterval) {
+      [self rescheduleTimerQueue:self.fullSyncTimer
+                  secondsFromNow:self.pushNotifications.fullSyncInterval];
+    } else {
+      NSUInteger interval = syncState.fullSyncInterval
+                                ? syncState.fullSyncInterval.unsignedIntegerValue
+                                : self.persistedFullSyncInterval;
+      LOGD(@"Push notifications not configured by server. Sync every %lu min.", interval / 60);
+      [self rescheduleTimerQueue:self.fullSyncTimer secondsFromNow:interval];
+    }
+
+    if (syncState.preflightOnly) return SNTSyncStatusTypeSuccess;
+    return [self eventUploadWithSyncState:syncState];
+  } else if (self.pushNotifications) {
+    // If preflight failed and push notifications are enabled, force a reschedule for
+    // the smaller of the default sync interval (default 10 minutes) and whatever the
+    // last push full sync interval was set to (default 4 hours).
+    // If push notifications are not enabled, the default sync interval was already set (10m).
+    auto interval = std::min(self.pushNotifications.fullSyncInterval, kDefaultFullSyncInterval);
+    [self rescheduleTimerQueue:self.fullSyncTimer secondsFromNow:interval];
+  }
+
+  SLOGE(@"Preflight failed, will try again once %@ is reachable",
+        [[SNTConfigurator configurator] syncBaseURL].absoluteString);
+  [self startReachability];
+  return SNTSyncStatusTypePreflightFailed;
+}
+
+- (SNTSyncStatusType)eventUploadWithSyncState:(SNTSyncState*)syncState {
+  SLOGD(@"Event upload starting");
+  SNTSyncEventUpload* p = [[SNTSyncEventUpload alloc] initWithState:syncState];
+  if ([p sync]) {
+    SLOGD(@"Event upload complete");
+    return [self signalUploadWithSyncState:syncState];
+  }
+
+  SLOGE(@"Event upload failed, aborting run");
+  return SNTSyncStatusTypeEventUploadFailed;
+}
+
+- (SNTSyncStatusType)signalUploadWithSyncState:(SNTSyncState*)syncState {
+  // Signal report upload is only supported in sync v2. Skip on v1.
+  if (!syncState.isSyncV2) {
+    return [self ruleDownloadWithSyncState:syncState];
+  }
+
+  SLOGD(@"Signal upload starting");
+  SNTSyncSignalUpload* p = [[SNTSyncSignalUpload alloc] initWithState:syncState];
+  if ([p sync]) {
+    SLOGD(@"Signal upload complete");
+  } else {
+    // Best-effort: pending reports remain in the DB and are retried on the next sync.
+    SLOGE(@"Signal upload failed, will retry on next sync");
+  }
+
+  // A signal upload failure must not abort the sync.
+  return [self ruleDownloadWithSyncState:syncState];
+}
+
+- (SNTSyncStatusType)ruleDownloadWithSyncState:(SNTSyncState*)syncState {
+  SLOGD(@"Rule download starting");
+  SNTSyncRuleDownload* p = [[SNTSyncRuleDownload alloc] initWithState:syncState];
+  if ([p sync]) {
+    SLOGD(@"Rule download complete");
+    return [self postflightWithSyncState:syncState];
+  }
+
+  SLOGE(@"Rule download failed, aborting run");
+  return SNTSyncStatusTypeRuleDownloadFailed;
+}
+
+- (SNTSyncStatusType)postflightWithSyncState:(SNTSyncState*)syncState {
+  SLOGD(@"Postflight starting");
+  SNTSyncPostflight* p = [[SNTSyncPostflight alloc] initWithState:syncState];
+  if ([p sync]) {
+    SLOGD(@"Postflight complete");
+    [self commandsWithSyncState:syncState];
+    SLOGI(@"Sync completed successfully");
+    return SNTSyncStatusTypeSuccess;
+  }
+  SLOGE(@"Postflight failed");
+  return SNTSyncStatusTypePostflightFailed;
+}
+
+// Drain any commands the server has queued for this host. Runs after a
+// successful postflight but off the syncQueue: the drain can block for a long
+// time (event-upload commands wait for the upload to finish), so it must not
+// hold up completion of the sync. A failure (or partial drain) does not affect
+// the sync result; undrained commands stay queued server-side for a later drain.
+//
+// The drain runs on the serial commandsQueue, so only one runs at a time. It is
+// fine for overlapping syncs to each dispatch here: a drain that runs after
+// another has emptied the server queue simply returns after a single fetch.
+- (void)commandsWithSyncState:(SNTSyncState*)syncState {
+  // Queued commands are only supported in sync v2. Skip on v1.
+  if (!syncState.isSyncV2) {
+    return;
+  }
+
+  dispatch_async(self.commandsQueue, ^{
+    LOGD(@"Commands starting");
+    SNTSyncCommands* p = [[SNTSyncCommands alloc] initWithState:syncState
+                                                 commandHandler:self.commandHandler];
+    if ([p sync]) {
+      LOGD(@"Commands complete");
+    } else {
+      LOGE(@"Commands failed; queued commands will be retried on next sync");
+    }
+  });
+}
+
+#pragma mark internal helpers
+
+- (dispatch_source_t)createSyncTimerWithBlock:(void (^)(void))block {
+  dispatch_source_t timerQueue =
+      dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                             dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0));
+  dispatch_source_set_event_handler(timerQueue, ^{
+    // Only trigger the sync event if a syncBaseURL exists
+    if ([[SNTConfigurator configurator] syncBaseURL]) {
+      block();
+    }
+  });
+  // Arm with DISPATCH_TIME_FOREVER so the timer does not fire until explicitly
+  // scheduled via rescheduleTimerQueue:secondsFromNow: (e.g. syncSecondsFromNow:15).
+  // Without this, the default fire time races with the initial schedule call.
+  dispatch_source_set_timer(timerQueue, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+  dispatch_resume(timerQueue);
+  return timerQueue;
+}
+
+- (SNTSyncState*)createSyncStateWithStatus:(SNTSyncStatusType*)status {
+  // Gather some data needed during some sync stages
+  SNTSyncState* syncState = [[SNTSyncState alloc] init];
+  SNTConfigurator* config = [SNTConfigurator configurator];
+
+  syncState.syncBaseURL = config.syncBaseURL;
+  if (syncState.syncBaseURL.absoluteString.length == 0) {
+    SLOGE(@"Missing SyncBaseURL. Can't sync without it.");
+    if (status) *status = SNTSyncStatusTypeMissingSyncBaseURL;
+    return nil;
+  } else if (![syncState.syncBaseURL.scheme isEqual:@"https"]) {
+    SLOGW(@"SyncBaseURL is not over HTTPS!");
+  }
+
+  syncState.machineID = config.machineID;
+  if (syncState.machineID.length == 0) {
+    SLOGE(@"Missing Machine ID. Can't sync without it.");
+    if (status) *status = SNTSyncStatusTypeMissingMachineID;
+    return nil;
+  }
+
+  syncState.machineOwner = config.machineOwner;
+  if (syncState.machineOwner.length == 0) {
+    syncState.machineOwner = @"";
+    SLOGD(@"Missing Machine Owner.");
+  }
+  syncState.machineOwnerGroups = config.machineOwnerGroups;
+
+  syncState.xsrfToken = self.xsrfToken;
+  syncState.xsrfTokenHeader = self.xsrfTokenHeader;
+
+  NSURLSessionConfiguration* sessConfig = [NSURLSessionConfiguration defaultSessionConfiguration];
+  sessConfig.connectionProxyDictionary = [[SNTConfigurator configurator] syncProxyConfig];
+
+  // Apply extra headers at the session level so all requests (including doctor checks) get them.
+  NSSet<NSString*>* restrictedHeaders = [NSSet setWithArray:@[
+    @"content-encoding",
+    @"content-length",
+    @"content-type",
+    @"connection",
+    @"host",
+    @"proxy-authenticate",
+    @"proxy-authorization",
+    @"www-authenticate",
+  ]];
+  NSDictionary* extraHeaders = [config syncExtraHeaders];
+  if (extraHeaders.count) {
+    NSMutableDictionary* filtered = [NSMutableDictionary dictionary];
+    [extraHeaders enumerateKeysAndObjectsUsingBlock:^(id key, id object, BOOL* stop) {
+      if (![key isKindOfClass:[NSString class]] || ![object isKindOfClass:[NSString class]]) return;
+      if ([restrictedHeaders containsObject:((NSString*)key).lowercaseString]) return;
+      filtered[key] = object;
+    }];
+    if (filtered.count) {
+      sessConfig.HTTPAdditionalHeaders = filtered;
+    }
+  }
+
+  MOLAuthenticatingURLSession* authURLSession =
+      [[MOLAuthenticatingURLSession alloc] initWithSessionConfiguration:sessConfig];
+  authURLSession.userAgent = @"santactl-sync/";
+  NSString* santactlVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+  if (santactlVersion) {
+    authURLSession.userAgent = [authURLSession.userAgent stringByAppendingString:santactlVersion];
+  }
+  authURLSession.refusesRedirects = YES;
+  authURLSession.serverHostname = syncState.syncBaseURL.host;
+  authURLSession.loggingBlock = ^(NSString* line) {
+    SLOGD(@"%@", line);
+  };
+
+  // Ask the daemon to determine if sync v2 is enabled. Sync v2 will be enabled
+  // if a pinned domain is configured or if a valid push token chain is present.
+  // The push token chain is stored in the sync state which is not accessible
+  // from the syncservice process.
+  [[self.daemonConn synchronousRemoteObjectProxy] isSyncV2Enabled:^(BOOL reply) {
+    syncState.isSyncV2 = reply;
+  }];
+
+  // Configure server auth
+  if (santa::IsDomainPinned(syncState.syncBaseURL)) {
+#ifndef DEBUG
+    authURLSession.serverRootsPemString = santa::PinnedCertPEMs();
+#endif
+  } else if ([config syncServerAuthRootsFile]) {
+    authURLSession.serverRootsPemFile = [config syncServerAuthRootsFile];
+  } else if ([config syncServerAuthRootsData]) {
+    authURLSession.serverRootsPemData = [config syncServerAuthRootsData];
+  }
+
+// Force sync v2 via compile-time define
+#ifdef SANTA_FORCE_SYNC_V2
+  syncState.isSyncV2 = YES;
+#endif
+
+  SLOGD(@"Using sync protocol version: %d", syncState.isSyncV2 ? 2 : 1);
+
+  // Configure client auth
+  if ([config syncClientAuthCertificateFile]) {
+    authURLSession.clientCertFile = [config syncClientAuthCertificateFile];
+    authURLSession.clientCertPassword = [config syncClientAuthCertificatePassword];
+  } else if ([config syncClientAuthCertificateCn]) {
+    authURLSession.clientCertCommonName = [config syncClientAuthCertificateCn];
+  } else if ([config syncClientAuthCertificateIssuer]) {
+    authURLSession.clientCertIssuerCn = [config syncClientAuthCertificateIssuer];
+  }
+
+  syncState.session = [authURLSession session];
+  syncState.daemonConn = self.daemonConn;
+  syncState.contentEncoding = config.syncClientContentEncoding;
+  syncState.pushNotificationsToken = self.pushNotifications.token;
+
+  return syncState;
+}
+
+#pragma mark reachability methods
+
+// Start listening for network state changes.
+- (void)startReachability {
+  if (self.pathMonitor) return;
+  // The monitor delivers the current path state once on start. That first
+  // update establishes a baseline and must not trigger a sync: reachability is
+  // armed after a sync failure, and if the host is already online (e.g. the
+  // failure was a server-side error, not a network outage) the baseline update
+  // would otherwise look like a down->up transition and kick off an immediate
+  // retry with no backoff. Only a genuine down->up transition after the
+  // baseline should trigger a sync.
+  self.hasInitialPathState = NO;
+  self.pathMonitor = nw_path_monitor_create();
+  // Put the callback on the main thread to ensure serial access.
+  nw_path_monitor_set_queue(self.pathMonitor, dispatch_get_main_queue());
+  nw_path_monitor_set_update_handler(self.pathMonitor, ^(nw_path_t path) {
+    [self handlePathReachable:nw_path_get_status(path) == nw_path_status_satisfied];
+  });
+  nw_path_monitor_start(self.pathMonitor);
+}
+
+// Handle a path-state update from the monitor. The first update after arming is
+// only a baseline and never triggers a sync; subsequent updates trigger a sync
+// only on a genuine down->up transition.
+- (void)handlePathReachable:(BOOL)reachable {
+  // A sync fires only when a recorded baseline goes from down to up. The first
+  // update just establishes the baseline, so an already-online host (e.g. when
+  // reachability was armed after a non-network sync failure) never triggers a
+  // backoff-free retry.
+  BOOL transitionedUp = self.hasInitialPathState && !self.reachable && reachable;
+  self.hasInitialPathState = YES;
+  self.reachable = reachable;
+  if (transitionedUp) {
+    LOGD(@"Internet connection has been restored, triggering a new sync.");
+    [self stopReachability];
+    [self sync];
+  }
+}
+
+// Stop listening for network state changes.
+// Clear pathMonitor synchronously: nw_path_monitor_cancel is async and we
+// can't rely on a cancel handler to clear it later — a re-entrant
+// startReachability before the handler fires would see the stale pointer
+// and silently skip, and a late-firing handler could clobber a new monitor.
+- (void)stopReachability {
+  if (!self.pathMonitor) return;
+  nw_path_monitor_cancel(self.pathMonitor);
+  self.pathMonitor = nil;
+}
+
+@end
