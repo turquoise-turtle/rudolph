@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,20 +157,38 @@ func waitForPort(addr string, timeout time.Duration) error {
 	return fmt.Errorf("DynamoDB Local did not listen on %s within %s", addr, timeout)
 }
 
+// The clients are shared by all tests of a process: every SDK client has its own connection pool, and tests that
+// create one per call (e.g. per item written) run out of file descriptors.
+var (
+	clientsMu    sync.Mutex
+	sharedRaw    *dynamodb.Client
+	sharedClient rudolphdynamodb.DynamoDBClient
+)
+
 // Raw returns an AWS SDK client for direct assertions and fixtures.
 func Raw(t testing.TB) *dynamodb.Client {
 	t.Helper()
-	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(Region))
-	if err != nil {
-		t.Fatal(err)
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if sharedRaw == nil {
+		cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(Region))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sharedRaw = dynamodb.NewFromConfig(cfg)
 	}
-	return dynamodb.NewFromConfig(cfg)
+	return sharedRaw
 }
 
 // Client returns Rudolph's DynamoDB client wrapper, configured exactly like the Lambdas configure it.
 func Client(t testing.TB) rudolphdynamodb.DynamoDBClient {
 	t.Helper()
-	return rudolphdynamodb.GetClient(TableName, Region)
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if sharedClient == nil {
+		sharedClient = rudolphdynamodb.GetClient(TableName, Region)
+	}
+	return sharedClient
 }
 
 // Reset recreates an empty table with the schema of deployments/.../modules/store/dynamodb.tf (see LoadTableSchema)
