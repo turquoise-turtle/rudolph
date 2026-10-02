@@ -93,8 +93,8 @@ func seedOldVersion(t *testing.T, v oldVersion, transport fakesanta.Transport) *
 		}
 		putItem(t, row)
 	}
-	machineRule(sha2, 1, map[string]any{"ExpiresAfter": now.Add(24 * time.Hour).Unix()})                     // applies
-	machineRule(sha3, 1, map[string]any{"ExpiresAfter": now.Add(-time.Hour).Unix()})                         // expired, not yet deleted by TTL
+	machineRule(sha2, 1, map[string]any{"ExpiresAfter": now.Add(24 * time.Hour).Unix()})                      // applies
+	machineRule(sha3, 1, map[string]any{"ExpiresAfter": now.Add(-time.Hour).Unix()})                          // expired, not yet deleted by TTL
 	machineRule(sha1, 2, map[string]any{"DeleteOnNextSync": true, "ExpiresAfter": now.Add(time.Hour).Unix()}) // removed override: inherits the global BLOCKLIST
 	machineRule(sha4, 4, map[string]any{"DeleteOnNextSync": true, "ExpiresAfter": now.Add(time.Hour).Unix()}) // removed, no global rule: REMOVE
 
