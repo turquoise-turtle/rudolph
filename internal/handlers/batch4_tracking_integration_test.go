@@ -261,4 +261,3 @@ func TestTX_OverlappingRuleDownloadsNeverLoseARemoval(t *testing.T) {
 		t.Fatalf("after overlapping rule downloads, a later removal never reached the Mac: %q", got)
 	}
 }
-
