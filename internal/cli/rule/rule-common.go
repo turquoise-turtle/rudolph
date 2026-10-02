@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -29,6 +30,11 @@ var (
 		Short: "Perform various rule operations",
 	}
 )
+
+func init() {
+	// Every rule subcommand that writes checks the local clock first (see clockcheck)
+	clockcheck.AddFlag(RuleCmd)
+}
 
 func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, options ...rules.RuleOption) (err error) {
 	// Second, determine the rule type and identifier

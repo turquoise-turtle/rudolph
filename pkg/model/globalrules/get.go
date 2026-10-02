@@ -12,6 +12,32 @@ func GetGlobalRuleBySortKey(client dynamodb.GetItemAPI, ruleSortKey string) (*Gl
 	return getItemAsGlobalRule(client, globalRulesPK, ruleSortKey)
 }
 
+// GetGlobalRulesBySortKeysConsistently returns the global rules that exist among the given rule sort keys, by sort
+// key, with strongly consistent reads (one BatchGetItem request per 100 keys). It is for callers that send the result
+// to a Mac right away and must not act on a rule that was just changed or removed.
+func GetGlobalRulesBySortKeysConsistently(client dynamodb.BatchGetItemAPI, ruleSortKeys []string) (map[string]*GlobalRuleRow, error) {
+	keys := make([]dynamodb.PrimaryKey, len(ruleSortKeys))
+	for i, sortKey := range ruleSortKeys {
+		keys[i] = dynamodb.PrimaryKey{PartitionKey: globalRulesPK, SortKey: sortKey}
+	}
+	items, err := client.BatchGetItems(keys, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read global rules: %w", err)
+	}
+	found := make(map[string]*GlobalRuleRow, len(items))
+	for _, item := range items {
+		var rule *GlobalRuleRow
+		if err := attributevalue.UnmarshalMap(item, &rule); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal a global rule: %w", err)
+		}
+		if rule.SHA256 != "" && rule.Identifier == "" {
+			rule.Identifier = rule.SHA256
+		}
+		found[rule.SortKey] = rule
+	}
+	return found, nil
+}
+
 // @deprecated Use GetGlobalRuleByIdentifier
 func GetGlobalRuleByShaType(client dynamodb.GetItemAPI, sha256 string, ruleType types.RuleType) (*GlobalRuleRow, error) {
 	return GetGlobalRuleByIdentifier(client, sha256, ruleType)

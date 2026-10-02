@@ -2,6 +2,7 @@ package machinerules
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/rules"
@@ -38,6 +39,21 @@ type updateRulePolicyRequest struct {
 	CELExpr      string `dynamodbav:"CELExpr"`
 	ExpiresAfter int64  `dynamodbav:"ExpiresAfter,omitempty"`
 	Description  string `dynamodbav:"Description,omitempty"`
+	// Not omitempty: updating a rule that is being removed brings it back with the new policy. Its optional fields
+	// are the ones it has now (for a rule that overrode a global rule, those of the global rule; see RemoveMachineRule).
+	DeleteOnNextSync bool `dynamodbav:"DeleteOnNextSync"`
+}
+
+// AppliesAt reports whether the rule is in force for its machine at the given time.
+//
+// A rule stops applying when it expires (ExpiresAfter is also the table's TTL attribute, but DynamoDB can take days to
+// delete an expired row) or when it is marked for removal. A rule that stopped applying is never sent as-is: if the
+// Mac may hold it, ruledownload sends its removal (or the global rule it overrode) instead.
+func (r MachineRuleRow) AppliesAt(now time.Time) bool {
+	if r.DeleteOnNextSync || r.Policy == types.RulePolicyRemove {
+		return false
+	}
+	return r.ExpiresAfter == 0 || r.ExpiresAfter > now.Unix()
 }
 
 func machineRulePK(machineID string) string {

@@ -23,7 +23,22 @@ type dynamodbUpdateItemAPI interface {
 	UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
 
+// UpdateItemIfAPI updates an existing item only while a condition on it holds
+type UpdateItemIfAPI interface {
+	// UpdateItemIf is UpdateItem with an additional condition; when it does not hold, the item is left unchanged
+	// and the returned error satisfies IsConditionalCheckFailed.
+	UpdateItemIf(key PrimaryKey, item interface{}, condition expression.ConditionBuilder) (*dynamodb.UpdateItemOutput, error)
+}
+
+func (dbc concreteDynamoDBClient) UpdateItemIf(key PrimaryKey, item interface{}, condition expression.ConditionBuilder) (*dynamodb.UpdateItemOutput, error) {
+	return updateItemWithCondition(dbc.tableName, &dbc.awsclient, key, item, &condition, dbc.timeout)
+}
+
 func updateItemToDynamoDB(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
+	return updateItemWithCondition(tableName, api, updateKey, updateFields, nil, timeout)
+}
+
+func updateItemWithCondition(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, condition *expression.ConditionBuilder, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
 	ctx := context.TODO()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -35,6 +50,9 @@ func updateItemToDynamoDB(tableName string, api dynamodbUpdateItemAPI, updateKey
 
 	// Conditional expression that requires the PK must match the PartitionKey provided
 	conditions := expression.Equal(expression.Name("PK"), expression.Value(updateKey.PartitionKey))
+	if condition != nil {
+		conditions = conditions.And(*condition)
+	}
 
 	updateItems, err := attributevalue.MarshalMap(updateFields)
 	if err != nil {

@@ -1,13 +1,15 @@
 package syncstate
 
 import (
+	"errors"
 	"fmt"
-	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 )
 
+// UpdatePostflightDate closes out a sync the client reported nothing about. See UpdatePostflightItem.
 func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
 	_, err = client.UpdateItem(
 		dynamodb.PrimaryKey{
@@ -23,9 +25,9 @@ func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.Updat
 	return
 }
 
-// UpdatePostflightOutcome closes out a sync like UpdatePostflightDate, and additionally records what the
-// client reported about the sync it just finished: the sync type it performed, and how many rules it
-// received and successfully applied.
+// UpdatePostflightOutcome closes out a sync: it marks the sync as completed, and records what the client reported
+// about the sync it just finished: the sync type it performed, and how many rules it received and successfully
+// applied. See UpdatePostflightOutcomeItem.
 func UpdatePostflightOutcome(
 	timeProvider clock.TimeProvider,
 	client dynamodb.UpdateItemAPI,
@@ -41,11 +43,12 @@ func UpdatePostflightOutcome(
 			SortKey:      syncStateSK,
 		},
 		UpdatePostflightOutcomeItem{
-			UpdatePostflightItem: newUpdatePostflightItem(timeProvider),
-			LastSyncType:         lastSyncType,
-			RulesReceived:        rulesReceived,
-			RulesProcessed:       rulesProcessed,
-			RulesHashAfterSync:   rulesHashAfterSync,
+			PostflightAt:       clock.RFC3339(timeProvider.Now()),
+			ExpiresAfter:       GetSyncStateExpiresAfter(timeProvider),
+			LastSyncType:       lastSyncType,
+			RulesReceived:      rulesReceived,
+			RulesProcessed:     rulesProcessed,
+			RulesHashAfterSync: rulesHashAfterSync,
 		},
 	)
 
@@ -58,62 +61,37 @@ func UpdatePostflightOutcome(
 func newUpdatePostflightItem(timeProvider clock.TimeProvider) UpdatePostflightItem {
 	return UpdatePostflightItem{
 		PostflightAt: clock.RFC3339(timeProvider.Now()),
-		// FIXME (derek.wang) ok, hear me out here--
-		// Machines sync typically every 10 minutes. Due to DDB's eventual consistency model, there's a small chance for the
-		// following to occur:
-		//
-		// - t=1 Old sensor cursor in database
-		// - t=10 new feed rule added
-		// - t=11 sensor sync starts
-		// - t=12 sensor uses feed cursor "1" to download
-		// - t=13 dynamodb:Query scans t>=1 and accidentally misses the new feed rule due to eventual consistency
-		// - t=14 ruledownlod returns 0 rules
-		// - t=15 postflight saves "15" into the database as the new cursor
-		//
-		// To mitigate against this, we always save a cursor that's 10 minutes EARLIER than the end of the sync.
-		// This forces sensor sync processes to overscan a little. In practice, this will have very minimal impact to
-		// performance, as all dynamodb:Query calls consume 0.5 RCUs + more RCUs based upon the number of items returned.
-		// Redundantly scanning ranges of sort keys that are almost always empty will rarely increase cost.
-		//
-		// For FUTURE Derek to figure out:
-		// The absolute BEST way of doing this is to only move cursor whenever ruledownload returns rules or has a
-		// lastEvaluatedKey. Doing this would require additional writes on /ruledownload which would inofitself increase
-		// WCUs which are way more expensive than RCUs. So yeah, my lame excuse of a spaghetti code will stand here.
-		FeedSyncCursor: clock.RFC3339(timeProvider.Now().Add(time.Minute * -10)),
-		ExpiresAfter:   GetSyncStateExpiresAfter(timeProvider),
+		ExpiresAfter: GetSyncStateExpiresAfter(timeProvider),
 	}
 }
 
-func UpdateRuledownloadStartedAt(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
-	_, err = client.UpdateItem(
+// ErrSyncSuperseded is returned when the sync state row no longer belongs to the sync updating it: a newer sync of
+// the machine started (or the summary was changed by someone else) in the meantime.
+var ErrSyncSuperseded = errors.New("the sync state was replaced by a newer sync of the machine")
+
+// SetMachineRulesTracked replaces the tracking summary (see SyncState.MachineRulesTracked), and the time the tracking
+// items' expiry was extended when refreshedAt is not empty. It only does so while the row still belongs to the sync
+// syncSeq and the summary is still expected ("" for none); otherwise it returns ErrSyncSuperseded and changes nothing.
+func SetMachineRulesTracked(client dynamodb.UpdateItemIfAPI, machineID string, syncSeq int, expected, summary, refreshedAt string) error {
+	condition := expression.Equal(expression.Name("SyncSeq"), expression.Value(syncSeq))
+	if expected == "" {
+		condition = condition.And(expression.AttributeNotExists(expression.Name("MachineRulesTracked")))
+	} else {
+		condition = condition.And(expression.Equal(expression.Name("MachineRulesTracked"), expression.Value(expected)))
+	}
+	_, err := client.UpdateItemIf(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
-		updateRuledownloadAtItem{
-			RuledownloadStartedAt: clock.RFC3339(timeProvider.Now()),
-		},
+		updateMachineRulesTrackedItem{MachineRulesTracked: summary, MachineRulesTrackingRefreshedAt: refreshedAt},
+		condition,
 	)
-
-	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+	if dynamodb.IsConditionalCheckFailed(err) {
+		return ErrSyncSuperseded
 	}
-	return
-}
-
-func UpdateRuledownloadFinishedAt(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
-	_, err = client.UpdateItem(
-		dynamodb.PrimaryKey{
-			PartitionKey: syncStatePK(machineID),
-			SortKey:      syncStateSK,
-		},
-		updateRuledownloadFinishedAtItem{
-			RuledownloadFinishedAt: clock.RFC3339(timeProvider.Now()),
-		},
-	)
-
 	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+		return fmt.Errorf("failed to record the machine rules tracked: %w", err)
 	}
-	return
+	return nil
 }

@@ -39,7 +39,16 @@ CDHash rules must be given with `--identifier`.
 
 Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot
 be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. Removing a machine-specific rule restores
-the global rule for the same target, including its fields.
+the global rule for the same target, including its fields; so does its expiry. Without a global rule Santa can apply,
+the Mac drops the rule (see [rule-pagination](./rule-pagination.md#machine-specific-rules)).
+
+Rules stored by older versions with an identifier today's validation rejects (e.g. an upper-case SHA-256) can still be
+removed with `rudolph rule remove`.
+
+Commands that write rules (`rudolph rule ...`, `rudolph rules import`) first compare the local clock with DynamoDB's and
+refuse when they differ by more than 2 minutes: rule changes are ordered by the writer's clock, and a change written
+with a clock that is far behind can miss Macs that sync incrementally. Fix the clock, or pass `--force` (see
+[rule-pagination](./rule-pagination.md#feed-cursor)).
 
 > **Deploy the API Lambda first.** Deploy the Rudolph version that supports them before creating `CDHASH` rules or rules
 > with the `CEL`, `SILENT_GUI_BLOCKLIST` or `SILENT_TTY_BLOCKLIST` policies. Older Lambdas cannot read these values, so every

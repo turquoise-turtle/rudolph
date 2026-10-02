@@ -1,6 +1,7 @@
 package rule
 
 import (
+	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -23,6 +24,9 @@ func init() {
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
+			if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
+				return err
+			}
 			time := clock.ConcreteTimeProvider{}
 
 			return applyPolicyForPath(time, dynamodbClient, types.Allowlist, tf, rf, of.Options()...)

@@ -1,6 +1,7 @@
 package ruledownload
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
@@ -19,6 +20,11 @@ type ruledownloadCursor struct {
 	ruledownloadCursorDDBLastEvaluatedKey
 	PageNumber int `json:"page,omitempty"`
 	BatchSize  int `json:"batch_size,omitempty"`
+
+	// syncState is the sync state read for the first page of a sync; it is never sent to the client. When the first
+	// page is also the last one (e.g. a steady-state incremental sync), the machine rules page reuses it instead of
+	// reading the sync state again.
+	syncState *syncstate.SyncStateRow
 }
 
 type ruledownloadCursorDDBLastEvaluatedKey struct {
@@ -78,6 +84,8 @@ type ruledownloadCursorService interface {
 }
 
 type concreteRuledownloadCursorService struct {
+	// timer and updater are unused since ruledownload stopped recording on the sync state when it started (a write
+	// per sync that nothing read; see C3 in docs/audit/shortcomings.md). The unit tests still set them.
 	timer   clock.TimeProvider
 	updater dynamodb.UpdateItemAPI
 	getter  dynamodb.GetItemAPI
@@ -92,7 +100,6 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 	if ruledownloadRequest.Cursor == nil {
 		// With a nil cursor, this is the very first ruledownload request in a sync.
 		// Couple things we need to do:
-		//  * note down that ruledownload has started
 		//  * determine the ruledownload strategy
 		//  * embed any context, including the desired strategy, into the next cursor
 		log.Printf("  Ruledownload first page")
@@ -101,6 +108,10 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 		syncState, eerr := syncstate.GetByMachineID(c.getter, machineID)
 		if eerr != nil {
 			err = fmt.Errorf("failed to get previous syncstate: %w", eerr)
+			return
+		}
+		if syncState == nil {
+			err = errors.New("no sync state: ruledownload without a preflight")
 			return
 		}
 
@@ -122,11 +133,7 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 			}
 		}
 
-		// Create a sensor sync object to log the StartedAt time of the rule download process
-		err = syncstate.UpdateRuledownloadStartedAt(c.timer, c.updater, machineID)
-		if err != nil {
-			return
-		}
+		cursor.syncState = syncState
 
 	} else {
 		cursor = *ruledownloadRequest.Cursor

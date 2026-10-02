@@ -215,7 +215,7 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 #### Strategies Definitions:
 - 1 = Downloads all GlobalRules
 - 2 = Downloads all FeedRules which is determined via the last sync state time
-- 3 = Downloads all MachineRules
+- 3 = Downloads all MachineRules (only in cursors issued by earlier versions; machine-specific rules are now sent at the end of the last page, see [rule-pagination](./rule-pagination.md#machine-specific-rules))
 
 #### Request - JSON
 ```json
