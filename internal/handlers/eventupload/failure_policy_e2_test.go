@@ -167,9 +167,15 @@ func TestE2_UnstorableEventIsDroppedAndTheOthersDelivered(t *testing.T) {
 
 func TestE2_TransientSinkFailureAsksSantaToRetry(t *testing.T) {
 	throttle := map[string]func(*fakeaws.Server){
-		"firehose": func(s *fakeaws.Server) { s.FirehoseRequestFault = func(int) *fakeaws.Fault { return &fakeaws.FirehoseThrottled } },
-		"kinesis":  func(s *fakeaws.Server) { s.KinesisRequestFault = func(int) *fakeaws.Fault { return &fakeaws.KinesisThrottled } },
-		"lambda":   func(s *fakeaws.Server) { s.LambdaFault = func([]byte, int) *fakeaws.Fault { return &fakeaws.LambdaThrottled } },
+		"firehose": func(s *fakeaws.Server) {
+			s.FirehoseRequestFault = func(int) *fakeaws.Fault { return &fakeaws.FirehoseThrottled }
+		},
+		"kinesis": func(s *fakeaws.Server) {
+			s.KinesisRequestFault = func(int) *fakeaws.Fault { return &fakeaws.KinesisThrottled }
+		},
+		"lambda": func(s *fakeaws.Server) {
+			s.LambdaFault = func([]byte, int) *fakeaws.Fault { return &fakeaws.LambdaThrottled }
+		},
 	}
 	for _, sink := range sinkCases(t) {
 		t.Run(sink.name, func(t *testing.T) {
