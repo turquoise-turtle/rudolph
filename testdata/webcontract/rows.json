@@ -1,0 +1,859 @@
+[
+  {
+    "AllowedPathRegex": {
+      "S": ""
+    },
+    "BatchSize": {
+      "N": "50"
+    },
+    "BlockedPathRegex": {
+      "S": "^/Users/[^/]+/Downloads/"
+    },
+    "ClientMode": {
+      "N": "1"
+    },
+    "DataType": {
+      "S": "GlobalConfig"
+    },
+    "EnableAllEventUpload": {
+      "BOOL": true
+    },
+    "EnableBundles": {
+      "BOOL": false
+    },
+    "EnableTransitiveRules": {
+      "BOOL": false
+    },
+    "EventDetailText": {
+      "S": "Request access"
+    },
+    "EventDetailURL": {
+      "S": "https://rudolph.example.com/%file_sha%"
+    },
+    "FullSyncInterval": {
+      "N": "600"
+    },
+    "OverrideFileAccessAction": {
+      "S": "AUDIT_ONLY"
+    },
+    "PK": {
+      "S": "GlobalConfig"
+    },
+    "SK": {
+      "S": "Config"
+    }
+  },
+  {
+    "CustomMessage": {
+      "S": "Blocked"
+    },
+    "CustomURL": {
+      "S": "https://it.example.com/%file_sha%"
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "EventDetailButtonLabel": {
+      "S": "Get help"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    "NotificationAppName": {
+      "S": "Tool"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000002"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "3"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000003"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000004"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "5"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000004"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000005"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "8"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000005"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000006"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "9"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "5"
+    },
+    "SK": {
+      "S": "CDHash#a1b2c3d4e5f60718293a4b5c6d7e8f9001122334"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "2"
+    },
+    "SK": {
+      "S": "Cert#0000000000000000000000000000000000000000000000000000000000000007"
+    }
+  },
+  {
+    "CELExpr": {
+      "S": "target.signing_time >= timestamp('2025-01-01T00:00:00Z')"
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "EQHXZ8M8AV:com.google.Chrome"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "7"
+    },
+    "RuleType": {
+      "N": "3"
+    },
+    "SK": {
+      "S": "SigningID#EQHXZ8M8AV:com.google.Chrome"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "Identifier": {
+      "S": "EQHXZ8M8AV"
+    },
+    "PK": {
+      "S": "GlobalRules"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "4"
+    },
+    "SK": {
+      "S": "TeamID#EQHXZ8M8AV"
+    }
+  },
+  {
+    "BinaryRuleCount": {
+      "N": "8"
+    },
+    "CDHashRuleCount": {
+      "N": "1"
+    },
+    "CertificateRuleCount": {
+      "N": "1"
+    },
+    "ClientMode": {
+      "N": "1"
+    },
+    "CompilerRuleCount": {
+      "N": "0"
+    },
+    "DataType": {
+      "S": "SensorData"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Hostname": {
+      "S": "mac-aaaaaaaa.example.com"
+    },
+    "MachineID": {
+      "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "ModelIdentifier": {
+      "S": "Mac15,7"
+    },
+    "OSBuild": {
+      "S": "24G84"
+    },
+    "OSVersion": {
+      "S": "15.6"
+    },
+    "PK": {
+      "S": "Machine#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "PrimaryUser": {
+      "S": "alice"
+    },
+    "RequestCleanSync": {
+      "BOOL": false
+    },
+    "RuleCount": {
+      "N": "12"
+    },
+    "RulesHash": {
+      "S": "0123456789abcdef"
+    },
+    "SIPStatus": {
+      "N": "127"
+    },
+    "SK": {
+      "S": "Current"
+    },
+    "SantaVersion": {
+      "S": "2026.8.0"
+    },
+    "SerialNum": {
+      "S": "C02AAAAAAAA1"
+    },
+    "SigningIDRuleCount": {
+      "N": "1"
+    },
+    "TeamIDRuleCount": {
+      "N": "1"
+    },
+    "Time": {
+      "S": "<timestamp>"
+    },
+    "TransitiveRuleCount": {
+      "N": "0"
+    }
+  },
+  {
+    "BatchSize": {
+      "N": "50"
+    },
+    "CleanSync": {
+      "BOOL": false
+    },
+    "CompletedSyncs": {
+      "L": [
+        {
+          "M": {
+            "PreflightAt": {
+              "S": "<timestamp>"
+            },
+            "Seq": {
+              "N": "<number>"
+            }
+          }
+        }
+      ]
+    },
+    "DataType": {
+      "S": "SyncState"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "FeedSyncCursor": {
+      "S": "<timestamp>"
+    },
+    "LastCleanSync": {
+      "S": "<timestamp>"
+    },
+    "LastSyncType": {
+      "S": "normal"
+    },
+    "MachineID": {
+      "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "MachineRulesTracked": {
+      "S": "<digest>"
+    },
+    "MachineRulesTrackingRefreshedAt": {
+      "S": "<timestamp>"
+    },
+    "PK": {
+      "S": "Machine#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "PostflightAt": {
+      "S": "<timestamp>"
+    },
+    "PreflightAt": {
+      "S": "<timestamp>"
+    },
+    "RulesHashAfterSync": {
+      "S": "0123456789abcdef"
+    },
+    "RulesProcessed": {
+      "N": "13"
+    },
+    "RulesReceived": {
+      "N": "13"
+    },
+    "SK": {
+      "S": "SyncState"
+    },
+    "SyncSeq": {
+      "N": "<number>"
+    }
+  },
+  {
+    "AllowedPathRegex": {
+      "S": ""
+    },
+    "BatchSize": {
+      "N": "50"
+    },
+    "BlockUsbMount": {
+      "BOOL": true
+    },
+    "BlockedPathRegex": {
+      "S": ""
+    },
+    "ClientMode": {
+      "N": "2"
+    },
+    "DataType": {
+      "S": "MachineConfig"
+    },
+    "EnableBundles": {
+      "BOOL": false
+    },
+    "EnableTransitiveRules": {
+      "BOOL": false
+    },
+    "FullSyncInterval": {
+      "N": "600"
+    },
+    "PK": {
+      "S": "Machine#BBBBBBBB-2222-4222-8222-BBBBBBBBBBBB"
+    },
+    "RemountUsbMode": {
+      "L": [
+        {
+          "S": "rdonly"
+        },
+        {
+          "S": "noexec"
+        }
+      ]
+    },
+    "SK": {
+      "S": "Config"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "PK": {
+      "S": "MachineRuleDelivery#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "PK": {
+      "S": "MachineRuleDelivery#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "SK": {
+      "S": "Binary#000000000000000000000000000000000000000000000000000000000000000b"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "PK": {
+      "S": "MachineRuleDelivery#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "SK": {
+      "S": "Binary#000000000000000000000000000000000000000000000000000000000000000c"
+    }
+  },
+  {
+    "CELExpr": {
+      "S": ""
+    },
+    "CustomMessage": {
+      "S": "Blocked"
+    },
+    "CustomURL": {
+      "S": "https://it.example.com/%file_sha%"
+    },
+    "DeleteOnNextSync": {
+      "BOOL": true
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "EventDetailButtonLabel": {
+      "S": "Get help"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "NotificationAppName": {
+      "S": ""
+    },
+    "PK": {
+      "S": "MachineRules#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "000000000000000000000000000000000000000000000000000000000000000b"
+    },
+    "PK": {
+      "S": "MachineRules#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#000000000000000000000000000000000000000000000000000000000000000b"
+    }
+  },
+  {
+    "CELExpr": {
+      "S": ""
+    },
+    "CustomMessage": {
+      "S": ""
+    },
+    "CustomURL": {
+      "S": ""
+    },
+    "DeleteOnNextSync": {
+      "BOOL": true
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "EventDetailButtonLabel": {
+      "S": ""
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "000000000000000000000000000000000000000000000000000000000000000c"
+    },
+    "NotificationAppName": {
+      "S": ""
+    },
+    "PK": {
+      "S": "MachineRules#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "Policy": {
+      "N": "4"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#000000000000000000000000000000000000000000000000000000000000000c"
+    }
+  },
+  {
+    "Description": {
+      "S": "web contract"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "000000000000000000000000000000000000000000000000000000000000000d"
+    },
+    "PK": {
+      "S": "MachineRules#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "Binary#000000000000000000000000000000000000000000000000000000000000000d"
+    }
+  },
+  {
+    "CustomMessage": {
+      "S": "Blocked"
+    },
+    "CustomURL": {
+      "S": "https://it.example.com/%file_sha%"
+    },
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "EventDetailButtonLabel": {
+      "S": "Get help"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    "NotificationAppName": {
+      "S": "Tool"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000002"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "3"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000003"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000004"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "5"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000004"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000005"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "8"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000005"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000006"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "9"
+    },
+    "RuleType": {
+      "N": "1"
+    },
+    "SK": {
+      "S": "<timestamp>#Binary#0000000000000000000000000000000000000000000000000000000000000006"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "5"
+    },
+    "SK": {
+      "S": "<timestamp>#CDHash#a1b2c3d4e5f60718293a4b5c6d7e8f9001122334"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "2"
+    },
+    "SK": {
+      "S": "<timestamp>#Cert#0000000000000000000000000000000000000000000000000000000000000007"
+    }
+  },
+  {
+    "CELExpr": {
+      "S": "target.signing_time >= timestamp('2025-01-01T00:00:00Z')"
+    },
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "EQHXZ8M8AV:com.google.Chrome"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "7"
+    },
+    "RuleType": {
+      "N": "3"
+    },
+    "SK": {
+      "S": "<timestamp>#SigningID#EQHXZ8M8AV:com.google.Chrome"
+    }
+  },
+  {
+    "DataType": {
+      "S": "RulesFeed"
+    },
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "Identifier": {
+      "S": "EQHXZ8M8AV"
+    },
+    "PK": {
+      "S": "RulesFeed"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "4"
+    },
+    "SK": {
+      "S": "<timestamp>#TeamID#EQHXZ8M8AV"
+    }
+  }
+]

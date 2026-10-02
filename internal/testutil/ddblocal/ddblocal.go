@@ -4,8 +4,13 @@
 //
 //	func TestMain(m *testing.M) { os.Exit(ddblocal.Main(m)) }
 //
-// It starts DynamoDB Local (a Java process) in front of a request-counting proxy and points the AWS SDK at it
-// through AWS_ENDPOINT_URL_DYNAMODB, so production code paths such as handler Boot() methods run unmodified.
+// It starts DynamoDB Local (a Java process) behind a proxy and points the AWS SDK at the proxy through
+// AWS_ENDPOINT_URL_DYNAMODB, so production code paths such as handler Boot() methods run unmodified. The proxy
+// (proxy.go) counts operations (Counts), measures consumed capacity including index writes (ConsumedCapacity) and lets
+// a test inject faults, unprocessed batch items or pauses (AddHook, FailNext, LeaveUnprocessed, PauseFirst).
+//
+// The table is created from the Terraform definition (LoadTableSchema), so it has exactly production's keys and
+// indexes.
 //
 // DynamoDB Local is found in $DYNAMODB_LOCAL_DIR (default: <repo>/.dynamodb-local, see scripts/setup_test_deps.sh).
 // If it cannot be started the test binary fails: integration tests never silently skip.
@@ -17,14 +22,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,11 +40,6 @@ import (
 const (
 	TableName = "rudolph_integration_test"
 	Region    = "us-east-1"
-)
-
-var (
-	counterMu sync.Mutex
-	counts    = map[string]int{}
 )
 
 // Main starts DynamoDB Local, runs the tests and stops it again. It returns the exit code for os.Exit.
@@ -126,7 +122,7 @@ func start() (func(), error) {
 		return nil, err
 	}
 
-	proxyURL, closeProxy, err := startCountingProxy(backend)
+	proxyURL, closeProxy, err := startProxy(backend)
 	if err != nil {
 		kill()
 		return nil, err
@@ -161,49 +157,42 @@ func waitForPort(addr string, timeout time.Duration) error {
 	return fmt.Errorf("DynamoDB Local did not listen on %s within %s", addr, timeout)
 }
 
-// startCountingProxy counts DynamoDB operations by their X-Amz-Target header (e.g. "PutItem").
-func startCountingProxy(backend string) (string, func(), error) {
-	target, err := url.Parse(backend)
-	if err != nil {
-		return "", nil, err
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", nil, err
-	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		op := r.Header.Get("X-Amz-Target")
-		if i := strings.LastIndex(op, "."); i >= 0 {
-			op = op[i+1:]
-		}
-		counterMu.Lock()
-		counts[op]++
-		counterMu.Unlock()
-		proxy.ServeHTTP(w, r)
-	})}
-	go func() { _ = srv.Serve(l) }()
-	return "http://" + l.Addr().String(), func() { _ = srv.Close() }, nil
-}
+// The clients are shared by all tests of a process: every SDK client has its own connection pool, and tests that
+// create one per call (e.g. per item written) run out of file descriptors.
+var (
+	clientsMu    sync.Mutex
+	sharedRaw    *dynamodb.Client
+	sharedClient rudolphdynamodb.DynamoDBClient
+)
 
 // Raw returns an AWS SDK client for direct assertions and fixtures.
 func Raw(t testing.TB) *dynamodb.Client {
 	t.Helper()
-	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(Region))
-	if err != nil {
-		t.Fatal(err)
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if sharedRaw == nil {
+		cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(Region))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sharedRaw = dynamodb.NewFromConfig(cfg)
 	}
-	return dynamodb.NewFromConfig(cfg)
+	return sharedRaw
 }
 
 // Client returns Rudolph's DynamoDB client wrapper, configured exactly like the Lambdas configure it.
 func Client(t testing.TB) rudolphdynamodb.DynamoDBClient {
 	t.Helper()
-	return rudolphdynamodb.GetClient(TableName, Region)
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	if sharedClient == nil {
+		sharedClient = rudolphdynamodb.GetClient(TableName, Region)
+	}
+	return sharedClient
 }
 
-// Reset recreates an empty table with the schema from deployments/.../modules/store/dynamodb.tf
-// and clears the operation counters.
+// Reset recreates an empty table with the schema of deployments/.../modules/store/dynamodb.tf (see LoadTableSchema)
+// and clears the operation counters and consumed capacity.
 func Reset(t testing.TB) {
 	t.Helper()
 	ctx := context.Background()
@@ -216,32 +205,11 @@ func Reset(t testing.TB) {
 		}
 	}
 
-	_, err := raw.CreateTable(ctx, &dynamodb.CreateTableInput{
-		TableName:   aws.String(TableName),
-		BillingMode: types.BillingModePayPerRequest,
-		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: aws.String("PK"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("SK"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("DataType"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("SerialNum"), AttributeType: types.ScalarAttributeTypeS},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{AttributeName: aws.String("PK"), KeyType: types.KeyTypeHash},
-			{AttributeName: aws.String("SK"), KeyType: types.KeyTypeRange},
-		},
-		GlobalSecondaryIndexes: []types.GlobalSecondaryIndex{{
-			IndexName: aws.String("SerialNum_DataType_MachineID"),
-			KeySchema: []types.KeySchemaElement{
-				{AttributeName: aws.String("SerialNum"), KeyType: types.KeyTypeHash},
-				{AttributeName: aws.String("DataType"), KeyType: types.KeyTypeRange},
-			},
-			Projection: &types.Projection{
-				ProjectionType:   types.ProjectionTypeInclude,
-				NonKeyAttributes: []string{"MachineID"},
-			},
-		}},
-	})
+	schema, err := LoadTableSchema()
 	if err != nil {
+		t.Fatalf("table definition: %v", err)
+	}
+	if _, err := raw.CreateTable(ctx, schema.CreateTableInput(TableName)); err != nil {
 		t.Fatalf("create table: %v", err)
 	}
 	ResetCounts()
@@ -249,8 +217,8 @@ func Reset(t testing.TB) {
 
 // Counts returns a snapshot of DynamoDB operations performed since the last ResetCounts.
 func Counts() map[string]int {
-	counterMu.Lock()
-	defer counterMu.Unlock()
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	out := make(map[string]int, len(counts))
 	for k, v := range counts {
 		out[k] = v
@@ -258,8 +226,10 @@ func Counts() map[string]int {
 	return out
 }
 
+// ResetCounts clears the operation counters and the consumed capacity.
 func ResetCounts() {
-	counterMu.Lock()
-	defer counterMu.Unlock()
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	counts = map[string]int{}
+	capacity = newCapacity()
 }
