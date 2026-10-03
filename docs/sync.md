@@ -210,8 +210,20 @@ This endpoints accepts events logs from the Santa agent which records all binary
 #### Delivery to the event sink
 Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
 split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
-PutRecords: 500 records / 5 MiB; asynchronous Lambda invocations: 256 KB payloads). Records the service fails
-individually are retried alone, with backoff, up to 4 attempts.
+PutRecords: 500 records / 1 MiB; asynchronous Lambda invocations: 256 KB payloads). Kinesis requests are capped at
+1 MiB, below the API's 5 MiB, because every record of an upload has the machine ID as partition key and so goes to a
+single shard, which accepts 1 MiB and 1,000 records per second.
+
+Records the service fails individually are retried alone, up to 6 attempts. After a throughput error
+(`ProvisionedThroughputExceededException` from Kinesis, `ServiceUnavailableException` from Firehose) the retry waits
+1 to 1.5 seconds so it lands in the next throughput window; after any other error it backs off from 100 ms. A large
+upload to a single Kinesis shard therefore goes through at about 1 MiB per second.
+
+All sink calls, including the AWS SDK's own retries, are bounded by the Lambda invocation's deadline minus 1.5
+seconds. When that deadline is near, the handler stops and answers 500 itself rather than being killed by the Lambda
+timeout (which API Gateway would turn into a 502). With the module's default 10 second eventupload timeout this
+leaves about 8.5 seconds, enough for roughly 6 to 7 MiB of events to one Kinesis shard (a longer timeout, the
+`lambda_timeout_seconds` variable of the api-handler module, gives more; API Gateway itself waits at most 29 seconds).
 
 The HTTP status tells Santa whether to keep the batch:
 
