@@ -17,9 +17,10 @@ Rudolph supports any sync interval, down to Santa's minimum of 60 seconds.
 On Rudolph both rules and machine configurations can be specified both _globally_ and at a _machine-specific_ level.
 
 For Santa agent configurations, there is a default configuration that is hardcoded into the app, but we recommend setting a
-global one in DynamoDB. Each machine then also can have machine-specific configurations that override the global one.
+global one in DynamoDB. Each machine then also can have a machine-specific configuration that overrides the settings
+stored on it; every other setting follows the global one (see [sync](./sync.md#reconfiguring-the-sensor)).
 
-Setting the _global_ client mode to `LOCKDOWN` (or any other mode except `MONITOR`, such as `STANDALONE`, which also blocks unknown executions) changes every machine without a machine-specific configuration at its next sync, so Rudolph requires an explicit confirmation for it:
+Setting the _global_ client mode to `LOCKDOWN` (or any other mode except `MONITOR`, such as `STANDALONE`, which also blocks unknown executions) changes every machine whose machine-specific configuration does not set a client mode at its next sync, so Rudolph requires an explicit confirmation for it:
 
 ```
 rudolph config update --global --client-mode lockdown --confirm-global-lockdown
