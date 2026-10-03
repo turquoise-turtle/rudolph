@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -41,9 +42,15 @@ func newHandlers() []HandlerInterface {
 // Only what is needed to operate the API is logged: the route, the machine it is for, the status and how
 // long it took.
 func ApiRouter(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	return ApiRouterContext(context.Background(), request)
+}
+
+// ApiRouterContext is ApiRouter for a Lambda invocation: ctx carries the invocation's deadline, which handlers
+// that call other services (eventupload) use to answer before the Lambda timeout.
+func ApiRouterContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	start := time.Now()
 
-	response, err := getResponse(request)
+	response, err := getResponse(ctx, request)
 
 	status := 0
 	if response != nil {
@@ -58,11 +65,14 @@ func ApiRouter(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyRe
 	return response, err
 }
 
-func getResponse(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func getResponse(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	for _, h := range handlers {
 		if h.Handles(request) {
 			if h.Boot() != nil {
 				return response.APIResponse(http.StatusInternalServerError, nil)
+			}
+			if hc, ok := h.(ContextHandler); ok {
+				return hc.HandleContext(ctx, request)
 			}
 			return h.Handle(request)
 		}
@@ -76,4 +86,9 @@ type HandlerInterface interface {
 	Handles(request events.APIGatewayProxyRequest) bool
 	Boot() error
 	Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error)
+}
+
+// ContextHandler is a handler that can use the Lambda invocation's context (its deadline).
+type ContextHandler interface {
+	HandleContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error)
 }
