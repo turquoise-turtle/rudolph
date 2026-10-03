@@ -207,6 +207,22 @@ This endpoints accepts events logs from the Santa agent which records all binary
 
 #### RESPONSE - None
 
+#### Delivery to the event sink
+Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
+split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
+PutRecords: 500 records / 5 MiB; asynchronous Lambda invocations: 256 KB payloads). Records the service fails
+individually are retried alone, with backoff, up to 4 attempts.
+
+The HTTP status tells Santa whether to keep the batch:
+
+- **200** when every event was delivered, and also when the only events not delivered are ones the sink can **never**
+  store (for example a single event larger than a Firehose or Kinesis record, about 1 MB, or a Lambda async payload).
+  Those events are dropped and the handler logs a line containing `dropped` with the count, the machine ID and the
+  reason, never the event itself. Santa stops at the first failed batch and re-sends it on every sync, so failing the
+  upload for such an event would block every later event from that Mac.
+- **500** when the sink is throttled or failing, or records kept failing after the retries. Santa keeps the batch and
+  sends it again on the next sync; events of that batch that were already delivered may then arrive twice.
+
 ### Ruledownload
 
 #### URL - HTTP POST /ruledownload/{machine_uuid}
