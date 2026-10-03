@@ -73,21 +73,38 @@ or be overtaken by a newer sync of the same Mac (Santa giving up on a slow respo
 - Preflight copies the previous summary only if the previous sync completed. If it did not, its ruledownload may still
   be running or may have died after changing items, and preflight writes `dirty`. A preflight that read the row before
   an overlapping ruledownload changed the items therefore never writes back a summary that hides the change: that
-  ruledownload's sync has not completed (Santa sends postflight only after the last rule page), so the summary written
+  ruledownload's sync has not completed (Santa sends postflight only after the last rule page, and ruledownload records serving
+  the last page, see "Macs whose postflight never arrives", only after its tracking writes), so the summary written
   is `dirty`.
 - Retries of throttled batch requests wait at most 0.75 s per request in total, well within the API Lambda's 10 s
   timeout.
 
-Remaining window: two ruledownloads of the same Mac running at the same time (only after Santa abandoned a slow sync and
-started another) can still interleave their item writes. That needs an admin to remove and re-add the same rule within
-those seconds; the result is at worst one removal sent again later, or, in the worst interleaving, a removal that only a
-clean sync delivers.
+- Item writes (`BatchWriteItem`) cannot be conditional, so the item writes of a ruledownload overtaken by a newer sync
+  (Santa gave up on a slow sync and started another) can land after the newer sync recorded its own items and
+  summary, e.g. deleting the item of a rule the admin re-added in between. A ruledownload whose summary write fails
+  after it sent item writes (or whose item writes fail) therefore replaces the summary, on whichever sync's row, with
+  `dirty:overtaken`. Like `dirty` it makes the next sync read the items and bring them back in line with the rules that
+  apply (a rule that applies but is not tracked is tracked again); unlike `dirty`, a newer ruledownload still writing
+  its items cannot overwrite it with its own summary (its conditional write fails and that sync is retried).
+
+Remaining window: a ruledownload overtaken while its item writes are in flight that then dies before it marks the
+summary (e.g. a Lambda timeout at that moment), or whose marking lands between the next preflight's read and write of
+the sync state. That needs an admin to remove and re-add the same rule within those seconds; the result is at worst
+one removal sent again later, or, in the worst interleaving, a removal that only a clean sync delivers.
 
 Tracking items expire (`ExpiresAfter`, the table's TTL attribute) 120 days after they were last written, and
 ruledownload rewrites all of a Mac's items every 30 days (`MachineRulesTrackingRefreshedAt`), so they outlive the Mac's
 sync state (which expires 90 days after its last sync) while the Mac keeps syncing, and disappear after it stops. A Mac
-that comes back after its sync state expired is told to clean sync, after which it holds no machine rule from Rudolph,
-so an expired item never hides a rule the Mac still has. The refresh costs one write per tracked rule per month.
+that comes back after its sync state expired is told to clean sync, after which it holds no machine rule from Rudolph
+other than those the clean sync sent. Its items written before the gap may still exist, and when they were last
+extended was lost with the sync state, so the recreated sync state has no `MachineRulesTrackingRefreshedAt` and its
+first ruledownload extends every item kept: an item never expires while the Mac may still hold its rule. The refresh
+costs one write per tracked rule per month.
+
+A clean sync that has no rule to send (no global rule, and no machine rule applies) sends a single `REMOVE` of a
+placeholder binary identifier (`000…0`, 64 zeros). Santa clears its rules at a clean sync only when the download holds
+at least one rule it can parse; without it, a Mac whose machine rules, sync state and tracking all expired while it
+was offline would keep those rules forever.
 
 Scale: a Mac's machine rules are all sent on the last page of every sync, so their number is bounded by the Lambda
 response size (6 MB, roughly 30,000 binary rules) and by the ruledownload Lambda's run time when many change at once
@@ -102,6 +119,14 @@ completed syncs sent it, and the feed cursor advances to the start of the older 
 stray postflight between two real syncs cannot lose a rule. Two Macs sharing a machine ID are not supported: they share
 one sync state, their syncs interleave, and either can miss removals and feed rules until its next clean sync. Give
 every Mac its own machine ID (Santa's `MachineID` setting or the default, the hardware UUID).
+
+### Macs whose postflight never arrives
+Santa ignores a failed postflight. A Mac whose postflights never reach Rudolph (a broken route or proxy, a postflight
+Lambda failing) would otherwise never have a completed sync: its feed cursor would never advance, so every sync would
+re-send every feed change since its first sync, and no removal would ever count as delivered. So a sync that follows
+syncs without postflight (`SyncsWithoutPostflight` > 0) also counts as completed once ruledownload served its last page
+(`LastPageServedAt`, one extra write per sync, only for such syncs). A last page that was served but not applied then
+counts as delivered, like a stray postflight; as above, one such sync cannot lose anything.
 
 ## Feed cursor
 An incremental sync reads the rules feed from the machine's `FeedSyncCursor`. The next sync reads from 10 minutes
@@ -129,8 +154,12 @@ only writes to it when the tracked machine-specific rules change. It stays about
 | `CompletedSyncs` | preflight | The last two syncs (`Seq`, `PreflightAt`) that completed before this one started, newest first. |
 | `FeedSyncCursor` | preflight | Where this sync reads the feed from. Postflight does not move it. |
 | `PreflightAt`, `PostflightAt` | preflight, postflight | When this sync started and completed. `PostflightAt` is empty until the sync completes. |
-| `MachineRulesTracked` | preflight, ruledownload | Summary of the tracking items: `<count>:<hash>`, or `dirty` while they may not match it. Absent when delivery is not tracked yet. |
-| `MachineRulesTrackingRefreshedAt` | preflight, ruledownload | When the tracking items' expiry was last extended. |
+| `MachineRulesTracked` | preflight, ruledownload | Summary of the tracking items: `<count>:<hash>`, or `dirty` / `dirty:overtaken` while they may not match it. Absent when delivery is not tracked yet. |
+| `MachineRulesTrackingRefreshedAt` | preflight, ruledownload | When the tracking items' expiry was last extended; empty on a recreated sync state (the next ruledownload extends them). |
+| `LastCleanSync` | preflight | When the last clean sync started; for a clean sync, its own start. |
+| `PreviousCleanSync` | preflight | On a clean sync: the last completed clean sync before it. If this clean sync does not complete (e.g. a replayed preflight), the next preflight uses this value for the periodic clean sync instead of `LastCleanSync`. |
+| `SyncsWithoutPostflight` | preflight | How many syncs in a row before this one received no postflight. |
+| `LastPageServedAt` | ruledownload | When the last page was served; only written while `SyncsWithoutPostflight` > 0, and then counts as completion. |
 | `RuledownloadStartedAt`, `RuledownloadFinishedAt` | no longer written | Written by earlier versions (two writes per sync that nothing read). |
 
 ### Upgrading
@@ -149,3 +178,5 @@ Rows written by earlier versions keep working:
   sync started by an old preflight during the deployment (no `SyncSeq`) sends removals but records nothing; the next
   sync does.
 - A cursor with strategy 3 issued by the previous version during the deployment is still served.
+- A clean sync started by an earlier version that has not completed (no `PreviousCleanSync`) does not count as a
+  clean sync: the next sync is a clean sync again.

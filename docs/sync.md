@@ -75,6 +75,12 @@ The Rudolph server can command the Santa sensor to destroy all of its local rule
 
 NOTE: Even if the Client requests a clean sync, the server is not obligated to respect it.
 
+Rudolph also clean syncs a Mac periodically (every 7 to 17 days, depending on its machine ID). Only a clean sync that
+completed counts: when the preflight that decided one is sent again (Santa retries a request whose response it did
+not get) or the sync fails, the next sync is a clean sync again. Santa 2026.8 only clears its rules at a clean sync
+whose download holds at least one rule it can parse, so a clean sync with no rule to send sends a `REMOVE` of a
+placeholder identifier (see [rule-pagination](./rule-pagination.md#tracking-storage-and-costs)).
+
 #### Request - JSON
 
 ```json
@@ -236,6 +242,10 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 This endpoint is called at the end of a successful sync process. It is the way for the Santa sensor to inform the Rudolph server that the sync process was successful and all rules were correctly committed.
 
 Rudolph keeps state records of every synchronization event that occurs including information on time to process the entire synchronization process. 
+
+Santa ignores a failed postflight. After a sync whose postflight did not arrive, Rudolph also counts a sync as
+completed when it served the sync's last rule page, so a Mac whose postflights never arrive keeps advancing its feed
+cursor and gets removals confirmed (see [rule-pagination](./rule-pagination.md#macs-whose-postflight-never-arrives)).
 
 #### Request - Blank
 
