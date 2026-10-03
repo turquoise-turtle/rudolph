@@ -9,7 +9,7 @@ import (
 
 func sendToKinesis(kinesisClient kinesis.KinesisClient, machineID string, forwardedEvents []interface{}) error {
 	err := kinesisClient.Send(machineID, kinesis.KinesisEvents{Items: forwardedEvents})
-	if err != nil {
+	if err = dropUnstorable(machineID, err); err != nil {
 		log.Printf("Kinesis Failed: %s", err)
 		return fmt.Errorf("failed to events to AWS kinesis: %w", err)
 	}
