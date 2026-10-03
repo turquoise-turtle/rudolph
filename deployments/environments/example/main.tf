@@ -34,4 +34,9 @@ module "santa_api" {
   log_retention_in_days = var.log_retention_in_days
 
   kms_key_administrators_arns = var.kms_key_administrators_arns
+
+  # Operations
+  api_throttling_rate_limit  = var.api_throttling_rate_limit
+  api_throttling_burst_limit = var.api_throttling_burst_limit
+  alarm_sns_topic_arn        = var.alarm_sns_topic_arn
 }

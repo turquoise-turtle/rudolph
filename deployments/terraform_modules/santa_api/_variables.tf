@@ -179,3 +179,24 @@ variable "log_retention_in_days" {
   description = "Retention of Rudolph's CloudWatch log groups, in days"
   default     = 30
 }
+
+#
+# Operations: throttling and alarms
+#
+variable "api_throttling_rate_limit" {
+  type        = number
+  description = "Steady-state requests per second the API stage accepts, all routes together, before answering 429. A Santa sync is 4-6 requests about every 10 minutes, so 1,000 Macs average under 10 requests per second; the default leaves room for clean syncs and for a fleet coming back online at once."
+  default     = 100
+}
+
+variable "api_throttling_burst_limit" {
+  type        = number
+  description = "Requests the API stage accepts in a burst above api_throttling_rate_limit before answering 429."
+  default     = 200
+}
+
+variable "alarm_sns_topic_arn" {
+  type        = string
+  description = "OPTIONAL: ARN of an SNS topic notified when one of Rudolph's CloudWatch alarms changes state. When empty the alarms are still created, and visible in CloudWatch, but notify no one."
+  default     = ""
+}

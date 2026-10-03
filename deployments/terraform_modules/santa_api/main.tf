@@ -81,29 +81,28 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   }
 }
 
-# resource "aws_api_gateway_method_settings" "s" {
-#   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
-#   stage_name  = var.stage_name
-#   method_path = "*/*"
+# Stage-wide throttling, so that a misbehaving client or a flood of requests is answered with 429 by API Gateway
+# instead of running up Lambda and DynamoDB costs. Santa treats a 429 like any failed sync and retries at its next
+# sync interval.
+#
+# A sync is a preflight, zero or more eventuploads, one or more ruledownload pages and a postflight: roughly 4-6
+# requests every 10 minutes per Mac, so ~clients/100 requests per second on average. The defaults (100/s, burst 200)
+# cover a fleet of a few thousand Macs with headroom for clean syncs; raise them for larger fleets.
+resource "aws_api_gateway_method_settings" "throttling" {
+  rest_api_id = aws_api_gateway_rest_api.api_gateway.id
+  stage_name  = aws_api_gateway_stage.stage.stage_name
+  method_path = "*/*"
 
-#   settings {
-#     metrics_enabled = true
-#     logging_level   = "INFO"
+  settings {
+    throttling_burst_limit = var.api_throttling_burst_limit
+    throttling_rate_limit  = var.api_throttling_rate_limit
 
-#   #   # In most cases, each client makes:
-#   #   # - 1x preflight
-#   #   # - 0 or more eventuploads
-#   #   # - 2x ruledownload
-#   #   # - 1x preflights
-#   #   #
-#   #   # Roughly 10 requests every checkin, in a worst case. A good burst rate is equal to the number of
-#   #   # (anticipated) clients, and the rate limit should just be:
-#   #   #
-#   #   #  - number of clients * (10 req/checkin) * (1/10 checkin/min) * (1/60 min/sec) = clients/60 req/sec
-#   #   throttling_burst_limit = 7000
-#   #   throttling_rate_limit = 7000 / 60
-#   }
-# }
+    # Per-method (detailed) metrics and execution logging are left off: they are billed per metric and per log
+    # line, and the stage-level metrics the alarms use are free.
+    metrics_enabled = false
+    logging_level   = "OFF"
+  }
+}
 
 # @doc https://www.terraform.io/docs/providers/aws/r/api_gateway_base_path_mapping.html
 resource "aws_api_gateway_base_path_mapping" "gateway_custom_domain_mapping" {

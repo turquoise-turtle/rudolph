@@ -31,6 +31,15 @@ request.
 
 CloudWatch log groups keep logs for `log_retention_in_days` (default 30) instead of forever.
 
+## Throttling and Alarms
+The API stage is throttled (`api_throttling_rate_limit`, default 100 requests per second, burst 200), so a runaway
+client or a flood of requests gets HTTP 429 from API Gateway instead of running up Lambda and DynamoDB charges.
+
+The alarms are kept few and cheap: six alarms on standard metrics, three of them fed by metric filters on the Lambda
+logs (filters are free; each extracted metric is one custom metric). Expect a few US dollars a month in total,
+independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per
+metric and per log line.
+
 ## Costs of Rules
 Due to Rudolph's sync logic, we have not observed noticable cost nor performance degradatation with very large numbers of
 rules.

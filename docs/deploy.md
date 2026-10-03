@@ -85,6 +85,25 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `mtls_truststore_version` | `""` | S3 object version of the truststore. |
 | `disable_execute_api_endpoint` | `false` | Disable the default `execute-api` endpoint so only the custom domain works. Always disabled when mTLS is enabled. |
 | `log_retention_in_days` | `30` | Retention of the Lambda and Firehose CloudWatch log groups. |
+| `api_throttling_rate_limit` | `100` | Requests per second the API stage accepts (all routes together) before answering HTTP 429. A sync is 4-6 requests about every 10 minutes, so 1,000 Macs average under 10 requests per second. Raise it for fleets of several thousand Macs. |
+| `api_throttling_burst_limit` | `200` | Requests accepted in a burst above the rate limit. |
+| `alarm_sns_topic_arn` | `""` | SNS topic notified when an alarm fires or recovers. Without it the alarms exist in CloudWatch but notify no one. |
+
+### Alarms
+Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
+
+| Alarm | Fires when |
+|---|---|
+| `api_5xx` | API Gateway answered 5 or more 5xx responses in 5 minutes. |
+| `request_too_large` | A handler refused a request body above 6 MiB with HTTP 413. That host cannot sync or upload those events until the cause is fixed. |
+| `lambda_errors` | Any Rudolph Lambda function returned an error. |
+| `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
+| `dynamodb_throttles` | Reads or writes to the table were throttled. |
+| `event_sink_failures` | eventupload could not forward events to Firehose, Kinesis or the output Lambda (only created when a sink is configured). |
+
+The 413, timeout and event sink alarms use metric filters on the Lambda log groups, published in the
+`Rudolph/PREFIX` namespace. Request bodies above API Gateway's own 10 MB limit are refused before reaching Lambda and
+only show up in API Gateway's `4XXError` metric.
 
 
 ### Install Dependencies
@@ -174,9 +193,9 @@ schema will otherwise drop the new fields or fail on the new shapes).
 Sync handlers now refuse a request body that decompresses to more than 6 MiB with HTTP 413, so that a compressed
 payload cannot make a Lambda allocate unbounded memory. Normal syncs are orders of magnitude smaller, but a host that
 uploads a very large batch of events (a bundle scan of a huge application, or a long backlog after an outage) could hit
-the limit and then never get those events uploaded. Add a CloudWatch alarm on 413 responses, for example a metric
-filter on the API Gateway access or execution logs, or the `4XXError` metric for the `/eventupload/{machine_id}`
-resource, so a host stuck in that state is noticed rather than silently dropping events.
+the limit and then never get those events uploaded. The `request_too_large` alarm (see [Alarms](#alarms)) fires on
+413 responses so a host stuck in that state is noticed rather than silently dropping events; set
+`alarm_sns_topic_arn` to be notified.
 
 ### 1. Roll out the sync token
 Once deployed, the API rejects every request without a valid token. Create a token (see above) and add its digest to
