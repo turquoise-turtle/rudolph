@@ -23,6 +23,12 @@ func (g *GlobalRuleRow) globalRuleValidation() (bool, error) {
 		return false, err
 	}
 
+	// Bounded optional fields
+	err = rules.ValidateFieldSizes(g.SantaRule)
+	if err != nil {
+		return false, err
+	}
+
 	if !rules.ValidIdentifier(g.RuleType, g.Identifier) {
 		return false, nil
 	}
