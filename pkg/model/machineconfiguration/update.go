@@ -120,17 +120,17 @@ type ConcreteGlobalConfigurationUpdater struct {
 }
 
 func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (updatedConfig *MachineConfiguration, err error) {
+	configRequest, err = normalizeUpdateRequest(configRequest, true)
+	if err != nil {
+		return
+	}
+
 	// Requesting a blocking mode needs confirmation, even if the stored global config already has it
 	if configRequest.ClientMode != nil {
 		err = checkGlobalClientMode(*configRequest.ClientMode, opts)
 		if err != nil {
 			return
 		}
-	}
-
-	configRequest, err = normalizeUpdateRequest(configRequest)
-	if err != nil {
-		return
 	}
 
 	for attempt := 1; ; attempt++ {
@@ -140,7 +140,7 @@ func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineCo
 			return
 		}
 
-		newGlobalConfig, changes := applyUpdateRequest(currentGlobalConfig, configRequest)
+		newGlobalConfig, changes := applyUpdateRequest(currentGlobalConfig, configRequest, false)
 		if touchesUsbMountSettings(configRequest) {
 			err = validateRemountUsbMode(newGlobalConfig.RemountUsbMode, newGlobalConfig.BlockUsbMount)
 			if err != nil {
@@ -148,8 +148,8 @@ func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineCo
 			}
 		}
 
-		// Without a stored global config there is no row to update yet
-		updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, newGlobalConfig, changes, !isDefaultConfig)
+		// Without a stored global config, the complete config (universal defaults plus the update) is created
+		updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, newGlobalConfig, changes, !isDefaultConfig, false)
 		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
 			// The row was created or deleted concurrently; apply the update to its current state
 			continue
@@ -177,7 +177,7 @@ type ConcreteMachineConfigurationUpdater struct {
 }
 
 func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, configRequest MachineConfigurationUpdateRequest) (updatedConfig *MachineConfiguration, err error) {
-	configRequest, err = normalizeUpdateRequest(configRequest)
+	configRequest, err = normalizeUpdateRequest(configRequest, false)
 	if err != nil {
 		return
 	}
@@ -189,7 +189,7 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 			return
 		}
 
-		// The global config is needed for a new machine config and to validate inherited settings; read it once
+		// The global config is needed to validate inherited settings; read it once
 		var globalConfig *MachineConfiguration
 		getGlobalConfig := func() (*MachineConfiguration, error) {
 			if globalConfig == nil {
@@ -204,18 +204,14 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 
 		exists := currentMachineConfig != nil
 		if !exists {
-			// The machine uses the global config so far. Its machine-specific config starts out as a copy of the
-			// global base settings; optional settings stay unset, so they keep being inherited.
-			global, eerr := getGlobalConfig()
-			if eerr != nil {
-				err = eerr
-				return
-			}
-			base := withoutOptionalSettings(*global)
-			currentMachineConfig = &base
+			// The machine uses the global config so far. Its new machine-specific config holds only the updated
+			// settings; everything else keeps following the global config.
+			currentMachineConfig = &MachineConfiguration{}
 		}
 
-		newMachineConfig, changes := applyUpdateRequest(*currentMachineConfig, configRequest)
+		// Every requested setting is written, even if the row already holds the same value or an equal value is
+		// inherited: writing it is what makes it a setting of this machine, which no longer follows the global one.
+		newMachineConfig, changes := applyUpdateRequest(*currentMachineConfig, configRequest, true)
 		if touchesUsbMountSettings(configRequest) {
 			blockUsbMount := newMachineConfig.BlockUsbMount
 			if blockUsbMount == nil && len(newMachineConfig.RemountUsbMode) > 0 {
@@ -232,7 +228,7 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 			}
 		}
 
-		updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), newMachineConfig, changes, exists)
+		updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), newMachineConfig, changes, exists, true)
 		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
 			// The row was created or deleted concurrently; apply the update to its current state
 			continue
@@ -246,7 +242,10 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 
 // normalizeUpdateRequest validates the requested values and converts them to their stored form. Values already
 // stored are not validated, so an unrelated update never fails because of them.
-func normalizeUpdateRequest(configRequest MachineConfigurationUpdateRequest) (MachineConfigurationUpdateRequest, error) {
+func normalizeUpdateRequest(configRequest MachineConfigurationUpdateRequest, global bool) (MachineConfigurationUpdateRequest, error) {
+	if err := ValidateUpdateRequest(configRequest, global); err != nil {
+		return configRequest, err
+	}
 	if configRequest.OverrideFileAccessAction != nil {
 		action, err := normalizeOverrideFileAccessAction(*configRequest.OverrideFileAccessAction)
 		if err != nil {
@@ -262,13 +261,37 @@ func touchesUsbMountSettings(configRequest MachineConfigurationUpdateRequest) bo
 }
 
 // writeConfigUpdate writes newConfig to the config row with the given pk. An existing row gets only the changed
-// attributes, and only if it still exists. A row that does not exist yet is created from the complete new config,
-// and only if it still does not exist, so concurrent first updates cannot overwrite each other. If the row changed
-// existence in the meantime, the error satisfies dynamodb.IsConditionalCheckFailed.
-func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, exists bool) (updatedConfig *MachineConfiguration, err error) {
-	// if no items of an existing row have been changed, return the same configuration. A missing row is always
-	// created, even if it equals the copied settings: it pins them, e.g. to exempt a machine from a later global change.
+// attributes, and only if it still exists. A row that does not exist yet is created, and only if it still does not
+// exist, so concurrent first updates cannot overwrite each other: with only the changed attributes if partial
+// (a machine config, which inherits the rest), else from the complete new config. If the row changed existence in
+// the meantime, the error satisfies dynamodb.IsConditionalCheckFailed.
+func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, exists bool, partial bool) (updatedConfig *MachineConfiguration, err error) {
+	// if no items of an existing row have been changed, return the same configuration
 	if exists && len(changes) == 0 {
+		updatedConfig = &newConfig
+		return
+	}
+
+	if !exists && partial {
+		if len(changes) == 0 {
+			// Nothing to set: the machine keeps following the global config
+			updatedConfig = &newConfig
+			return
+		}
+		row := buildConfigRow(pk, newConfig)
+		item := map[string]interface{}{
+			"PK":       row.PartitionKey,
+			"SK":       row.SortKey,
+			"DataType": row.DataType,
+		}
+		for name, value := range changes {
+			item[name] = value
+		}
+		_, err = client.PutItemIfNotExists(item)
+		if err != nil {
+			return
+		}
+		newConfig.DataType = row.DataType
 		updatedConfig = &newConfig
 		return
 	}
@@ -309,48 +332,46 @@ func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineC
 // applyUpdateRequest returns a copy of current with the requested changes applied, and the changed DynamoDB
 // attributes (named as in the MachineConfiguration dynamodbav tags) with their new values.
 // Only changed attributes are written, so zero values (e.g. CleanSync=false) are not lost to omitempty.
-func applyUpdateRequest(current MachineConfiguration, configRequest MachineConfigurationUpdateRequest) (newConfig MachineConfiguration, changes map[string]interface{}) {
+// With always, every requested attribute counts as changed, even if current already has the requested value.
+// The request must have been validated (normalizeUpdateRequest).
+func applyUpdateRequest(current MachineConfiguration, configRequest MachineConfigurationUpdateRequest, always bool) (newConfig MachineConfiguration, changes map[string]interface{}) {
 	// the new config is a copy of the current config
 	newConfig = current
 	changes = make(map[string]interface{})
 
-	if configRequest.ClientMode != nil && *configRequest.ClientMode != current.ClientMode {
+	if configRequest.ClientMode != nil && (always || *configRequest.ClientMode != current.ClientMode) {
 		newConfig.ClientMode = *configRequest.ClientMode
 		changes["ClientMode"] = newConfig.ClientMode
 	}
 
-	if configRequest.AllowedPathRegex != nil && strings.Compare(*configRequest.AllowedPathRegex, current.AllowedPathRegex) != 0 {
+	if configRequest.AllowedPathRegex != nil && (always || strings.Compare(*configRequest.AllowedPathRegex, current.AllowedPathRegex) != 0) {
 		newConfig.AllowedPathRegex = *configRequest.AllowedPathRegex
 		changes["AllowedPathRegex"] = newConfig.AllowedPathRegex
 	}
 
-	if configRequest.BlockedPathRegex != nil && strings.Compare(*configRequest.BlockedPathRegex, current.BlockedPathRegex) != 0 {
+	if configRequest.BlockedPathRegex != nil && (always || strings.Compare(*configRequest.BlockedPathRegex, current.BlockedPathRegex) != 0) {
 		newConfig.BlockedPathRegex = *configRequest.BlockedPathRegex
 		changes["BlockedPathRegex"] = newConfig.BlockedPathRegex
 	}
 
-	if configRequest.BatchSize != nil && *configRequest.BatchSize != current.BatchSize {
-		if *configRequest.BatchSize > 0 {
-			newConfig.BatchSize = *configRequest.BatchSize
-			changes["BatchSize"] = newConfig.BatchSize
-		}
+	if configRequest.BatchSize != nil && (always || *configRequest.BatchSize != current.BatchSize) {
+		newConfig.BatchSize = *configRequest.BatchSize
+		changes["BatchSize"] = newConfig.BatchSize
 	}
 
-	if configRequest.EnableBundles != nil && *configRequest.EnableBundles != current.EnableBundles {
+	if configRequest.EnableBundles != nil && (always || *configRequest.EnableBundles != current.EnableBundles) {
 		newConfig.EnableBundles = *configRequest.EnableBundles
 		changes["EnableBundles"] = newConfig.EnableBundles
 	}
 
-	if configRequest.EnableTransitiveRules != nil && *configRequest.EnableTransitiveRules != current.EnabledTransitiveRules {
+	if configRequest.EnableTransitiveRules != nil && (always || *configRequest.EnableTransitiveRules != current.EnabledTransitiveRules) {
 		newConfig.EnabledTransitiveRules = *configRequest.EnableTransitiveRules
 		changes["EnableTransitiveRules"] = newConfig.EnabledTransitiveRules
 	}
 
-	if configRequest.FullSyncInterval != nil && *configRequest.FullSyncInterval != current.FullSyncInterval {
-		if *configRequest.FullSyncInterval >= 60 {
-			newConfig.FullSyncInterval = *configRequest.FullSyncInterval
-			changes["FullSyncInterval"] = newConfig.FullSyncInterval
-		}
+	if configRequest.FullSyncInterval != nil && (always || *configRequest.FullSyncInterval != current.FullSyncInterval) {
+		newConfig.FullSyncInterval = *configRequest.FullSyncInterval
+		changes["FullSyncInterval"] = newConfig.FullSyncInterval
 	}
 
 	if configRequest.CleanSync != nil {
@@ -358,43 +379,43 @@ func applyUpdateRequest(current MachineConfiguration, configRequest MachineConfi
 		changes["CleanSync"] = newConfig.CleanSync
 	}
 
-	if configRequest.UploadLogsURL != nil && *configRequest.UploadLogsURL != current.UploadLogsURL {
+	if configRequest.UploadLogsURL != nil && (always || *configRequest.UploadLogsURL != current.UploadLogsURL) {
 		newConfig.UploadLogsURL = *configRequest.UploadLogsURL
 		changes["UploadLogsUrl"] = newConfig.UploadLogsURL
 	}
 
-	if configRequest.EnableAllEventUpload != nil && !boolPtrEqual(configRequest.EnableAllEventUpload, current.EnableAllEventUpload) {
+	if configRequest.EnableAllEventUpload != nil && (always || !boolPtrEqual(configRequest.EnableAllEventUpload, current.EnableAllEventUpload)) {
 		newConfig.EnableAllEventUpload = boolPtr(*configRequest.EnableAllEventUpload)
 		changes["EnableAllEventUpload"] = *newConfig.EnableAllEventUpload
 	}
 
-	if configRequest.DisableUnknownEventUpload != nil && !boolPtrEqual(configRequest.DisableUnknownEventUpload, current.DisableUnknownEventUpload) {
+	if configRequest.DisableUnknownEventUpload != nil && (always || !boolPtrEqual(configRequest.DisableUnknownEventUpload, current.DisableUnknownEventUpload)) {
 		newConfig.DisableUnknownEventUpload = boolPtr(*configRequest.DisableUnknownEventUpload)
 		changes["DisableUnknownEventUpload"] = *newConfig.DisableUnknownEventUpload
 	}
 
-	if configRequest.OverrideFileAccessAction != nil && *configRequest.OverrideFileAccessAction != current.OverrideFileAccessAction {
+	if configRequest.OverrideFileAccessAction != nil && (always || *configRequest.OverrideFileAccessAction != current.OverrideFileAccessAction) {
 		newConfig.OverrideFileAccessAction = *configRequest.OverrideFileAccessAction
 		changes["OverrideFileAccessAction"] = newConfig.OverrideFileAccessAction
 	}
 
-	if configRequest.BlockUsbMount != nil && !boolPtrEqual(configRequest.BlockUsbMount, current.BlockUsbMount) {
+	if configRequest.BlockUsbMount != nil && (always || !boolPtrEqual(configRequest.BlockUsbMount, current.BlockUsbMount)) {
 		newConfig.BlockUsbMount = boolPtr(*configRequest.BlockUsbMount)
 		changes["BlockUsbMount"] = *newConfig.BlockUsbMount
 	}
 
 	// nil (not configured) and empty (configured without flags) differ
-	if configRequest.RemountUsbMode != nil && (current.RemountUsbMode == nil || !stringSlicesEqual(*configRequest.RemountUsbMode, current.RemountUsbMode)) {
+	if configRequest.RemountUsbMode != nil && (always || current.RemountUsbMode == nil || !stringSlicesEqual(*configRequest.RemountUsbMode, current.RemountUsbMode)) {
 		newConfig.RemountUsbMode = append(MountFlags{}, *configRequest.RemountUsbMode...)
 		changes["RemountUsbMode"] = newConfig.RemountUsbMode
 	}
 
-	if configRequest.EventDetailURL != nil && !stringPtrEqual(configRequest.EventDetailURL, current.EventDetailURL) {
+	if configRequest.EventDetailURL != nil && (always || !stringPtrEqual(configRequest.EventDetailURL, current.EventDetailURL)) {
 		newConfig.EventDetailURL = stringPtr(*configRequest.EventDetailURL)
 		changes["EventDetailURL"] = *newConfig.EventDetailURL
 	}
 
-	if configRequest.EventDetailText != nil && !stringPtrEqual(configRequest.EventDetailText, current.EventDetailText) {
+	if configRequest.EventDetailText != nil && (always || !stringPtrEqual(configRequest.EventDetailText, current.EventDetailText)) {
 		newConfig.EventDetailText = stringPtr(*configRequest.EventDetailText)
 		changes["EventDetailText"] = *newConfig.EventDetailText
 	}

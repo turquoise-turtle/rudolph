@@ -6,7 +6,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 func GetConfigurationFetcher(client dynamodb.GetItemAPI, timeProvider clock.TimeProvider) ConcreteConfigurationFetcher {
@@ -56,49 +56,40 @@ type ConcreteConfigurationFetcher struct {
 	universal UniversalConfigurationProvider
 }
 
-// GetIntendedConfig returns the machineconfiguration intended for the given machineID. It searches in the following order:
-// - First, looks for a machine-specific config in DynamoDB
-// - Second, looks for a global config for all machines in DynamoDB
-// - Defaults to returning a hardcoded "universal config"
+// GetIntendedConfig returns the machineconfiguration intended for the given machineID:
+// - the global config from DynamoDB, or the hardcoded "universal config" if there is none
+// - overridden by each setting that the machine-specific config in DynamoDB sets, if there is one
 //
-// A machine-specific config fully overrides the base settings of the global config, but inherits each optional
-// Santa setting (see MachineConfiguration) that it does not configure.
+// A machine-specific config overrides only the settings stored on it; every other setting follows the current
+// global config. Rows written by `config set --machine` (and by earlier versions) store every base setting, so
+// they keep overriding all of them. The clean sync flag is never taken from the global config.
 func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
-	config, err := f.machine.GetMachineSpecificConfig(machineID)
+	machineItem, err := f.machine.getMachineSpecificItem(machineID)
 	if err != nil {
 		err = fmt.Errorf("failed to get machine config: %w", err)
 		return
 	}
 
-	if config != nil {
-		// Optional Santa settings the machine-specific config does not configure are inherited from the global config
-		globalConfig, eerr := f.global.GetGlobalConfig()
-		if eerr != nil {
-			err = fmt.Errorf("failed to get global config for inherited settings: %w", eerr)
-			return
-		}
-		if globalConfig != nil {
-			intendedConfig = inheritOptionalSettings(*config, *globalConfig)
-			return
-		}
-	}
-
-	if config == nil {
-		config, err = f.global.GetGlobalConfig()
-		if err != nil {
+	globalConfig, err := f.global.GetGlobalConfig()
+	if err != nil {
+		if len(machineItem) == 0 {
 			err = fmt.Errorf("failed to get fallback global config: %w", err)
-			return
+		} else {
+			err = fmt.Errorf("failed to get global config for inherited settings: %w", err)
 		}
+		return
+	}
+	if globalConfig == nil {
+		universal := f.universal.GetUniversalDefaultConfig()
+		globalConfig = &universal
 	}
 
-	// Check if the result.Item is not nil. If this is nil, no valid global config exists within the DynamoDB and return a generic hardcoded value
-	if config == nil {
-		intendedConfig = f.universal.GetUniversalDefaultConfig()
-	} else {
-		intendedConfig = *config
+	if len(machineItem) == 0 {
+		intendedConfig = *globalConfig
+		return
 	}
 
-	return
+	return mergeMachineConfig(*globalConfig, machineItem)
 }
 
 // GetIntendedGlobalConfig returns the global configuration. It searches in the following order:
@@ -206,6 +197,8 @@ func GetMachineConfigurationFetcher(client dynamodb.GetItemAPI) MachineConfigura
 
 type MachineConfigurationFetcher interface {
 	GetMachineSpecificConfig(machineID string) (*MachineConfiguration, error)
+	// getMachineSpecificItem returns the stored attributes of the machine-specific config, or nil if there is none
+	getMachineSpecificItem(machineID string) (map[string]awstypes.AttributeValue, error)
 }
 
 type ConcreteMachineConfigurationFetcher struct {
@@ -218,6 +211,20 @@ func (f ConcreteMachineConfigurationFetcher) GetMachineSpecificConfig(machineID 
 		machineConfigurationPK(machineID),
 		machineConfigurationSK(),
 	)
+}
+
+func (f ConcreteMachineConfigurationFetcher) getMachineSpecificItem(machineID string) (map[string]awstypes.AttributeValue, error) {
+	output, err := f.getter.GetItem(
+		dynamodb.PrimaryKey{
+			PartitionKey: machineConfigurationPK(machineID),
+			SortKey:      machineConfigurationSK(),
+		},
+		false,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return output.Item, nil
 }
 
 //
@@ -309,12 +316,7 @@ func getItemAsMachineConfiguration(client dynamodb.GetItemAPI, partitionKey stri
 		return
 	}
 
-	err = attributevalue.UnmarshalMap(output.Item, &config)
-
-	if err != nil {
-		err = fmt.Errorf("succeeded GetItem but failed to unmarshalMap into MachineConfiguration: %w", err)
-		return
-	}
-
+	decoded := unmarshalConfigItem(output.Item, partitionKey)
+	config = &decoded
 	return
 }

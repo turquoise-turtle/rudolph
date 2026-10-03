@@ -53,45 +53,6 @@ func parseMountFlags(value string) MountFlags {
 	return flags
 }
 
-// inheritOptionalSettings fills every optional Santa setting that the machine-specific config does not configure
-// from the global config. Base settings (client mode, path regexes, ...) are never inherited.
-func inheritOptionalSettings(machine MachineConfiguration, global MachineConfiguration) MachineConfiguration {
-	if machine.EnableAllEventUpload == nil {
-		machine.EnableAllEventUpload = global.EnableAllEventUpload
-	}
-	if machine.DisableUnknownEventUpload == nil {
-		machine.DisableUnknownEventUpload = global.DisableUnknownEventUpload
-	}
-	if machine.OverrideFileAccessAction == "" {
-		machine.OverrideFileAccessAction = global.OverrideFileAccessAction
-	}
-	if machine.BlockUsbMount == nil {
-		machine.BlockUsbMount = global.BlockUsbMount
-	}
-	if machine.RemountUsbMode == nil {
-		machine.RemountUsbMode = global.RemountUsbMode
-	}
-	if machine.EventDetailURL == nil {
-		machine.EventDetailURL = global.EventDetailURL
-	}
-	if machine.EventDetailText == nil {
-		machine.EventDetailText = global.EventDetailText
-	}
-	return machine
-}
-
-// withoutOptionalSettings returns the config with all optional Santa settings unset
-func withoutOptionalSettings(config MachineConfiguration) MachineConfiguration {
-	config.EnableAllEventUpload = nil
-	config.DisableUnknownEventUpload = nil
-	config.OverrideFileAccessAction = ""
-	config.BlockUsbMount = nil
-	config.RemountUsbMode = nil
-	config.EventDetailURL = nil
-	config.EventDetailText = nil
-	return config
-}
-
 // normalizeOverrideFileAccessAction returns the enum name for a (possibly legacy) spelling of a file access
 // action, and rejects values Santa does not know. "" (not configured) stays "".
 func normalizeOverrideFileAccessAction(action types.FileAccessAction) (types.FileAccessAction, error) {

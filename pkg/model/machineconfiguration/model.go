@@ -40,8 +40,10 @@ type MachineConfiguration struct {
 	// SyncType                 types.SyncType   `dynamodbav:"SyncType,omitempty"`
 	DataType types.DataType `dynamodbav:"DataType,omitempty"`
 
-	// Optional Santa settings. A nil/"" value means "not configured": a machine-specific config inherits it from
-	// the global config, and if neither configures it, it is not sent to Santa, which keeps its current value.
+	// Optional Santa settings. A nil/"" value means "not configured": if neither the machine-specific nor the
+	// global config configures it, it is not sent to Santa, which keeps its current value.
+	// A machine-specific config row overrides only the attributes stored on it, base and optional settings alike;
+	// the others are inherited from the global config (see getIntendedConfig).
 	// A non-nil empty RemountUsbMode is configured (no remount flags).
 	EnableAllEventUpload      *bool                  `dynamodbav:"EnableAllEventUpload,omitempty"`
 	DisableUnknownEventUpload *bool                  `dynamodbav:"DisableUnknownEventUpload,omitempty"`
