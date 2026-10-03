@@ -30,8 +30,10 @@ func init() {
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
-A machine without a machine-specific configuration gets one, copied from the global base settings at this moment;
-optional Santa settings it does not configure keep being inherited from the global configuration.
+A machine-specific configuration overrides only the settings given to it; every other setting follows the global
+configuration, including later global changes. Giving a setting that equals the current global value still makes it a
+setting of the machine, which keeps it when the global configuration changes (e.g. to exempt a machine from a later
+global lockdown).
 Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -100,6 +102,11 @@ func updateConfig(
 	tf flags.TargetFlags,
 	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
 	confirmGlobalLockdown bool) (err error) {
+	// Refuse invalid values before asking for confirmation; the service enforces this as well
+	if err = machineconfiguration.ValidateUpdateRequest(updateRequest, tf.IsGlobal); err != nil {
+		return err
+	}
+
 	// Get machineID from flags
 	var machineID string
 	if tf.IsGlobal {

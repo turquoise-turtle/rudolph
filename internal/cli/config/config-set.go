@@ -90,15 +90,15 @@ func init() {
 	pathRegexArgs.addFlags(configSetCmd)
 
 	// Flags defining batchSize and events to sync back to the server
-	configSetCmd.Flags().IntVarP(&batchSizeArg, "batch-size", "s", 50, "Int value to define the number of rules to download per sync request. Defaults to '50'")
+	configSetCmd.Flags().IntVarP(&batchSizeArg, "batch-size", "s", machineconfiguration.DefaultBatchSize, "Number of events Santa uploads per request, between 1 and 500. Defaults to '50'")
 	configSetCmd.Flags().BoolVar(&isEnableBundles, "bundles", false, "Enables bundle events to be uploaded back to the sync server")
 	configSetCmd.Flags().BoolVar(&isEnabledTransitiveRules, "transitive-rules", false, "Enables the usage of transitive rules")
 
 	// Flags define sync behavior and upload logs url
-	configSetCmd.Flags().BoolVar(&isCleanSync, "clean-sync", false, "Enforces that the next sync process will be a clean-sync. Only enforced on machine specific configurations")
+	configSetCmd.Flags().BoolVar(&isCleanSync, "clean-sync", false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global")
 	configSetCmd.Flags().StringVarP(&uploadLogsUrlArgs, "upload-logs", "u", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
 
-	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds (default 600)")
+	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds, at least 60 (default 600)")
 
 	// Flags for optional Santa settings; settings without a flag are not configured
 	santaSettingsArgs.addFlags(configSetCmd)
@@ -112,6 +112,11 @@ func applyConfig(
 	newConfig machineconfiguration.MachineConfiguration,
 	confirmGlobalLockdown bool) (err error) {
 	clientMode := newConfig.ClientMode
+
+	// Refuse invalid values before asking for confirmation; the service enforces this as well
+	if err = machineconfiguration.ValidateConfig(newConfig, tf.IsGlobal); err != nil {
+		return err
+	}
 
 	// Get machineID from flags
 	var machineID string

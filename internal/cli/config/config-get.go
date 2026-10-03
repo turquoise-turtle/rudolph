@@ -77,9 +77,10 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	}
 
 	// Marshal the ClientMode out of the config to easily display the config clientmode content
-	clientModeText, err := config.ClientMode.MarshalText()
-	if err != nil {
-		return
+	// A stored client mode Santa does not know is shown, not fatal (preflight leaves it out)
+	clientModeText, eerr := config.ClientMode.MarshalText()
+	if eerr != nil {
+		clientModeText = []byte("INVALID, not sent to Santa")
 	}
 
 	// Alert the user if this configuration is for the same machine requesting the call
