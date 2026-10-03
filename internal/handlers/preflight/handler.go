@@ -126,7 +126,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	case true:
 		lastCleanSyncTime = clock.RFC3339(h.timeProvider.Now())
 	case false:
-		lastCleanSyncTime = prevSyncState.LastCleanSync
+		// Not prevSyncState.LastCleanSync: the previous sync may have been a clean sync that never completed
+		lastCleanSyncTime = prevSyncState.LastCompletedCleanSync()
 	}
 
 	err = h.stateTrackingService.saveSyncState(

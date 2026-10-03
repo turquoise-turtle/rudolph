@@ -95,3 +95,43 @@ func SetMachineRulesTracked(client dynamodb.UpdateItemIfAPI, machineID string, s
 	}
 	return nil
 }
+
+// InvalidateMachineRulesTracked replaces the tracking summary with MachineRulesTrackedOvertaken, whichever sync the
+// row belongs to, so that the next sync reads the tracking items instead of trusting the summary. A ruledownload calls
+// it when it may have changed tracking items after a newer sync of the machine recorded its own summary. It changes
+// nothing when the row has no summary (delivery not tracked yet, which already makes every sync read the items) or no
+// longer exists.
+func InvalidateMachineRulesTracked(client dynamodb.UpdateItemIfAPI, machineID string) error {
+	_, err := client.UpdateItemIf(
+		dynamodb.PrimaryKey{
+			PartitionKey: syncStatePK(machineID),
+			SortKey:      syncStateSK,
+		},
+		updateMachineRulesTrackedOnlyItem{MachineRulesTracked: MachineRulesTrackedOvertaken},
+		expression.AttributeExists(expression.Name("MachineRulesTracked")),
+	)
+	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
+		return fmt.Errorf("failed to invalidate the machine rules tracked: %w", err)
+	}
+	return nil
+}
+
+// MarkLastPageServed records that ruledownload served the last page of the sync syncSeq (see
+// SyncState.LastPageServedAt). It returns ErrSyncSuperseded and changes nothing when the row belongs to another sync.
+func MarkLastPageServed(timeProvider clock.TimeProvider, client dynamodb.UpdateItemIfAPI, machineID string, syncSeq int) error {
+	_, err := client.UpdateItemIf(
+		dynamodb.PrimaryKey{
+			PartitionKey: syncStatePK(machineID),
+			SortKey:      syncStateSK,
+		},
+		updateLastPageServedItem{LastPageServedAt: clock.RFC3339(timeProvider.Now())},
+		expression.Equal(expression.Name("SyncSeq"), expression.Value(syncSeq)),
+	)
+	if dynamodb.IsConditionalCheckFailed(err) {
+		return ErrSyncSuperseded
+	}
+	if err != nil {
+		return fmt.Errorf("failed to record that the last page was served: %w", err)
+	}
+	return nil
+}

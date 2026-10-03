@@ -139,6 +139,17 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			}
 		}
 	}
+
+	// This is the sync's last page. After syncs that received no postflight, record that it was served, which counts
+	// as the sync's completion (see syncstate.SyncState.Completed). It is recorded after the tracking above, so a sync
+	// counted as completed never has tracking writes still to come.
+	if syncState.SyncSeq > 0 && syncState.SyncsWithoutPostflight > 0 {
+		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq)
+		if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
+			// Not fatal: the sync is then only counted as completed if its postflight arrives
+			log.Printf("  %v", err)
+		}
+	}
 	return page, nil
 }
 
@@ -244,7 +255,7 @@ func (p machineRulePage) trackDeliveries(
 			summary = syncstate.MachineRulesTrackedDirty
 		}
 		if err := machinerules.WriteDeliveries(p.batchWriter, machineID, set, forget, now); err != nil {
-			return nil, err
+			return nil, p.invalidateAfterItemWrites(machineID, err)
 		}
 	}
 	for sortKey, delivery := range set {
@@ -255,10 +266,29 @@ func (p machineRulePage) trackDeliveries(
 	}
 	if digest := machinerules.DeliveryDigest(tracked); digest != summary || refreshedAt != "" {
 		if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, digest, refreshedAt); err != nil {
+			if len(set) > 0 || len(forget) > 0 {
+				return nil, p.invalidateAfterItemWrites(machineID, err)
+			}
 			return nil, err
 		}
 	}
 	return replacements, nil
+}
+
+// invalidateAfterItemWrites handles a failure after this ruledownload sent tracking item writes, and returns err.
+//
+// The item writes are not conditional (BatchWriteItem cannot be), so they may have landed after a newer sync of the
+// machine took over: e.g. Santa gave up on this slow sync and started another, which read the items, recorded a rule
+// it sent again, and wrote a summary of what it saw, and then this ruledownload's write deleted that item. The newer
+// summary would then hide a rule the Mac holds, and its removal would never be sent. So the summary is replaced, on
+// whichever sync's row, by a value that makes the next sync read the items again (which brings them back in line with
+// the rules that apply). When this ruledownload is still the machine's current sync, the summary is already dirty
+// and this changes nothing that matters.
+func (p machineRulePage) invalidateAfterItemWrites(machineID string, err error) error {
+	if ierr := syncstate.InvalidateMachineRulesTracked(p.updater, machineID); ierr != nil {
+		log.Printf("  Failed to invalidate the machine rules tracked after an interrupted update: %v", ierr)
+	}
+	return err
 }
 
 // replacementsFor returns what to send for machine rules the Mac may hold but that no longer apply, by rule sort key:

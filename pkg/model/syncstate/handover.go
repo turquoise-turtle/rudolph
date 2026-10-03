@@ -21,8 +21,36 @@ const completedSyncsKept = 2
 
 // Completed reports whether a postflight was received for this sync, i.e. (unless the postflight was a stray one) the
 // Mac applied every rule it was sent.
+//
+// A sync that follows syncs without postflight also counts as completed once ruledownload served its last page
+// (LastPageServedAt): Santa ignores a failed postflight, so without this a Mac whose postflights never arrive (a
+// broken postflight route, a proxy dropping it) would never have a completed sync. Its feed cursor would never
+// advance, re-sending every feed change since its first sync on every sync, and no removal would ever count as
+// delivered. A last page that was served but never applied is then taken as delivered; like a stray postflight, one
+// such sync cannot lose anything, as a change counts as delivered only once two completed syncs sent it.
 func (s SyncState) Completed() bool {
-	return s.PostflightAt != ""
+	return s.PostflightAt != "" || s.LastPageServedAt != ""
+}
+
+// LastCompletedCleanSync returns the start of the last clean sync known to have completed, from the point of view of
+// the next sync: this sync's LastCleanSync, unless this sync is a clean sync that did not complete. A nil sync state
+// has none.
+func (s *SyncState) LastCompletedCleanSync() string {
+	if s == nil {
+		return ""
+	}
+	if s.CleanSync && !s.Completed() {
+		return s.PreviousCleanSync
+	}
+	return s.LastCleanSync
+}
+
+// NextSyncsWithoutPostflight returns how many syncs in a row without postflight the next sync of this machine follows.
+func (s SyncState) NextSyncsWithoutPostflight() int {
+	if s.PostflightAt != "" {
+		return 0
+	}
+	return s.SyncsWithoutPostflight + 1
 }
 
 // NextSyncSeq returns the smallest identifier the next sync of this machine may have (see ContinueFrom).

@@ -24,8 +24,10 @@ import (
 // Items expire (ExpiresAfter, the table's TTL attribute) DeliveryExpiry after they were last written, and
 // ruledownload rewrites all of a machine's items at least every DeliveryRefreshInterval, so they outlive the
 // machine's sync state (which expires 90 days after its last sync) while the Mac keeps syncing, and disappear once it
-// stops. A Mac whose sync state expired is told to clean sync, after which it holds no machine rule from Rudolph, so
-// an expired item never hides a rule the Mac still has.
+// stops. A Mac whose sync state expired is told to clean sync, after which it holds no machine rule from Rudolph but
+// those the clean sync sent; until then its items may stand for rules it still holds, so the recreated sync state
+// makes the next ruledownload extend every item kept (see syncstate.SyncStateRow.ContinueFrom). An expired item thus
+// never hides a rule the Mac still has.
 const deliveryPKPrefix = "MachineRuleDelivery#"
 
 const (

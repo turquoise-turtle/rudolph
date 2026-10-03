@@ -59,12 +59,23 @@ type SyncState struct {
 	CompletedSyncs         []CompletedSync `dynamodbav:"CompletedSyncs,omitempty"`
 	MachineRulesTracked    string          `dynamodbav:"MachineRulesTracked,omitempty"`
 	// When the machine's delivery tracking items last had their expiry extended (see machinerules.GetDeliveries)
-	MachineRulesTrackingRefreshedAt string         `dynamodbav:"MachineRulesTrackingRefreshedAt,omitempty"`
-	ExpiresAfter                    int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType                        types.DataType `dynamodbav:"DataType"`
+	// Empty when unknown (a sync state created for a Mac without one), which makes the next ruledownload extend it.
+	MachineRulesTrackingRefreshedAt string `dynamodbav:"MachineRulesTrackingRefreshedAt,omitempty"`
+	// For a clean sync, the start of the last clean sync that completed before it (LastCleanSync holds this sync's
+	// start). If this clean sync does not complete, e.g. its preflight response was lost and Santa sent the preflight
+	// again, the next preflight goes back to this value instead of counting a clean sync the Mac never performed.
+	PreviousCleanSync string `dynamodbav:"PreviousCleanSync,omitempty"`
+	// How many syncs in a row before this one received no postflight. Santa ignores a failed postflight, so a Mac
+	// whose postflights never arrive keeps syncing; while this is not zero, ruledownload records when it served the
+	// sync's last page (LastPageServedAt), which then counts as the sync's completion.
+	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
+	// When ruledownload served this sync's last page; only recorded while SyncsWithoutPostflight is not zero.
+	LastPageServedAt string         `dynamodbav:"LastPageServedAt,omitempty"`
+	ExpiresAfter     int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType         types.DataType `dynamodbav:"DataType"`
 }
 
-// CompletedSync identifies a sync that reached postflight
+// CompletedSync identifies a sync that completed (see SyncState.Completed)
 type CompletedSync struct {
 	Seq         int    `dynamodbav:"Seq"`
 	PreflightAt string `dynamodbav:"PreflightAt"`
@@ -101,6 +112,22 @@ type UpdatePostflightOutcomeItem struct {
 // MachineRulesTrackedDirty is the MachineRulesTracked value while the tracking items may not match the digest. It is
 // never the digest of a set of rules, so a sync that sees it reads the items.
 const MachineRulesTrackedDirty = "dirty"
+
+// MachineRulesTrackedOvertaken is the MachineRulesTracked value written by a ruledownload that changed tracking items
+// and then found that the sync state no longer holds what it expected (typically a newer sync of the machine took
+// over while its writes were in flight): its item writes may have landed after the newer sync's, so the summary
+// the newer sync wrote cannot be trusted. Like MachineRulesTrackedDirty it never matches a set of rules. It differs
+// from it so that a newer ruledownload still writing items, which expects MachineRulesTrackedDirty, cannot replace
+// it with a summary that hides the older writes.
+const MachineRulesTrackedOvertaken = "dirty:overtaken"
+
+type updateMachineRulesTrackedOnlyItem struct {
+	MachineRulesTracked string `dynamodbav:"MachineRulesTracked"`
+}
+
+type updateLastPageServedItem struct {
+	LastPageServedAt string `dynamodbav:"LastPageServedAt"`
+}
 
 type updateMachineRulesTrackedItem struct {
 	MachineRulesTracked             string `dynamodbav:"MachineRulesTracked"`
