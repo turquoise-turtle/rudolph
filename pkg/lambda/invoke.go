@@ -29,6 +29,10 @@ func (c *client) Send(
 	machineID string,
 	events LambdaEvents,
 ) error {
+	// Every invocation (and the SDK's retries of it) is bounded by ctx's deadline, or eventsink.DefaultBudget if
+	// the caller has none.
+	ctx, cancel := eventsink.EnsureDeadline(ctx)
+	defer cancel()
 	return invokeLambda(
 		ctx,
 		c.lambdaClient,
@@ -84,6 +88,10 @@ func invokeLambda(
 
 	var failures []error
 	for _, request := range requests {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, fmt.Errorf("lambda: %d event(s) not delivered: %w", len(request), err))
+			break
+		}
 		p := payload{Source: events.Source, Items: make([]json.RawMessage, len(request))}
 		for j, i := range request {
 			p.Items[j] = items[i]

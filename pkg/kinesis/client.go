@@ -1,6 +1,8 @@
 package kinesis
 
 import (
+	"context"
+
 	"github.com/aws/aws-sdk-go/aws"
 	awssession "github.com/aws/aws-sdk-go/aws/session"
 	awskinesis "github.com/aws/aws-sdk-go/service/kinesis"
@@ -13,6 +15,12 @@ type KinesisEvents struct {
 
 type KinesisClient interface {
 	Send(machineID string, events KinesisEvents) (err error)
+}
+
+// ContextClient is a KinesisClient whose sends can be bounded by a context's deadline. GetClient returns one.
+type ContextClient interface {
+	KinesisClient
+	SendContext(ctx context.Context, machineID string, events KinesisEvents) error
 }
 
 func GetClient(kinesisStreamName string, awsregion string) KinesisClient {

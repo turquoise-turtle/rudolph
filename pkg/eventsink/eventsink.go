@@ -1,34 +1,12 @@
 // Package eventsink holds what the event sinks (Firehose, Kinesis, Lambda) share: splitting records into requests
-// that stay within a service's limits, a bounded retry schedule, and the error that tells a caller some records can
-// never be stored by the sink.
+// that stay within a service's limits, a retry schedule bounded by attempts and by the caller's deadline, and the
+// error that tells a caller some records can never be stored by the sink.
 package eventsink
 
 import (
 	"errors"
 	"fmt"
-	"math/rand"
-	"time"
 )
-
-// MaxAttempts is how often a sink sends a record before it gives up on it. Whole-request errors (throttling, 5xx)
-// are additionally retried by the AWS SDK itself.
-const MaxAttempts = 4
-
-// Backoff returns how long to wait before the given attempt (2, 3, ...): exponential from 100ms with jitter, capped
-// at 2s, so a handler invocation stays well within its timeout.
-func Backoff(attempt int) time.Duration {
-	if attempt < 2 {
-		return 0
-	}
-	d := 100 * time.Millisecond << (attempt - 2)
-	if d > 2*time.Second {
-		d = 2 * time.Second
-	}
-	return d/2 + time.Duration(rand.Int63n(int64(d/2)+1))
-}
-
-// Wait sleeps for Backoff(attempt).
-func Wait(attempt int) { time.Sleep(Backoff(attempt)) }
 
 // UnstorableError reports records that the sink can never store, whatever the number of retries, for example
 // because a single record is larger than the service accepts. Those records were not sent; every other record was
