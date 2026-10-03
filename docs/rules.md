@@ -33,6 +33,30 @@ still have it (from older versions of Rudolph) to clients; remove them with `rud
 * Notification App Name (`notification_app_name`) — Santa notifies the user that this application is now allowed (not during clean syncs)
 * CEL Expression (`cel_expr`) — The expression evaluated by `CEL` rules; only allowed on `CEL` rules
 
+Every rule a Mac may hold is sent in its rule downloads, so these fields are bounded when a rule is created (global or
+machine-specific, CLI or import); a longer value is refused with an error naming the field. The limits, in bytes of
+UTF-8, are well above what Santa's block dialog and notifications can show:
+
+| Field | Limit |
+|---|---|
+| `custom_msg` | 4096 |
+| `custom_url` | 4096 |
+| `event_detail_button_label` | 256 |
+| `notification_app_name` | 256 |
+| `cel_expr` | 16384 |
+
+## Global and machine-specific rules
+Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `silent-gui`, `silent-tty`, `compiler`,
+`cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac).
+There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
+
+Machine-specific rules expire after 24 hours unless created with:
+* `--expires <when>` — a duration from now (`48h`, `90m`) or an RFC 3339 time (`2026-12-31T18:00:00Z`); it must be in
+  the future.
+* `--permanent` — the rule never expires (it is stored without `ExpiresAfter`, the table's TTL attribute).
+
+Both flags are refused on global rules (which never expire) and together.
+
 From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` accept `--custom-msg`, `--custom-url`,
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.

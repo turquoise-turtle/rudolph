@@ -36,7 +36,32 @@ func init() {
 	clockcheck.AddFlag(RuleCmd)
 }
 
-func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, options ...rules.RuleOption) (err error) {
+// createRule runs a command that creates a rule with the given policy. The target and expiry flags are checked before
+// anything is read or written.
+func createRule(cmd *cobra.Command, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, ef flags.RuleExpiryFlags, options ...rules.RuleOption) error {
+	if err := tf.RequireExplicitTarget(); err != nil {
+		return err
+	}
+	timeProvider := clock.ConcreteTimeProvider{}
+	expires, err := ef.Expiry(timeProvider.Now(), tf.IsGlobal)
+	if err != nil {
+		return err
+	}
+
+	region, _ := cmd.Flags().GetString("region")
+	table, _ := cmd.Flags().GetString("dynamodb_table")
+
+	dynamodbClient := dynamodb.GetClient(table, region)
+	if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
+		return err
+	}
+
+	return applyPolicyForPath(timeProvider, dynamodbClient, policy, tf, rf, expires, options...)
+}
+
+// applyPolicyForPath creates a rule after a typed confirmation. A machine rule expires at expires, or never when it is
+// the zero time.
+func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, expires time.Time, options ...rules.RuleOption) (err error) {
 	// Second, determine the rule type and identifier
 	ruleType := (*rf.RuleType).AsRuleType()
 	var description string
@@ -119,6 +144,13 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	fmt.Println("  Policy:      ", policy, "  (", string(policyDescription), ")")
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
+	if !tf.IsGlobal {
+		if expires.IsZero() {
+			fmt.Println("  Expires:      never")
+		} else {
+			fmt.Println("  Expires:     ", expires.Format(time.RFC3339))
+		}
+	}
 	printRuleOptions(options)
 	fmt.Println("")
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
@@ -133,7 +165,6 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		if tf.IsGlobal {
 			err = globalrules.AddNewGlobalRule(timeProvider, client, identifier, ruleType, policy, description, options...)
 		} else {
-			expires := timeProvider.Now().Add(time.Hour * machinerules.MachineRuleDefaultExpirationHours).UTC()
 			err = machinerules.AddNewMachineRule(client, machineID, identifier, ruleType, policy, description, expires, options...)
 		}
 		if err != nil {

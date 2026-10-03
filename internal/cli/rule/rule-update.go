@@ -39,7 +39,9 @@ func init() {
 		Short:   "Update an existing rule",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// args[0] has already been validated as a file before this
+			if err := tf.RequireExplicitTarget(); err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -63,7 +65,7 @@ func init() {
 		},
 	}
 
-	tf.AddTargetFlags(ruleUpdateCmd)
+	tf.AddRuleTargetFlags(ruleUpdateCmd)
 	ru.AddRuleUpdateFlags(ruleUpdateCmd)
 	rf.AddRuleInfoFlags(ruleUpdateCmd)
 

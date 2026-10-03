@@ -1,10 +1,7 @@
 package rule
 
 import (
-	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
-	"github.com/airbnb/rudolph/pkg/clock"
-	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -13,6 +10,7 @@ func init() {
 	tf := flags.TargetFlags{}
 	rf := flags.RuleInfoFlags{}
 	of := flags.RuleOptionFlags{}
+	ef := flags.RuleExpiryFlags{}
 
 	var ruleSilentTTYCmd = &cobra.Command{
 		Use:     "silent-tty",
@@ -20,20 +18,12 @@ func init() {
 		Short:   "Create a rule that applies the SilentTTYBlocklist policy (block without TTY notifications; GUI notifications are still shown)",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			region, _ := cmd.Flags().GetString("region")
-			table, _ := cmd.Flags().GetString("dynamodb_table")
-
-			dynamodbClient := dynamodb.GetClient(table, region)
-			if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
-				return err
-			}
-			time := clock.ConcreteTimeProvider{}
-
-			return applyPolicyForPath(time, dynamodbClient, types.RulePolicySilentTTYBlocklist, tf, rf, of.Options()...)
+			return createRule(cmd, types.RulePolicySilentTTYBlocklist, tf, rf, ef, of.Options()...)
 		},
 	}
 
-	tf.AddTargetFlags(ruleSilentTTYCmd)
+	tf.AddRuleTargetFlags(ruleSilentTTYCmd)
+	ef.AddRuleExpiryFlags(ruleSilentTTYCmd)
 	rf.AddRuleInfoFlags(ruleSilentTTYCmd)
 	of.AddRuleOptionFlags(ruleSilentTTYCmd)
 

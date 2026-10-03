@@ -22,12 +22,15 @@ func init() {
 	tf := flags.TargetFlags{}
 
 	var removeRuleCmd = &cobra.Command{
-		Use:     `remove <rule-name> ex: 'TeamID#1234567'`,
+		Use:     `remove <rule-name> (-m <machine-id>|--global) ex: 'TeamID#1234567'`,
 		Aliases: []string{"delete"},
 		Short:   "Removes/deletes a rule from the backing store",
 		Long:    `<rule-name> | <RuleType: Binary,Cert,TeamID,SigningID,CDHash>#<Rule Identifier/SHA256: abcdef12345-12345-12345> | 'TeamID#1234567'`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tf.RequireExplicitTarget(); err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -50,24 +53,20 @@ func init() {
 		},
 	}
 
-	tf.AddTargetFlags(removeRuleCmd)
+	tf.AddRuleTargetFlags(removeRuleCmd)
 	RuleCmd.AddCommand(removeRuleCmd)
 }
 
 func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover machinerules.RuleRemovalService, ruleName string, tf flags.TargetFlags) error {
-	// First, determine which machine to apply
-	var machineID string
-	if !tf.IsGlobal || tf.IsTargetSelf() {
-		var err error
-		machineID, err = tf.GetMachineID()
-		if err != nil {
-			return fmt.Errorf("failed to get MachineID: %w", err)
-		}
+	if err := tf.RequireExplicitTarget(); err != nil {
+		return err
 	}
 
 	fmt.Println("Removing the following rule:")
-	if machineID != "" {
-		fmt.Println("  MachineID:   ", machineID)
+	if tf.IsGlobal {
+		fmt.Println("  MachineID:    (Global)")
+	} else {
+		fmt.Println("  MachineID:   ", tf.MachineID)
 	}
 	fmt.Println("  Identifier/SHA256:      ", ruleName)
 	fmt.Println("")
@@ -81,11 +80,7 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 	if strings.ToLower(text) == "ok" || strings.ToLower(text) == "yes" {
 		// Do rule deletion
 		if !tf.IsGlobal {
-			machineID, err := tf.GetMachineID()
-			if err != nil {
-				return fmt.Errorf("failed to get MachineID: %v", err)
-			}
-			return machineRuleRemover.RemoveMachineRule(machineID, ruleName)
+			return machineRuleRemover.RemoveMachineRule(tf.MachineID, ruleName)
 		}
 
 		idempotencyKey := uuid.NewString()

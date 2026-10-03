@@ -25,9 +25,9 @@ export ENV={YOUR_ENVIRONMENT}
      ./rudolph info
        Dump information about your current machine and whatever.
 
-     ./rudolph rule allow --rule-type binary [--global] $PATH
+     ./rudolph rule allow --rule-type binary (--global | --machine <uuid> [--expires 48h | --permanent]) -f $PATH
        Creates a new rule based upon the given binary and uploads it to the currently configured
-       Rudolph server. Can do both binary and certificate rules.
+       Rudolph server. Can do both binary and certificate rules. Exactly one of --global or --machine is required.
 
      ./rudolph rules [--global]
        Queries DDB and returns all rules pertinent to either your machine or available globally.
