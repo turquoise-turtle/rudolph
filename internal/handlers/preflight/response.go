@@ -16,8 +16,10 @@ import (
 // Field names and types follow santa.sync.v1.PreflightResponse (testdata/santa-2026.8/sync_v1.proto).
 // Santa leaves a setting unchanged when its optional field is absent, so settings that are not configured
 // are omitted. The path regexes are always sent: on Santa 2026.8 "" clears a regex, an absent field keeps it.
+// The client mode is omitted only when the stored one is invalid (see machineconfiguration.SanitizeForSanta);
+// Santa then keeps its current mode.
 type PreflightResponse struct {
-	ClientMode                types.ClientMode       `json:"client_mode"`
+	ClientMode                types.ClientMode       `json:"client_mode,omitempty"`
 	BlockedPathRegex          string                 `json:"blocked_path_regex"`
 	AllowedPathRegex          string                 `json:"allowed_path_regex"`
 	BatchSize                 int                    `json:"batch_size"`

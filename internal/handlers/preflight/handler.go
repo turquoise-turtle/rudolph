@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 
@@ -86,6 +87,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
 	}
+	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
+	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
 
 	// Get the previous sync state
 	prevSyncState, err := h.stateTrackingService.getSyncState(machineID)
@@ -96,7 +99,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
 	// or if the machine is new
-	switch preflightRequest.RequestCleanSync {
+	// The clean sync flag of a machine-specific config asks for one clean sync of that machine
+	switch preflightRequest.RequestCleanSync || machineConfiguration.CleanSync {
 	case true:
 		performCleanSync = true
 	case false:
@@ -143,6 +147,14 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		err = fmt.Errorf("encountered error trying to save new sync state: %w", err)
 		return response.APIResponse(http.StatusInternalServerError, err)
+	}
+
+	// The clean sync the flag asked for is now under way; clear the flag so it applies once. If clearing fails, the
+	// next sync is clean again, which is harmless.
+	if machineConfiguration.CleanSync {
+		if err := h.machineConfigurationService.ClearMachineCleanSync(machineID); err != nil {
+			log.Printf("%v", err)
+		}
 	}
 
 	// Construct the response
