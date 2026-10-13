@@ -15,3 +15,4 @@ package
 
 # Claude Code handover notes and hidden tests (never commit)
 .claude/handover/
+/CLAUDE.md
