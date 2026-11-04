@@ -144,6 +144,15 @@ func updateConfig(
 		}
 	}
 
+	// What the machine inherits is shown as it is set directly, so a global lockdown is as visible as when it is set
+	var global machineconfiguration.MachineConfiguration
+	if len(updateRequest.Inherit) > 0 {
+		global, _, err = service.GetIntendedGlobalConfig()
+		if err != nil {
+			return fmt.Errorf("failed to read the global configuration: %w", err)
+		}
+	}
+
 	suffix := ""
 	if !(tf.IsGlobal) && tf.IsTargetSelf() {
 		suffix = "-->( This machine )"
@@ -195,9 +204,15 @@ func updateConfig(
 		fmt.Fprintln(writer, "CleanSync:\t", *updateRequest.CleanSync)
 	}
 	for _, setting := range updateRequest.Inherit {
-		fmt.Fprintln(writer, setting+":\t", "(inherited from the global configuration)")
+		fmt.Fprintln(writer, setting+":\t", inheritedSettingText(global, setting), "(inherited from the global configuration)")
 	}
 	writer.Flush()
+	for _, setting := range updateRequest.Inherit {
+		if setting == "ClientMode" && machineconfiguration.RequiresGlobalLockdownConfirmation(global.ClientMode) {
+			clientModeText, _ := global.ClientMode.MarshalText()
+			fmt.Printf("\nWarning: the global client mode is %s, which blocks unknown executions; the machine follows it from its next sync.\n", clientModeText)
+		}
+	}
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")

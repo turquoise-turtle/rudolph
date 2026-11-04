@@ -33,7 +33,12 @@ func init() {
 	var configSetCmd = &cobra.Command{
 		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode]",
 		Short: "Create a configuration and set globally or a specific machine UUID",
-		Args:  cobra.NoArgs,
+		Long: `Create a configuration and set globally or a specific machine UUID.
+
+The configuration replaces the whole stored configuration. For a machine, this also cancels a clean sync requested
+for it that has not been performed yet (which, for a Mac that is offline, can stay pending for weeks), unless
+--clean-sync is given again; use "config update" to change settings without touching a requested clean sync.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
 			blockedPathRegex, err := pathRegexArgs.blockedPathRegex()
@@ -98,7 +103,7 @@ func init() {
 	configSetCmd.Flags().BoolVar(&isEnabledTransitiveRules, "transitive-rules", false, "Enables the usage of transitive rules")
 
 	// Flags define sync behavior and upload logs url
-	configSetCmd.Flags().BoolVar(&isCleanSync, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global")
+	configSetCmd.Flags().BoolVar(&isCleanSync, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global. Without it, a clean sync requested earlier and not yet performed is cancelled")
 	configSetCmd.Flags().StringVarP(&uploadLogsUrlArgs, "upload-logs", "u", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
 
 	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds, at least 60 (default 600)")
@@ -133,6 +138,16 @@ func applyConfig(
 		machineID, err = tf.GetMachineID()
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
+		}
+		if !newConfig.CleanSync {
+			current, eerr := service.GetIntendedConfig(machineID)
+			if eerr != nil {
+				return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
+			}
+			if current.CleanSync {
+				fmt.Println("Warning: the machine has a requested clean sync that has not been performed yet; replacing its configuration without --clean-sync cancels it.")
+				fmt.Println()
+			}
 		}
 	}
 

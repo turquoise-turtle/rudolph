@@ -362,6 +362,50 @@ func printSantaSettings(writer io.Writer, config machineconfiguration.MachineCon
 
 const notConfigured = "(not configured)"
 
+// inheritedSettingText formats the global value of a setting (named by its attribute) as it is shown when it is set
+func inheritedSettingText(global machineconfiguration.MachineConfiguration, setting string) string {
+	switch setting {
+	case "ClientMode":
+		clientModeText, err := global.ClientMode.MarshalText()
+		if err != nil {
+			return fmt.Sprintf("%d -->( INVALID, not sent to Santa )", global.ClientMode)
+		}
+		return fmt.Sprintf("%d -->( %s )", global.ClientMode, clientModeText)
+	case "BlockedPathRegex":
+		return fmt.Sprintf("%q", global.BlockedPathRegex)
+	case "AllowedPathRegex":
+		return fmt.Sprintf("%q", global.AllowedPathRegex)
+	case "BatchSize":
+		return fmt.Sprint(global.BatchSize)
+	case "EnableBundles":
+		return fmt.Sprint(global.EnableBundles)
+	case "EnableTransitiveRules":
+		return fmt.Sprint(global.EnabledTransitiveRules)
+	case "FullSyncInterval":
+		if global.FullSyncInterval == 0 {
+			return notConfigured
+		}
+		return fmt.Sprint(global.FullSyncInterval)
+	case "UploadLogsUrl":
+		return stringSetting(global.UploadLogsURL, global.UploadLogsURL != "")
+	case "EnableAllEventUpload":
+		return boolSetting(global.EnableAllEventUpload)
+	case "DisableUnknownEventUpload":
+		return boolSetting(global.DisableUnknownEventUpload)
+	case "OverrideFileAccessAction":
+		return stringSetting(string(global.OverrideFileAccessAction), global.OverrideFileAccessAction != "")
+	case "BlockUsbMount":
+		return boolSetting(global.BlockUsbMount)
+	case "RemountUsbMode":
+		return stringSetting(strings.Join(global.RemountUsbMode, ","), global.RemountUsbMode != nil)
+	case "EventDetailURL":
+		return stringPtrSetting(global.EventDetailURL)
+	case "EventDetailText":
+		return stringPtrSetting(global.EventDetailText)
+	}
+	return ""
+}
+
 func boolSetting(value *bool) string {
 	if value == nil {
 		return notConfigured
