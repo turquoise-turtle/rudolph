@@ -170,6 +170,8 @@ only writes to it when the tracked machine-specific rules change. It stays about
 | `LastPageServedNothingNew` | ruledownload | Written with `LastPageServedAt`: this incremental sync served no feed row stamped after, and no removal first sent after, the covering completed sync. |
 | `LastPageServedRun` | ruledownload | Written with `LastPageServedAt`: how many syncs in a row, this one included, served the newest content it served without completing. |
 | `PreflightRulesHash` | preflight | The `rules_hash` the Mac reported in this sync's preflight (at most 128 bytes, a 64-character hex digest from Santa); absent when it reported none. |
+| `ConfigCleanSync`, `ConfigCleanSyncRequest` | preflight | Set on a clean sync performed for the clean sync flag of the machine's configuration, with the request it performs (the configuration's `CleanSyncRequest`). Its postflight clears the flag; without a postflight, the next preflight clears it when the sync counts as completed (e.g. the `rules_hash` changed). |
+| `ConfigCleanSyncServed` | preflight | How many earlier clean syncs for the same request had their last page served without being confirmed. The request counts as performed once 3 have been, this one included (see [sync](./sync.md#reconfiguring-the-sensor)). |
 | `RuledownloadStartedAt`, `RuledownloadFinishedAt` | no longer written | Written by earlier versions (two writes per sync that nothing read). |
 
 ### Upgrading
