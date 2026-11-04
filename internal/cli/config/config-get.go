@@ -80,9 +80,10 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	}
 
 	// Marshal the ClientMode out of the config to easily display the config clientmode content
-	clientModeText, err := config.ClientMode.MarshalText()
-	if err != nil {
-		return
+	// A stored client mode Santa does not know is shown, not fatal (preflight leaves it out)
+	clientModeText, eerr := config.ClientMode.MarshalText()
+	if eerr != nil {
+		clientModeText = []byte("INVALID, not sent to Santa")
 	}
 
 	// Alert the user if this configuration is for the same machine requesting the call
@@ -100,7 +101,12 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	fmt.Fprintln(writer, "BatchSize:\t", config.BatchSize)
 	fmt.Fprintln(writer, "BundlesEnabled:\t", config.EnableBundles)
 	fmt.Fprintln(writer, "EnabledTransitiveRules:\t", config.EnabledTransitiveRules)
-	fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
+	if tf.IsGlobal && config.CleanSync {
+		// Stored by an earlier version, which accepted --global --clean-sync
+		fmt.Fprintln(writer, "CleanSync:\t", "true (ignored: a clean sync is requested per machine; remove it with config update --global --clean-sync=false)")
+	} else {
+		fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
+	}
 	fmt.Fprintln(writer, "FullSyncInterval:\t", config.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", config.UploadLogsURL, "\"")
 	printSantaSettings(writer, config)

@@ -2,12 +2,14 @@ package preflight
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
+	"github.com/airbnb/rudolph/pkg/model/syncstate"
 	apiRequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
@@ -86,6 +88,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
+	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
+	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
 
 	// Get the previous sync state
 	prevSyncState, err := h.stateTrackingService.getSyncState(machineID)
@@ -98,10 +102,13 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
 	}
 
+	// The clean sync flag of a machine-specific config asks for one clean sync of that machine, until one is confirmed
+	configCleanSync, configCleanSyncConfirmed := configCleanSyncDue(machineID, machineConfiguration, prevSyncState)
+
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
 	// or if the machine is new
-	switch preflightRequest.RequestCleanSync {
+	switch preflightRequest.RequestCleanSync || configCleanSync != nil {
 	case true:
 		performCleanSync = true
 	case false:
@@ -145,6 +152,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		feedSyncCursor,
 		preflightRequest.RulesHash,
 		prevSyncState,
+		configCleanSync,
 	)
 
 	if err != nil {
@@ -152,8 +160,42 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		return response.InternalServerError(err, struct{}{})
 	}
 
+	// The clean sync the flag asked for was confirmed without a postflight clearing the flag. If clearing fails, the
+	// flag makes the next sync clean again, which is harmless.
+	if configCleanSyncConfirmed {
+		if err := h.machineConfigurationService.ClearMachineCleanSync(machineID, machineConfiguration.CleanSyncRequest); err != nil {
+			log.Printf("%v", err)
+		}
+	}
+
 	// Construct the response
 	preflightResponse := ConstructPreflightResponse(machineConfiguration, performCleanSync)
 
 	return response.APIResponse(http.StatusOK, preflightResponse)
+}
+
+// configCleanSyncDue decides what the clean sync flag of the machine's own config (CleanSync, never taken from the
+// global config) asks of this sync. The flag is cleared once a clean sync performing the request is confirmed: by
+// its postflight, which clears the flag itself, or at the next preflight (see syncstate.ConfigCleanSyncOutcome),
+// which reports it as confirmed. Until then every sync is a clean sync for it: progress describes it (nil when the
+// flag asks for nothing). A clean sync that does not complete is therefore performed again. Only on a Mac that was
+// already missing postflights when the request's first clean sync started, one whose last page was served but that
+// nothing confirms is repeated at most syncstate.ConfigCleanSyncServingsToConfirm times before the request is given
+// up.
+func configCleanSyncDue(machineID string, config machineconfiguration.MachineConfiguration, prevSyncState *syncstate.SyncStateRow) (progress *syncstate.ConfigCleanSyncProgress, confirmed bool) {
+	if !config.CleanSync {
+		return nil, false
+	}
+	var prev *syncstate.SyncState
+	if prevSyncState != nil {
+		prev = &prevSyncState.SyncState
+	}
+	confirmed, givenUp, next := prev.ConfigCleanSyncOutcome(config.CleanSyncRequest)
+	if givenUp {
+		log.Printf("machine %s: giving up the requested clean sync after %d clean syncs whose last page was served but that neither a postflight nor a changed rules hash confirmed; its postflights do not arrive, and it either held every rule already or lost every response", machineID, next.Served)
+	}
+	if confirmed {
+		return nil, true
+	}
+	return &next, false
 }

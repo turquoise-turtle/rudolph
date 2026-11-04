@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -26,7 +27,55 @@ const (
 	flagRemountUsbMode            = "remount-usb-mode"
 	flagEventDetailURL            = "event-detail-url"
 	flagEventDetailText           = "event-detail-text"
+	flagCleanSync                 = "clean-sync"
+	flagInherit                   = "inherit"
 )
+
+// settingFlags maps the name of the flag of every setting a machine-specific configuration can override (as `config
+// set` and `config update` name it) to the setting's attribute name, for --inherit
+var settingFlags = map[string]string{
+	"client-mode":                 "ClientMode",
+	flagBlockedPaths:              "BlockedPathRegex",
+	flagAllowedPaths:              "AllowedPathRegex",
+	"batch-size":                  "BatchSize",
+	"bundles":                     "EnableBundles",
+	"transitive-rules":            "EnableTransitiveRules",
+	"full-sync-interval":          "FullSyncInterval",
+	"upload-logs":                 "UploadLogsUrl",
+	flagEnableAllEventUpload:      "EnableAllEventUpload",
+	flagDisableUnknownEventUpload: "DisableUnknownEventUpload",
+	flagOverrideFileAccessAction:  "OverrideFileAccessAction",
+	flagBlockUsbMount:             "BlockUsbMount",
+	flagRemountUsbMode:            "RemountUsbMode",
+	flagEventDetailURL:            "EventDetailURL",
+	flagEventDetailText:           "EventDetailText",
+}
+
+func inheritableSettingFlags() []string {
+	names := make([]string, 0, len(settingFlags))
+	for name := range settingFlags {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// inheritedSettings converts the setting names given with --inherit to attribute names
+func inheritedSettings(flagNames []string) ([]string, error) {
+	var settings []string
+	seen := map[string]bool{}
+	for _, name := range flagNames {
+		setting, ok := settingFlags[strings.TrimPrefix(name, "--")]
+		if !ok {
+			return nil, fmt.Errorf("--%s %q: unknown setting; must be one of %s", flagInherit, name, strings.Join(inheritableSettingFlags(), ", "))
+		}
+		if !seen[setting] {
+			seen[setting] = true
+			settings = append(settings, setting)
+		}
+	}
+	return settings, nil
+}
 
 // combinePathRegexes combines several path regexes into one regex that matches a path if and only if any of
 // them matches. Each pattern is validated with Go's regexp (RE2) syntax, which differs from the ICU syntax Santa
@@ -312,6 +361,50 @@ func printSantaSettings(writer io.Writer, config machineconfiguration.MachineCon
 }
 
 const notConfigured = "(not configured)"
+
+// inheritedSettingText formats the global value of a setting (named by its attribute) as it is shown when it is set
+func inheritedSettingText(global machineconfiguration.MachineConfiguration, setting string) string {
+	switch setting {
+	case "ClientMode":
+		clientModeText, err := global.ClientMode.MarshalText()
+		if err != nil {
+			return fmt.Sprintf("%d -->( INVALID, not sent to Santa )", global.ClientMode)
+		}
+		return fmt.Sprintf("%d -->( %s )", global.ClientMode, clientModeText)
+	case "BlockedPathRegex":
+		return fmt.Sprintf("%q", global.BlockedPathRegex)
+	case "AllowedPathRegex":
+		return fmt.Sprintf("%q", global.AllowedPathRegex)
+	case "BatchSize":
+		return fmt.Sprint(global.BatchSize)
+	case "EnableBundles":
+		return fmt.Sprint(global.EnableBundles)
+	case "EnableTransitiveRules":
+		return fmt.Sprint(global.EnabledTransitiveRules)
+	case "FullSyncInterval":
+		if global.FullSyncInterval == 0 {
+			return notConfigured
+		}
+		return fmt.Sprint(global.FullSyncInterval)
+	case "UploadLogsUrl":
+		return stringSetting(global.UploadLogsURL, global.UploadLogsURL != "")
+	case "EnableAllEventUpload":
+		return boolSetting(global.EnableAllEventUpload)
+	case "DisableUnknownEventUpload":
+		return boolSetting(global.DisableUnknownEventUpload)
+	case "OverrideFileAccessAction":
+		return stringSetting(string(global.OverrideFileAccessAction), global.OverrideFileAccessAction != "")
+	case "BlockUsbMount":
+		return boolSetting(global.BlockUsbMount)
+	case "RemountUsbMode":
+		return stringSetting(strings.Join(global.RemountUsbMode, ","), global.RemountUsbMode != nil)
+	case "EventDetailURL":
+		return stringPtrSetting(global.EventDetailURL)
+	case "EventDetailText":
+		return stringPtrSetting(global.EventDetailText)
+	}
+	return ""
+}
 
 func boolSetting(value *bool) string {
 	if value == nil {

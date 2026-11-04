@@ -30,6 +30,10 @@ func SetGlobalConfig(client dynamodb.PutItemAPI, clientMode types.ClientMode, bl
 		fullSyncInterval,
 		uploadLogsURL,
 	)
+	err = ValidateConfig(globalConfigRow.MachineConfiguration, true)
+	if err != nil {
+		return
+	}
 
 	_, err = client.PutItem(globalConfigRow)
 	if err != nil {
@@ -57,6 +61,13 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 		fullSyncInterval,
 		uploadLogsURL,
 	)
+	err = ValidateConfig(machineConfigRow.MachineConfiguration, false)
+	if err != nil {
+		return
+	}
+	if isCleanSync {
+		machineConfigRow.CleanSyncRequest = newCleanSyncRequest()
+	}
 
 	_, err = client.PutItem(machineConfigRow)
 	if err != nil {
@@ -83,9 +94,9 @@ func buildConfig(pk string, clientMode types.ClientMode, blockedPathRegex string
 
 // buildConfigRow constructs a MachineConfigurationRow containing all settings of the given config for the given pk
 func buildConfigRow(pk string, config MachineConfiguration) (configRow *MachineConfigurationRow) {
-	// Check batchsize just to make sure at least a valid value is provided if not a positive int value
+	// A batch size that is not configured (0) is stored as the default
 	if config.BatchSize <= 0 {
-		config.BatchSize = 50
+		config.BatchSize = DefaultBatchSize
 	}
 
 	if strings.Compare(pk, globalConfigurationPK) == 0 {
@@ -164,7 +175,12 @@ type ConcreteGlobalConfigurationSetter struct {
 }
 
 func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error {
-	err := checkGlobalClientMode(config.ClientMode, opts)
+	err := ValidateConfig(config, true)
+	if err != nil {
+		return err
+	}
+
+	err = checkGlobalClientMode(config.ClientMode, opts)
 	if err != nil {
 		return err
 	}
@@ -180,6 +196,7 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
+	config.CleanSyncRequest = ""
 	globalConfigRow := buildConfigRow(globalConfigurationPK, config)
 
 	_, err = c.setter.PutItem(globalConfigRow)
@@ -204,7 +221,11 @@ type ConcreteMachineConfigurationSetter struct {
 }
 
 func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, config MachineConfiguration) error {
-	var err error
+	err := ValidateConfig(config, false)
+	if err != nil {
+		return err
+	}
+
 	config.OverrideFileAccessAction, err = normalizeOverrideFileAccessAction(config.OverrideFileAccessAction)
 	if err != nil {
 		return err
@@ -223,6 +244,13 @@ func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, c
 	err = validateRemountUsbMode(config.RemountUsbMode, blockUsbMount)
 	if err != nil {
 		return err
+	}
+
+	// Every clean sync requested gets its own identifier; the row is replaced as a whole, so a request still pending
+	// is replaced by this one, or cancelled when this config requests none
+	config.CleanSyncRequest = ""
+	if config.CleanSync {
+		config.CleanSyncRequest = newCleanSyncRequest()
 	}
 
 	// Create the machineID specific PK

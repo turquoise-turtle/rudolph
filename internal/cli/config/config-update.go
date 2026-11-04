@@ -21,18 +21,25 @@ func init() {
 		pathRegexArgs         pathRegexFlags
 		santaSettingsArgs     santaSettingsFlags
 		confirmGlobalLockdown bool
+		cleanSyncArg          bool
+		inheritArgs           []string
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]...",
+		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]... [--clean-sync] [--inherit <setting>]...",
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
-A machine without a machine-specific configuration gets one, copied from the global base settings at this moment;
-optional Santa settings it does not configure keep being inherited from the global configuration.
-Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
+A machine-specific configuration overrides only the settings given to it; every other setting follows the global
+configuration, including later global changes. Giving a setting that equals the current global value still makes it a
+setting of the machine, which keeps it when the global configuration changes (e.g. to exempt a machine from a later
+global lockdown).
+Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.
+
+--clean-sync requests one clean sync of a machine and changes nothing else. --inherit <setting> removes a setting
+from a machine-specific configuration, so that the machine follows the global value of it again.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
@@ -59,8 +66,19 @@ Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 			if err != nil {
 				return err
 			}
-			if (updateRequest == machineconfiguration.MachineConfigurationUpdateRequest{}) {
+			if cmd.Flags().Changed(flagCleanSync) {
+				updateRequest.CleanSync = &cleanSyncArg
+			}
+			updateRequest.Inherit, err = inheritedSettings(inheritArgs)
+			if err != nil {
+				return err
+			}
+			if updateRequest.IsEmpty() {
 				return errors.New("no settings to update were given")
+			}
+			// Refuse invalid values before connecting to the sync server; the service enforces this as well
+			if err := machineconfiguration.ValidateUpdateRequest(updateRequest, tf.IsGlobal); err != nil {
+				return err
 			}
 
 			region, _ := cmd.Flags().GetString("region")
@@ -95,6 +113,9 @@ Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.`,
 	// Flags for optional Santa settings
 	santaSettingsArgs.addFlags(configUpdateClientModeCmd)
 
+	configUpdateClientModeCmd.Flags().BoolVar(&cleanSyncArg, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once, and changes no other setting. Only for a machine (--machine); refused with --global. --clean-sync=false cancels a requested clean sync (with --global, it removes a flag stored by an earlier version, which is ignored)")
+	configUpdateClientModeCmd.Flags().StringArrayVar(&inheritArgs, flagInherit, nil, "Removes a setting from the machine-specific configuration, so that the machine follows the global value of it again. Repeat for several settings. Only for a machine (--machine). Settings: "+strings.Join(inheritableSettingFlags(), ", "))
+
 	ConfigCmd.AddCommand(configUpdateClientModeCmd)
 }
 
@@ -103,6 +124,11 @@ func updateConfig(
 	tf flags.TargetFlags,
 	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
 	confirmGlobalLockdown bool) (err error) {
+	// Refuse invalid values before asking for confirmation; the service enforces this as well
+	if err = machineconfiguration.ValidateUpdateRequest(updateRequest, tf.IsGlobal); err != nil {
+		return err
+	}
+
 	// Get machineID from flags
 	var machineID string
 	if tf.IsGlobal {
@@ -115,6 +141,15 @@ func updateConfig(
 		machineID, err = tf.GetMachineID()
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
+		}
+	}
+
+	// What the machine inherits is shown as it is set directly, so a global lockdown is as visible as when it is set
+	var global machineconfiguration.MachineConfiguration
+	if len(updateRequest.Inherit) > 0 {
+		global, _, err = service.GetIntendedGlobalConfig()
+		if err != nil {
+			return fmt.Errorf("failed to read the global configuration: %w", err)
 		}
 	}
 
@@ -165,7 +200,19 @@ func updateConfig(
 	if updateRequest.EventDetailText != nil {
 		fmt.Fprintln(writer, "EventDetailText:\t \"", *updateRequest.EventDetailText, "\"")
 	}
+	if updateRequest.CleanSync != nil {
+		fmt.Fprintln(writer, "CleanSync:\t", *updateRequest.CleanSync)
+	}
+	for _, setting := range updateRequest.Inherit {
+		fmt.Fprintln(writer, setting+":\t", inheritedSettingText(global, setting), "(inherited from the global configuration)")
+	}
 	writer.Flush()
+	for _, setting := range updateRequest.Inherit {
+		if setting == "ClientMode" && machineconfiguration.RequiresGlobalLockdownConfirmation(global.ClientMode) {
+			clientModeText, _ := global.ClientMode.MarshalText()
+			fmt.Printf("\nWarning: the global client mode is %s, which blocks unknown executions; the machine follows it from its next sync.\n", clientModeText)
+		}
+	}
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")

@@ -25,7 +25,7 @@ func getCleanSyncService(timeProvider clock.TimeProvider) cleanSyncService {
 type stateTrackingService interface {
 	saveSensorDataFromPreflightRequest(machineID string, request *PreflightRequest) error
 	getSyncState(machineID string) (syncState *syncstate.SyncStateRow, err error)
-	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow) error
+	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
 }
 
@@ -79,7 +79,8 @@ func (c concreteStateTrackingService) getSyncState(machineID string) (syncState 
 	return syncstate.GetByMachineID(c.getter, machineID)
 }
 
-func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow) error {
+// configCleanSync is not nil when this sync is a clean sync performing the clean sync flag of the machine config.
+func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress) error {
 	syncState := syncstate.CreateNewSyncState(
 		c.timeProvider,
 		machineID,
@@ -91,6 +92,9 @@ func (c concreteStateTrackingService) saveSyncState(machineID string, requestCle
 	// Bounded by PreflightRequest.validate; the next preflight compares it with the hash it receives
 	syncState.PreflightRulesHash = rulesHash
 	syncState.ContinueFrom(prevSyncState, machinerules.DeliveryDigest(nil), c.timeProvider.Now())
+	if configCleanSync != nil && requestCleanSync {
+		syncState.SetConfigCleanSync(*configCleanSync)
+	}
 	_, err := c.putter.PutItem(syncState)
 	return err
 }
