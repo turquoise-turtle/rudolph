@@ -16,7 +16,10 @@ import (
 const FeedSyncCursorOverlap = 10 * time.Minute
 
 // completedSyncsKept is how many completed syncs a sync state remembers. A change counts as delivered once two
-// completed syncs sent it, so a single stray postflight cannot make Rudolph believe a Mac got what it never received.
+// completed syncs sent it, so a single stray postflight cannot make Rudolph believe a Mac got what it never received
+// while its postflights arrive. On a Mac whose postflights are blocked, the first fallback count can come at a
+// change's first serving, so one stray postflight on the sync after it is enough; Santa's sequential stages and the
+// Lambda timeout make strays all but impossible, and a forger could send two anyway.
 const completedSyncsKept = 2
 
 // Completed reports whether this sync is known to have completed: a postflight was received for it, i.e. (unless the
@@ -46,7 +49,8 @@ func (s SyncState) Completed() bool {
 // It also bounds the cost: whatever arrives, a sync counts at least every 8 syncs, so the feed cursor falls at most
 // about 16 syncs behind, and content that leaves the Mac's rules hash unchanged even though the Mac applied it (an
 // edit of a custom message or URL, which Santa leaves out of the hash, a rule written again as it was, a REMOVE of a
-// rule the Mac does not hold) is sent again by up to 8 syncs.
+// rule the Mac does not hold) is sent again by up to about 15 syncs: up to 7 before the first fallback count that
+// carries it, then 8 before the second.
 const fallbackContentServings = 8
 
 // LastPageServedMayCount reports whether serving this sync's last page could matter to the next sync, i.e. whether
