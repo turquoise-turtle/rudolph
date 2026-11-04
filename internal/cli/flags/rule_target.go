@@ -16,13 +16,21 @@ func (t *TargetFlags) AddRuleTargetFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", "Apply to the machine with this UUID only. Exactly one of --global or --machine is required.")
 }
 
-// RequireExplicitTarget returns an error unless exactly one of --global and --machine was given
-func (t TargetFlags) RequireExplicitTarget() error {
+// RequireExplicitTarget returns an error unless exactly one of --global and --machine was given, and the machine ID
+// is a UUID. It upper-cases the machine ID (see NormaliseMachineID).
+func (t *TargetFlags) RequireExplicitTarget() error {
 	if t.IsGlobal && t.MachineID != "" {
 		return errors.New("pass either --global or --machine <machine-id>, not both")
 	}
 	if !t.IsGlobal && t.MachineID == "" {
 		return errors.New("pass --global to apply the rule to every machine, or --machine <machine-id> to apply it to one machine")
+	}
+	if t.MachineID != "" {
+		machineID, err := NormaliseMachineID(t.MachineID)
+		if err != nil {
+			return err
+		}
+		t.MachineID = machineID
 	}
 	return nil
 }

@@ -20,11 +20,12 @@ type ConcreteMachineRulesUpdater struct {
 	TimeProvider clock.TimeProvider
 }
 
+// UpdateMachineRulePolicy changes the policy of an existing machine rule and keeps its expiry, so that a permanent rule
+// stays permanent and an expiring rule does not get a new lifetime.
+//
 // @deprecated
 func (c ConcreteMachineRulesUpdater) UpdateMachineRulePolicy(machineID string, sha256 string, ruleType types.RuleType, rulePolicy types.Policy) error {
-	expires := c.TimeProvider.Now().Add(time.Hour * MachineRuleDefaultExpirationHours).UTC()
-
-	return UpdateMachineRule(c.Updater, machineID, sha256, ruleType, rulePolicy, expires)
+	return UpdateMachineRule(c.Updater, machineID, sha256, ruleType, rulePolicy, time.Time{})
 }
 
 // This service exposes all machine rules access methods

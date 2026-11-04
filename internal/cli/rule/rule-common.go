@@ -180,8 +180,8 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 }
 
 // warnIfMachineNeverSynced warns when nothing is known about a machine ID, which means no sensor has ever
-// synced under it. Machine IDs are accepted in any case, so a typo or the wrong case would otherwise create a
-// rule that no host ever reads, without saying anything.
+// synced under it. A typo in the machine ID, or a Mac that syncs under a lower-case ID (the CLI upper-cases the IDs
+// it is given, as Santa sends them), would otherwise create a rule that no host ever reads, without saying anything.
 func warnIfMachineNeverSynced(client dynamodb.GetItemAPI, machineID string) {
 	sensorData, err := sensordata.GetSensorData(client, machineID)
 	if err != nil {
