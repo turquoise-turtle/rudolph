@@ -43,11 +43,16 @@ type Delivery struct {
 	// RemovalFirstSentInSync is the number (syncstate.SyncState.SyncSeq) of the first sync that sent the rule's
 	// removal or replacement, or 0 while the rule applies.
 	RemovalFirstSentInSync int
+	// FirstSentInSync is the number of the sync that first sent the rule, or 0 when unknown: items written by
+	// earlier versions of Rudolph, rules tracked when tracking started (the Mac may have held them for long), and
+	// rules sent again while their removal was pending (the Mac may still hold them). It does not change the digest.
+	FirstSentInSync int
 }
 
 type deliveryRow struct {
 	dynamodb.PrimaryKey
 	RemovalFirstSentInSync int   `dynamodbav:"RemovalFirstSentInSync,omitempty"`
+	FirstSentInSync        int   `dynamodbav:"FirstSentInSync,omitempty"`
 	ExpiresAfter           int64 `dynamodbav:"ExpiresAfter,omitempty"`
 }
 
@@ -77,7 +82,7 @@ func GetDeliveries(client dynamodb.QueryAPI, machineID string) (map[string]Deliv
 			return nil, fmt.Errorf("failed to unmarshal the machine rules delivered: %w", err)
 		}
 		for _, row := range rows {
-			deliveries[row.SortKey] = Delivery{RemovalFirstSentInSync: row.RemovalFirstSentInSync}
+			deliveries[row.SortKey] = Delivery{RemovalFirstSentInSync: row.RemovalFirstSentInSync, FirstSentInSync: row.FirstSentInSync}
 		}
 		if len(result.LastEvaluatedKey) == 0 {
 			return deliveries, nil
@@ -95,6 +100,7 @@ func WriteDeliveries(client dynamodb.BatchWriteItemAPI, machineID string, set ma
 		puts = append(puts, deliveryRow{
 			PrimaryKey:             dynamodb.PrimaryKey{PartitionKey: deliveryPK(machineID), SortKey: sortKey},
 			RemovalFirstSentInSync: delivery.RemovalFirstSentInSync,
+			FirstSentInSync:        delivery.FirstSentInSync,
 			ExpiresAfter:           expiresAfter,
 		})
 	}

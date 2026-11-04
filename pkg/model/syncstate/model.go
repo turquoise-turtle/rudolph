@@ -67,29 +67,38 @@ type SyncState struct {
 	PreviousCleanSync string `dynamodbav:"PreviousCleanSync,omitempty"`
 	// How many syncs in a row before this one received no postflight. Santa ignores a failed postflight, so a Mac
 	// whose postflights never arrive keeps syncing; while this is not zero, ruledownload records when it served the
-	// sync's last page (LastPageServedAt), which can then count as the sync's completion (see SettleLastPageServed).
+	// sync's last page (LastPageServedAt), which can then count as the sync's completion (see SettleCompletion).
 	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
+	// How many syncs in a row before this one did not complete, by postflight or otherwise (see SettleCompletion).
+	SyncsSinceCompleted int `dynamodbav:"SyncsSinceCompleted,omitempty"`
+	// A sync number at or after the newest sync the Mac is proven to have applied (its rules hash changed, see
+	// SettleCompletion) and before any later sync, so that a rule first sent in a sync numbered up to it reached the
+	// Mac. 0 when none is known (see RemovalMayChangeTheMac).
+	AppliedThroughSyncSeq int `dynamodbav:"AppliedThroughSyncSeq,omitempty"`
 	// When ruledownload served this sync's last page; only recorded when it may count (see LastPageServedMayCount).
 	LastPageServedAt string `dynamodbav:"LastPageServedAt,omitempty"`
-	// Recorded with LastPageServedAt: this sync served nothing the completed syncs it started with had not already
+	// Recorded with LastPageServedAt: this sync served nothing the covering completed sync had not already
 	// served (see ServedNothingNew), so counting it as completed cannot lose anything.
 	LastPageServedNothingNew bool `dynamodbav:"LastPageServedNothingNew,omitempty"`
 	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
 	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
-	// tell whether the Mac applied this sync's rules (see SettleLastPageServed).
+	// tell whether the Mac applied this sync's rules (see SettleCompletion).
 	PreflightRulesHash string         `dynamodbav:"PreflightRulesHash,omitempty"`
 	ExpiresAfter       int64          `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType           types.DataType `dynamodbav:"DataType"`
 
-	// Whether the served last page counts as this sync's completion; decided by the next preflight
-	// (SettleLastPageServed), never stored.
+	// Whether the served last page counts as this sync's completion, and whether the Mac is proven to have applied
+	// this sync; decided by the next preflight (SettleCompletion), never stored.
 	lastPageApplied bool
+	appliedProven   bool
 }
 
 // CompletedSync identifies a sync that completed (see SyncState.Completed)
 type CompletedSync struct {
 	Seq         int    `dynamodbav:"Seq"`
 	PreflightAt string `dynamodbav:"PreflightAt"`
+	// The Mac is proven to have applied this sync: its rules hash changed (see SyncState.SettleCompletion).
+	Applied bool `dynamodbav:"Applied,omitempty"`
 }
 
 // Update fragments

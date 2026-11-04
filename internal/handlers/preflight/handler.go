@@ -95,7 +95,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if prevSyncState != nil {
 		// Whether the previous sync's served last page counts as its completion depends on the rules hash the Mac
 		// reports now; everything below reads whether it completed
-		prevSyncState.SettleLastPageServed(preflightRequest.RulesHash)
+		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
 	}
 
 	// Determine if a Clean sync should be performed based on the preflight request

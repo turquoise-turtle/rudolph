@@ -36,7 +36,7 @@ func CreateNewSyncState(
 // ContinueFrom carries what a sync of the machine hands over to the next one: its identifier, which syncs completed,
 // and the summary of the machine-specific rules the Mac may hold. prev is nil for a machine without a sync state (new,
 // or its row expired); the Mac then holds no machine-specific rules from Rudolph once its sync, a clean sync, completes.
-// Whether prev completed must already be settled (SettleLastPageServed).
+// Whether prev completed must already be settled (SettleCompletion).
 //
 // The tracking items of a machine whose sync state expired may still exist (they live longer, see
 // machinerules.DeliveryExpiry), and stand for rules the Mac still holds until that clean sync completes. When their
@@ -56,6 +56,8 @@ func (r *SyncStateRow) ContinueFrom(prev *SyncStateRow, emptyMachineRulesDigest 
 		r.PreviousCleanSync = prev.LastCompletedCleanSync()
 	}
 	r.SyncsWithoutPostflight = prev.NextSyncsWithoutPostflight()
+	r.SyncsSinceCompleted = prev.NextSyncsSinceCompleted()
+	r.AppliedThroughSyncSeq = prev.NextAppliedThroughSyncSeq(r.SyncSeq)
 	r.CompletedSyncs = prev.NextCompletedSyncs()
 	r.MachineRulesTracked = prev.MachineRulesTracked
 	r.MachineRulesTrackingRefreshedAt = prev.MachineRulesTrackingRefreshedAt

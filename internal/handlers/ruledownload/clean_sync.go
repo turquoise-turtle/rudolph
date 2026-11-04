@@ -77,7 +77,7 @@ func lastPageOrNext(
 	feedServedUpTo *time.Time,
 ) (*events.APIGatewayProxyResponse, error) {
 	if lastEvaluatedKey == nil {
-		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo)
+		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo, cursor.SyncSeq)
 		if err != nil {
 			return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 		}

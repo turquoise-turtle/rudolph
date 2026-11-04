@@ -21,56 +21,82 @@ const completedSyncsKept = 2
 
 // Completed reports whether this sync is known to have completed: a postflight was received for it, i.e. (unless the
 // postflight was a stray one) the Mac applied every rule it was sent, or the next preflight settled that its served
-// last page counts as its completion (see SettleLastPageServed).
+// last page counts as its completion (see SettleCompletion).
 func (s SyncState) Completed() bool {
 	return s.PostflightAt != "" || s.lastPageApplied
 }
 
-// unconfirmedLastPageCountsAfter is how many syncs in a row without postflight a sync must follow for its served last
-// page to count as its completion when nothing shows whether the Mac applied it (no rules hash, see
-// SettleLastPageServed).
-//
-// A last page served but never applied (the response was lost, or santad failed to apply it) then counts as
-// delivered. A feed rule or removal is lost only when two such syncs count, so after at least
-// unconfirmedLastPageCountsAfter + 2 failed syncs in a row; one counted sync, like a stray postflight, cannot lose
-// anything. Raising the value delays by as many syncs the point from which a Mac whose postflights never arrive stops
-// re-reading the rules feed since its last completed sync on every sync.
-const unconfirmedLastPageCountsAfter = 3
+// Fallbacks for a served last page that nothing shows was applied, counted in syncs before it since the Mac's last
+// completed sync of any kind (SyncsSinceCompleted). Each fallback count resets it, so every count needs fresh
+// unconfirmed syncs. A last page served but never applied (the response was lost, or santad failed to apply it) is
+// then taken as delivered. A feed rule or removal is lost only when two such syncs count after it was first sent, so
+// after 2 × (fallback + 1) syncs in a row whose last page was served but not applied; one counted sync, like a stray
+// postflight, cannot lose anything.
+const (
+	// For a Mac that reports no rules hash, nothing shows that it applied a sync, so without postflights its syncs
+	// first count through this. 3 is the largest value that keeps the cost of such a Mac bounded from its sixth sync
+	// on (one sync counts through it, the next as serving nothing new, and then the feed cursor moves); loss needs 8
+	// failed syncs in a row.
+	unconfirmedLastPageCountsAfter = 3
+	// For a Mac that reports a rules hash which did not change. A changed hash, or a sync that served nothing new,
+	// already counts; this only bounds what is sent again when a sync's content leaves the hash unchanged even when
+	// applied (an edit of a custom message or URL, which Santa leaves out of the hash, a rule the Mac already held, or
+	// the REMOVE of a rule it may hold but does not). Such content is sent again by up to 2 × (4 + 1) = 10 syncs. 4 is
+	// the smallest value with which 8 failed syncs in a row lose nothing (loss needs 10: with 3 it would need 8).
+	unchangedHashLastPageCountsAfter = 4
+)
 
 // LastPageServedMayCount reports whether serving this sync's last page could matter to the next sync, i.e. whether
 // ruledownload records when it served it (LastPageServedAt). For a clean sync it always may (see
-// LastCompletedCleanSync); clean syncs are rare, so this costs about one write per Mac per periodic clean sync. For
-// other syncs only after a sync without postflight (see SettleLastPageServed), so a Mac whose postflights arrive pays
+// LastCompletedCleanSync and SettleCompletion); clean syncs are rare, so this costs about one write per Mac per
+// periodic clean sync. For other syncs only after a sync without postflight, so a Mac whose postflights arrive pays
 // nothing on its other syncs.
 func (s SyncState) LastPageServedMayCount() bool {
 	return s.CleanSync || s.SyncsWithoutPostflight > 0
 }
 
-// ServedNothingNew reports whether this incremental sync, which served the rules feed up to the row stamped
-// feedServedUpTo and removals first sent in syncs up to removalsFirstSentUpTo (0 when it served none), served only
-// what the completed syncs it started with (CompletedSyncs) had already served. Counting such a sync as completed
-// cannot lose anything, whether or not the Mac applied it.
-//
-// The coverage is the start of the older of the last two completed syncs: either of the two, if it really reached the
-// Mac (one of them might be a stray postflight), read the feed up to at least that time, and sent every removal first
-// sent up to it. Feed rows stamped after it, or removals first sent after it, are new. With a single completed sync
-// (a new Mac) it is that sync's start; that trusts it no more than its next completed sync would, which makes the
-// cursor move to its start too.
-//
-// What this cannot see: a row written late with a stamp at or before the coverage (a writer whose clock was behind,
-// or a row not yet visible to the covering sync's eventually consistent read), which the covering sync may have
-// missed; this is why the feed cursor overlaps (FeedSyncCursorOverlap). A sync that served such a row and was not
-// applied still counts. The row is lost (until the next clean sync) only when two such syncs count in a row, i.e.
-// the Mac failed to apply two consecutive syncs just after a late write into the covering sync's overlap window.
-func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentUpTo int) bool {
-	var covering CompletedSync
+// coveringSync returns the completed sync that bounds what the Mac is known to hold from the rules feed and the
+// removals, from the point of view of this sync:
+//   - the newest completed sync proven applied (CompletedSync.Applied), if any: it reached the Mac, so the Mac holds
+//     what it served, i.e. feed rows stamped before its start and every removal first sent up to it;
+//   - otherwise the older of the last two completed syncs: either of the two, if it really reached the Mac (one of
+//     them might be a stray postflight), read the feed up to at least its start and sent those removals;
+//   - with a single completed sync (a new Mac), that sync; that trusts it no more than its next completed sync would,
+//     which makes the cursor move to its start too.
+func (s SyncState) coveringSync() (CompletedSync, bool) {
+	for _, completed := range s.CompletedSyncs {
+		if completed.Applied {
+			return completed, true
+		}
+	}
 	switch len(s.CompletedSyncs) {
 	case 0:
-		return false
+		return CompletedSync{}, false
 	case 1:
-		covering = s.CompletedSyncs[0]
+		return s.CompletedSyncs[0], true
 	default:
-		covering = s.CompletedSyncs[completedSyncsKept-1]
+		return s.CompletedSyncs[completedSyncsKept-1], true
+	}
+}
+
+// ServedNothingNew reports whether this incremental sync, which served the rules feed up to the row stamped
+// feedServedUpTo and removals that the Mac may act on first sent in syncs up to removalsFirstSentUpTo (0 when it
+// served none), served only what the covering sync (see coveringSync) had already served. Counting such a sync as
+// completed cannot lose anything, whether or not the Mac applied it.
+//
+// What this cannot see: a row written late with a stamp up to the covering sync's start (a writer whose clock was
+// behind, by up to the few minutes the CLI allows, a row not yet visible to that sync's eventually consistent read,
+// or a row written in the same second as that sync's start, as stamps have one-second resolution), which the
+// covering sync may have missed; this is why the feed cursor overlaps (FeedSyncCursorOverlap). A sync that served
+// such a row and was not applied still counts. The row is lost (until the next clean sync) only when two such syncs
+// count in a row, i.e. the Mac failed to apply two consecutive syncs just after a late write into the covering
+// sync's overlap window. A row stamped in the covering sync's own second is treated as covered, as it is no more
+// likely to be late than one stamped a minute earlier; leaving it out would make a Mac whose postflights never arrive
+// wait for a fallback count after every rule written in the second its covering sync started.
+func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentUpTo int) bool {
+	covering, ok := s.coveringSync()
+	if !ok {
+		return false
 	}
 	coveredUntil, err := clock.ParseRFC3339(covering.PreflightAt)
 	if err != nil {
@@ -79,40 +105,51 @@ func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentU
 	return !feedServedUpTo.After(coveredUntil) && removalsFirstSentUpTo <= covering.Seq
 }
 
-// SettleLastPageServed decides whether this sync counts as completed although no postflight arrived for it, because
-// ruledownload served its last page (LastPageServedAt). The next preflight of the machine calls it, with the rules
-// hash the Mac reports in that preflight, before anything reads Completed.
+// RemovalMayChangeTheMac reports whether sending the removal of a machine rule first sent in sync firstSentInSync (0
+// when unknown) may change the Mac's rules, so whether a sync that sends it may count as having served nothing new
+// only once the removal is covered.
 //
-// Santa ignores a failed postflight, so without this a Mac whose postflights never arrive (a broken postflight route,
-// a proxy dropping it) would never have a completed sync: its feed cursor would never advance, re-sending every feed
-// change since its first sync on every sync, and no removal would ever count as delivered. But a served last page is
-// no proof that the Mac applied it: the response may have been lost, or santad may have failed to apply it, and
-// counting such syncs as completed loses the feed rules and removals they carried.
+// For a Mac that reports a rules hash, a rule it got from a sync it applied changed its hash, so that sync, or a later
+// one, is proven applied (AppliedThroughSyncSeq). When no sync proven applied since the rule was first sent exists, the
+// Mac never received it (or already held an identical rule): its REMOVE changes nothing on the Mac, and waiting for a
+// changed hash or a covering sync would freeze its feed cursor and send the REMOVE for ever. A rule first sent before
+// this was tracked, or sent again while its removal was pending, may be held and its removal counts.
+func (s SyncState) RemovalMayChangeTheMac(firstSentInSync int) bool {
+	return s.PreflightRulesHash == "" || firstSentInSync == 0 || s.AppliedThroughSyncSeq >= firstSentInSync
+}
+
+// SettleCompletion decides, at the next preflight of the machine, what that preflight's rules hash shows about this
+// sync: whether the Mac applied it (CompletedSync.Applied, AppliedThroughSyncSeq), and whether it counts as completed
+// although no postflight arrived for it. Nothing may read Completed before it is called.
 //
-// So a served last page counts when:
-//   - the Mac's rules hash changed between this sync's preflight and the next: Santa applies a sync's rules at once,
-//     after downloading its last page, so a changed hash shows it applied them;
+// Santa applies all the rules of a sync in one transaction after downloading its last page, so when the hash the Mac
+// reports changed since this sync's preflight and the sync's last page was served (or its postflight arrived), the Mac
+// applied this sync.
+//
+// Santa ignores a failed postflight, so without more a Mac whose postflights never arrive (a broken postflight route,
+// a proxy dropping it) would never have a completed sync: its feed cursor would never advance, and no removal would
+// ever count as delivered. But a served last page is no proof that the Mac applied it, and counting such syncs as
+// completed loses the feed rules and removals they carried. So a served last page counts as the sync's completion
+// when:
+//   - the Mac is proven to have applied it (the hash changed);
 //   - or the sync served nothing new (LastPageServedNothingNew, see ServedNothingNew): counting it cannot lose
-//     anything, and it lets the feed cursor of a Mac whose rules stopped changing move on instead of re-sending the
-//     same rows on every sync;
-//   - or, when either preflight carried no hash (a Santa that does not report one, or a row written before the hash
-//     was recorded), the sync followed unconfirmedLastPageCountsAfter syncs without postflight.
-//
-// A sync that served something new and left the hash unchanged does not count, however many syncs failed in a row:
-// either the Mac did not apply it, or it already held what was sent; what it sent is sent again until a sync that
-// changes the Mac's rules, serves nothing new, or receives a postflight completes.
-func (s *SyncState) SettleLastPageServed(nextRulesHash string) {
+//     anything, and it lets the feed cursor of a Mac whose rules stopped changing move on;
+//   - or the sync followed enough unconfirmed syncs (SyncsSinceCompleted): unconfirmedLastPageCountsAfter when either
+//     preflight carried no hash (a Santa that does not report one, or a row written before the hash was recorded),
+//     unchangedHashLastPageCountsAfter when the hash did not change.
+func (s *SyncState) SettleCompletion(nextRulesHash string) {
+	served := s.PostflightAt != "" || s.LastPageServedAt != ""
+	hashed := s.PreflightRulesHash != "" && nextRulesHash != ""
+	s.appliedProven = served && hashed && nextRulesHash != s.PreflightRulesHash
 	switch {
 	case s.LastPageServedAt == "":
 		s.lastPageApplied = false
-	case s.PreflightRulesHash != "" && nextRulesHash != "" && nextRulesHash != s.PreflightRulesHash:
+	case s.appliedProven, s.LastPageServedNothingNew:
 		s.lastPageApplied = true
-	case s.LastPageServedNothingNew:
-		s.lastPageApplied = true
-	case s.PreflightRulesHash == "" || nextRulesHash == "":
-		s.lastPageApplied = s.SyncsWithoutPostflight >= unconfirmedLastPageCountsAfter
+	case !hashed:
+		s.lastPageApplied = s.SyncsSinceCompleted >= unconfirmedLastPageCountsAfter
 	default:
-		s.lastPageApplied = false
+		s.lastPageApplied = s.SyncsSinceCompleted >= unchangedHashLastPageCountsAfter
 	}
 }
 
@@ -126,19 +163,21 @@ func (s SyncState) ruledownloadFinished() bool {
 // the next sync, which uses it to schedule the periodic clean sync: this sync's LastCleanSync, unless this sync is a
 // clean sync that does not count. A nil sync state has none.
 //
-// A clean sync counts when it completed, or when its last page was served and an earlier clean sync counted
-// (PreviousCleanSync). The second case is for a Mac whose postflights never arrive: a clean sync that sends the rules
-// the Mac already holds leaves its rules hash unchanged, so it never counts as completed, and without this every
-// later sync would be a clean sync again (every rule, on every sync). Counting it for the schedule only cannot lose a
-// rule even if the Mac never applied it: what the feed cursor and removals rely on is still the completed syncs, and
-// the Mac got every rule through an earlier clean sync and the syncs since; at worst the periodic refresh comes one
-// period late. Without an earlier clean sync, the Mac may never have received the rules written before its first
-// one, so an unconfirmed clean sync does not count.
+// A clean sync counts when it completed, or when its last page was served, the Mac was already missing postflights
+// (SyncsWithoutPostflight) and an earlier clean sync counted (PreviousCleanSync). The second case is for a Mac whose
+// postflights never arrive: a clean sync that sends the rules the Mac already holds leaves its rules hash unchanged,
+// so it rarely counts as completed soon, and without this the following syncs would be clean syncs again (every
+// rule, on every sync). Counting it for the schedule only cannot lose a rule even if the Mac never applied it: what
+// the feed cursor and removals rely on is still the completed syncs, and the Mac got every rule through an earlier
+// clean sync and the syncs since; at worst the periodic refresh comes one period late. Without an earlier clean sync,
+// the Mac may never have received the rules written before its first one, so an unconfirmed clean sync does not count.
+// A Mac whose postflights arrive gets a postflight for a clean sync it performed, so one that did not complete (e.g.
+// its last response was lost) is retried at the next sync.
 func (s *SyncState) LastCompletedCleanSync() string {
 	if s == nil {
 		return ""
 	}
-	if s.CleanSync && !s.Completed() && (s.LastPageServedAt == "" || s.PreviousCleanSync == "") {
+	if s.CleanSync && !s.Completed() && (s.LastPageServedAt == "" || s.PreviousCleanSync == "" || s.SyncsWithoutPostflight == 0) {
 		return s.PreviousCleanSync
 	}
 	return s.LastCleanSync
@@ -152,6 +191,24 @@ func (s SyncState) NextSyncsWithoutPostflight() int {
 	return s.SyncsWithoutPostflight + 1
 }
 
+// NextSyncsSinceCompleted returns how many syncs in a row that did not complete the next sync of this machine follows.
+func (s SyncState) NextSyncsSinceCompleted() int {
+	if s.Completed() {
+		return 0
+	}
+	return s.SyncsSinceCompleted + 1
+}
+
+// NextAppliedThroughSyncSeq returns AppliedThroughSyncSeq for the next sync of this machine, numbered nextSyncSeq. When
+// this sync is proven applied, no sync of the machine lies between it and the next one, so every sync numbered below
+// nextSyncSeq that sent a rule did so no later than this one.
+func (s SyncState) NextAppliedThroughSyncSeq(nextSyncSeq int) int {
+	if s.appliedProven {
+		return nextSyncSeq - 1
+	}
+	return s.AppliedThroughSyncSeq
+}
+
 // NextSyncSeq returns the smallest identifier the next sync of this machine may have (see ContinueFrom).
 func (s SyncState) NextSyncSeq() int {
 	return s.SyncSeq + 1
@@ -162,7 +219,7 @@ func (s SyncState) NextSyncSeq() int {
 func (s SyncState) NextCompletedSyncs() []CompletedSync {
 	completed := append([]CompletedSync(nil), s.CompletedSyncs...)
 	if s.Completed() {
-		completed = append([]CompletedSync{{Seq: s.SyncSeq, PreflightAt: s.PreflightAt}}, completed...)
+		completed = append([]CompletedSync{{Seq: s.SyncSeq, PreflightAt: s.PreflightAt, Applied: s.appliedProven}}, completed...)
 	}
 	if len(completed) > completedSyncsKept {
 		completed = completed[:completedSyncsKept]
