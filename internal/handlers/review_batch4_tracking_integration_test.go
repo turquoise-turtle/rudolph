@@ -93,9 +93,10 @@ func TestReview_HashingMacWhosePostflightAlwaysFailsDoesNotRepeatCleanSyncs(t *t
 	host := newHost(t, machineA, failingStage(base, "postflight", 500, &alwaysFail))
 	host.IgnorePostflightFailure = true
 	host.HashRules = true
-	host.MustSync(t)
-	for i := 0; i < 3; i++ {
+	// An hour between syncs, so the rules leave the feed cursor's overlap and only re-sending would bring them back.
+	for i := 0; i < 4; i++ {
 		host.MustSync(t)
+		ageRows(t, time.Hour)
 	}
 	updateItem(t, "Machine#"+machineA, "SyncState", map[string]any{"LastCleanSync": clock.RFC3339(time.Now().Add(-30 * 24 * time.Hour))})
 
@@ -108,6 +109,7 @@ func TestReview_HashingMacWhosePostflightAlwaysFailsDoesNotRepeatCleanSyncs(t *t
 		}
 		syncTypes = append(syncTypes, res.SyncType)
 		received = append(received, res.RulesReceived)
+		ageRows(t, time.Hour)
 	}
 	clean := 0
 	for _, st := range syncTypes {
