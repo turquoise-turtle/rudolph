@@ -136,7 +136,7 @@ func TestReview_HashingMacIsNotStuckOnARemovalThatChangesNothing(t *testing.T) {
 	ageRows(t, time.Hour)
 	var lags []time.Duration
 	var received []int
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 12; i++ {
 		res := host.MustSync(t)
 		received = append(received, res.RulesReceived)
 		row := getItem(t, "Machine#"+machineA, "SyncState")
@@ -146,7 +146,9 @@ func TestReview_HashingMacIsNotStuckOnARemovalThatChangesNothing(t *testing.T) {
 		ageRows(t, time.Hour)
 	}
 	t.Logf("rules received %v; feed cursor lag behind each sync's start %v", received, lags)
-	if lags[len(lags)-1] > 3*time.Hour {
+	// Nothing proves a REMOVE changes nothing on the Mac (it may hold an identical rule from elsewhere), so only the
+	// unchanged-hash fallback lets these syncs count: the lag may grow for a few syncs, but not without bound.
+	if lags[len(lags)-1] > 8*time.Hour {
 		t.Errorf("feed cursor lags %v behind the sync, growing by the time between syncs: no sync counts as completed while a REMOVE that changes nothing on the Mac is pending", lags[len(lags)-1])
 	}
 	if received[len(received)-1] != 0 {

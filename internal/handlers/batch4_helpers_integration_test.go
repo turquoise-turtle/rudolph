@@ -26,7 +26,7 @@ import (
 // time in milliseconds (see syncstate.SyncState.SyncSeq).
 var (
 	timestampAttributes   = []string{"PreflightAt", "PostflightAt", "LastCleanSync", "FeedSyncCursor", "MachineRulesTrackingRefreshedAt", "Time", "RuledownloadStartedAt", "RuledownloadFinishedAt", "PreviousCleanSync", "LastPageServedAt"}
-	millisecondAttributes = []string{"SyncSeq", "RemovalFirstSentInSync"}
+	millisecondAttributes = []string{"SyncSeq", "RemovalFirstSentInSync", "FirstSentInSync", "AppliedThroughSyncSeq"}
 )
 
 func shiftTimestamp(v string, d time.Duration) string {
