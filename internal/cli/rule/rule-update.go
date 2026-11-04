@@ -47,6 +47,9 @@ func init() {
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			client := dynamodb.GetClient(table, region)
+			if err := tf.ResolveMachineID(client); err != nil {
+				return err
+			}
 			if err := clockcheck.Check(cmd, client); err != nil {
 				return err
 			}

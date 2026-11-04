@@ -17,8 +17,8 @@ func (t *TargetFlags) AddRuleTargetFlags(cmd *cobra.Command) {
 }
 
 // RequireExplicitTarget returns an error unless exactly one of --global and --machine was given, and the machine ID
-// is a UUID. It upper-cases the machine ID (see NormaliseMachineID).
-func (t *TargetFlags) RequireExplicitTarget() error {
+// is a UUID (see ValidateMachineIDFlag)
+func (t TargetFlags) RequireExplicitTarget() error {
 	if t.IsGlobal && t.MachineID != "" {
 		return errors.New("pass either --global or --machine <machine-id>, not both")
 	}
@@ -26,11 +26,7 @@ func (t *TargetFlags) RequireExplicitTarget() error {
 		return errors.New("pass --global to apply the rule to every machine, or --machine <machine-id> to apply it to one machine")
 	}
 	if t.MachineID != "" {
-		machineID, err := NormaliseMachineID(t.MachineID)
-		if err != nil {
-			return err
-		}
-		t.MachineID = machineID
+		return ValidateMachineIDFlag(t.MachineID)
 	}
 	return nil
 }
