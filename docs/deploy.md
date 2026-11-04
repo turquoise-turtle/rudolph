@@ -85,8 +85,8 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `mtls_truststore_version` | `""` | S3 object version of the truststore. |
 | `disable_execute_api_endpoint` | `false` | Disable the default `execute-api` endpoint so only the custom domain works. Always disabled when mTLS is enabled. |
 | `log_retention_in_days` | `30` | Retention of the Lambda and Firehose CloudWatch log groups. |
-| `api_throttling_rate_limit` | `100` | Requests per second the API stage accepts (all routes together) before answering HTTP 429. A sync is 4-6 requests about every 10 minutes, so 1,000 Macs average under 10 requests per second. Raise it for fleets of several thousand Macs. |
-| `api_throttling_burst_limit` | `200` | Requests accepted in a burst above the rate limit. |
+| `api_throttling_rate_limit` | `2000` | Requests per second the API stage accepts (all routes together) before answering HTTP 429. A sync is 4-6 requests about every 10 minutes, so 100,000 Macs average about 830 requests per second. It is a ceiling against floods, not a way to shed load: Santa retries a 429 (see [upgrading](#0d-check-the-api-throttle)). It counts against the account's regional API Gateway limit (10,000 requests per second by default). |
+| `api_throttling_burst_limit` | `4000` | Requests accepted at once before answering HTTP 429 (the token bucket size). Keep it at least the rate limit; the account's regional burst limit (5,000 by default) caps it. |
 | `alarm_sns_topic_arn` | `""` | SNS topic notified when an alarm fires or recovers. Without it the alarms exist in CloudWatch but notify no one. |
 
 ### Alarms
@@ -95,6 +95,7 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 | Alarm | Fires when |
 |---|---|
 | `api_5xx` | API Gateway answered 5 or more 5xx responses in 5 minutes. |
+| `api_4xx` | More than 5% of requests were answered 4xx in two 5-minute periods in a row: the stage is throttling (429; raise `api_throttling_rate_limit`) or the authorizer is rejecting sync tokens (401/403, e.g. after a botched token rotation). Throttled requests never reach Lambda, so this is the only alarm that sees them. |
 | `request_too_large` | A handler refused a request body above 6 MiB with HTTP 413. That host cannot sync or upload those events until the cause is fixed. |
 | `lambda_errors` | Any Rudolph Lambda function returned an error. |
 | `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
@@ -103,7 +104,9 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 
 The 413, timeout and event sink alarms use metric filters on the Lambda log groups, published in the
 `Rudolph/PREFIX` namespace. Request bodies above API Gateway's own 10 MB limit are refused before reaching Lambda and
-only show up in API Gateway's `4XXError` metric.
+only show up in API Gateway's `4XXError` metric (and so in `api_4xx`).
+
+The filters count the one line the API router logs per request, such as `POST /eventupload/{machine_id} machine=... status=413 duration=...`. The machine ID comes from the request path, so it is logged only when it is a UUID (otherwise `machine=invalid`); a client cannot add text or lines to the log that way. When a handler answers 500, it logs the cause on the line before, as `internal server error: "..."`.
 
 
 ### Install Dependencies
@@ -196,6 +199,11 @@ uploads a very large batch of events (a bundle scan of a huge application, or a 
 the limit and then never get those events uploaded. The `request_too_large` alarm (see [Alarms](#alarms)) fires on
 413 responses so a host stuck in that state is noticed rather than silently dropping events; set
 `alarm_sns_topic_arn` to be notified.
+
+### 0d. Check the API throttle
+The API stage is now throttled: above `api_throttling_rate_limit` requests per second (default 2,000, burst 4,000) API Gateway answers HTTP 429 before the request reaches Lambda. Santa does not wait for its next sync after a 429: it retries the request within the same sync stage, up to 5 attempts in all, backing off 4, 8, 16 and 32 seconds, and fails the sync only when the last attempt is throttled too. A throttle set below the fleet's peak load therefore does not shed load: throttled Macs come back within a minute and add retries on top of the normal traffic, and syncs that run out of attempts fail.
+
+Before upgrading, look at the peak of the `Count` metric of your API stage (`AWS/ApiGateway`, per minute, divided by 60) over a few weeks, including Monday mornings and after outages, and set `api_throttling_rate_limit` well above it, and `api_throttling_burst_limit` at least as high. The defaults leave room for about 100,000 Macs. Both count against the account's regional API Gateway limits (10,000 requests per second, burst 5,000 by default), which every API in the account and region shares; ask AWS for a higher quota if needed. The new `api_4xx` alarm (see [Alarms](#alarms)) fires when requests are throttled.
 
 ### 1. Roll out the sync token
 Once deployed, the API rejects every request without a valid token. Create a token (see above) and add its digest to

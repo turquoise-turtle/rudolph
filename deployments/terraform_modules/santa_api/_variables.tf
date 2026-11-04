@@ -185,14 +185,14 @@ variable "log_retention_in_days" {
 #
 variable "api_throttling_rate_limit" {
   type        = number
-  description = "Steady-state requests per second the API stage accepts, all routes together, before answering 429. A Santa sync is 4-6 requests about every 10 minutes, so 1,000 Macs average under 10 requests per second; the default leaves room for clean syncs and for a fleet coming back online at once."
-  default     = 100
+  description = "Steady-state requests per second the API stage accepts, all routes together, before answering 429. A Santa sync is 4-6 requests about every 10 minutes, so 100,000 Macs average about 830 requests per second; the default leaves room for clean syncs and for a fleet coming back online at once. It counts against the account's regional API Gateway limit (10,000 requests per second by default), shared with every other API in the account and region."
+  default     = 2000
 }
 
 variable "api_throttling_burst_limit" {
   type        = number
-  description = "Requests the API stage accepts in a burst above api_throttling_rate_limit before answering 429."
-  default     = 200
+  description = "Requests the API stage accepts at once (the token bucket size) before answering 429. Keep it at least api_throttling_rate_limit; the account's regional burst limit (5,000 by default) caps it."
+  default     = 4000
 }
 
 variable "alarm_sns_topic_arn" {

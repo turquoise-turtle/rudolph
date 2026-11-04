@@ -81,13 +81,15 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   }
 }
 
-# Stage-wide throttling, so that a misbehaving client or a flood of requests is answered with 429 by API Gateway
-# instead of running up Lambda and DynamoDB costs. Santa treats a 429 like any failed sync and retries at its next
-# sync interval.
+# Stage-wide throttling, so that a runaway client or a flood of requests is answered with 429 by API Gateway instead
+# of running up Lambda and DynamoDB costs. It is a ceiling against floods, not a way to shed normal load: Santa retries
+# a 429 within the same sync stage (up to 5 attempts, backing off 4, 8, 16 and 32 seconds), so throttling a busy fleet
+# adds requests, and a stage that is still throttled after the last attempt fails the whole sync.
 #
 # A sync is a preflight, zero or more eventuploads, one or more ruledownload pages and a postflight: roughly 4-6
-# requests every 10 minutes per Mac, so ~clients/100 requests per second on average. The defaults (100/s, burst 200)
-# cover a fleet of a few thousand Macs with headroom for clean syncs; raise them for larger fleets.
+# requests every 10 minutes per Mac, so ~clients/120 requests per second on average. The defaults (2,000/s, burst
+# 4,000) leave room for a fleet of 100,000 Macs (~830/s on average) with its clean syncs and morning peaks. The
+# api_4xx alarm (monitoring.tf) fires when requests are throttled.
 resource "aws_api_gateway_method_settings" "throttling" {
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id
   stage_name  = aws_api_gateway_stage.stage.stage_name

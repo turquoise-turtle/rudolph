@@ -1,9 +1,13 @@
 #
 # CloudWatch alarms for what breaks syncing or loses events.
 #
-# Kept deliberately small for cost: six alarms on standard metrics (free) plus three metrics extracted from the
-# Lambda logs by metric filters (filters are free, each extracted metric is billed as one custom metric). At
-# us-east-1 prices that is a few US dollars a month, independent of fleet size. See docs/costs.md.
+# Kept deliberately small for cost: seven alarms (six when no event sink is configured). Four alarm on AWS metrics,
+# which are published for free: api_5xx, api_4xx, lambda_errors and dynamodb_throttles. Three alarm on metrics that
+# metric filters extract from the Lambda logs: request_too_large, lambda_timeouts and event_sink_failures (filters
+# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 14 in
+# all, as lambda_errors sums one metric per function (7) and dynamodb_throttles adds reads and writes (2). At us-east-1
+# prices that is about 2.30 US dollars a month, independent of fleet size. Keep docs/costs.md and docs/deploy.md in
+# step with this list.
 #
 # Every alarm notifies var.alarm_sns_topic_arn when set, both when it fires and when it recovers.
 #
@@ -56,6 +60,37 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   evaluation_periods  = 1
   threshold           = 5
   comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    ApiName = aws_api_gateway_rest_api.api_gateway.name
+    Stage   = aws_api_gateway_stage.stage.stage_name
+  }
+
+  alarm_actions = local.alarm_actions
+  ok_actions    = local.alarm_actions
+}
+
+#
+# API Gateway: 4xx responses, above all 429 when the stage throttles (see aws_api_gateway_method_settings.throttling).
+# Throttled requests never reach Lambda, so this metric is the only place they show up. Santa retries a 429 within the
+# sync stage, so sustained throttling means syncs are failing, not just slowing down. The same metric also counts
+# 401/403 from the authorizer, which fire this alarm when hosts lose their sync token (a botched token rotation).
+#
+# The statistic is the average, i.e. the fraction of requests answered 4xx, so that the threshold does not depend on
+# the fleet's size; two periods in a row keep a short burst of scanner requests from firing it.
+#
+resource "aws_cloudwatch_metric_alarm" "api_4xx" {
+  alarm_name          = "${var.prefix}_rudolph_api_4xx"
+  alarm_description   = "More than 5% of the requests to Rudolph's API were answered 4xx for 10 minutes: throttling (429, raise api_throttling_rate_limit) or rejected sync tokens (401/403)."
+  namespace           = "AWS/ApiGateway"
+  metric_name         = "4XXError"
+  statistic           = "Average"
+  period              = 300
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  threshold           = 0.05
+  comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
   dimensions = {

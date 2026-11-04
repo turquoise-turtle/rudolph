@@ -144,13 +144,13 @@ variable "log_retention_in_days" {
 variable "api_throttling_rate_limit" {
   type        = number
   description = "Steady-state requests per second the API stage accepts before answering 429"
-  default     = 100
+  default     = 2000
 }
 
 variable "api_throttling_burst_limit" {
   type        = number
   description = "Requests the API stage accepts in a burst above api_throttling_rate_limit"
-  default     = 200
+  default     = 4000
 }
 
 variable "alarm_sns_topic_arn" {
