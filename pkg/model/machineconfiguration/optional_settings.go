@@ -2,7 +2,6 @@ package machineconfiguration
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/airbnb/rudolph/pkg/types"
@@ -16,7 +15,8 @@ const remountUsbModeAttribute = "RemountUsbMode"
 type MountFlags []string
 
 // UnmarshalDynamoDBAttributeValue reads a list or string set of flags, and also the comma separated string
-// that hand-edited rows and older tooling store. An attribute of another type is an error; the config decoder then
+// that hand-edited rows and older tooling store. An attribute of another type, or a list holding anything but
+// strings, is an error; the config decoder then
 // leaves the attribute out (with a log), so one odd row does not fail the preflight of every host using it, and
 // remembers that the remount flags are unknown (see SanitizeForSanta).
 func (m *MountFlags) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue) error {
@@ -26,8 +26,8 @@ func (m *MountFlags) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue)
 		for _, element := range value.Value {
 			flag, ok := element.(*awstypes.AttributeValueMemberS)
 			if !ok {
-				log.Printf("ignoring non-string element %T in RemountUsbMode", element)
-				continue
+				// Leaving the element out would remount with fewer restrictions than configured
+				return fmt.Errorf("RemountUsbMode holds a non-string element %T", element)
 			}
 			flags = append(flags, flag.Value)
 		}
