@@ -91,7 +91,7 @@ type Host struct {
 	// RulesHash is the hash of the rule database Santa reports in preflight and postflight, when not empty.
 	RulesHash string
 	// HashRules makes the host report a hash of its current rules instead of RulesHash, as Santa 2026.8 does: the
-	// hash changes whenever applying a sync changes the rule database, and only then.
+	// hash changes when applying a sync changes a rule's identifier, type, policy or CEL expression, and only then.
 	HashRules bool
 
 	// RequestCleanSync makes the next preflight ask for a clean sync (santactl sync --clean).
@@ -392,15 +392,16 @@ func (h *Host) Policy(ruleType, identifier string) string {
 	return h.Rules[RuleKey{Type: ruleType, Identifier: identifier}].Policy
 }
 
-// rulesHash is the rules_hash the host reports. The real hash covers Santa's rule table; this one covers the same
-// fields this simulation stores, which is all a server can observe.
+// rulesHash is the rules_hash the host reports. Like Santa 2026.8 (SNTRuleTable.mm executionRulesHashSerialized,
+// which hashes identifier, state, type, cel_expr and seatbelt_policy), it leaves out custom messages and URLs: a sync
+// that only changes those does not change the hash.
 func (h *Host) rulesHash() string {
 	if !h.HashRules {
 		return h.RulesHash
 	}
 	lines := make([]string, 0, len(h.Rules))
 	for k, r := range h.Rules {
-		lines = append(lines, strings.Join([]string{k.Type, k.Identifier, r.Policy, r.CustomMsg, r.CustomURL, r.CELExpr}, "\x00"))
+		lines = append(lines, strings.Join([]string{k.Type, k.Identifier, r.Policy, r.CELExpr}, "\x00"))
 	}
 	sort.Strings(lines)
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

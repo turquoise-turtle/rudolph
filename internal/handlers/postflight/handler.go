@@ -1,7 +1,7 @@
 package postflight
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 
@@ -55,8 +55,7 @@ func (h *PostPostflightHandler) Handle(request events.APIGatewayProxyRequest) (*
 	// syncstate.DeliveryConfirmed); a sync that never gets here advances neither.
 	err = h.syncStateUpdater.updatePostflight(machineID, postflightRequest)
 	if err != nil {
-		log.Printf("Failed to set final PostflightAt")
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(fmt.Errorf("recording the completed sync: %w", err), struct{}{})
 	}
 
 	// Machine rules marked for deletion are deleted by ruledownload once delivery is tracked; whether their removal

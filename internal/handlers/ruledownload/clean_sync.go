@@ -2,6 +2,8 @@ package ruledownload
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -30,8 +32,7 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 	ddbCursor := cursor.GetLastEvaluatedKey()
 	globalRules, lastEvaluatedKey, err := globalrules.GetPaginatedGlobalRules(d.queryer, cursor.BatchSize, ddbCursor)
 	if err != nil {
-		log.Printf("  GetPaginatedGlobalRules Error %s", err.Error())
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(fmt.Errorf("reading a page of global rules: %w", err), struct{}{})
 	}
 
 	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
@@ -78,8 +79,7 @@ func lastPageOrNext(
 	if lastEvaluatedKey == nil {
 		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo)
 		if err != nil {
-			log.Printf("  Failed to build the machine rules page: %v", err)
-			return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+			return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 		}
 		responseRules := DDBRulesToResponseRules(append(pageRules, machineSpecific...))
 		if cursor.Strategy == ruledownloadStrategyClean && len(responseRules) == 0 {
@@ -102,8 +102,7 @@ func lastPageOrNext(
 	jsonCursor, err := json.Marshal(nextCursor)
 	if err != nil {
 		// The error is not logged: json.UnsupportedValueError embeds the value it could not marshal.
-		log.Printf("  Failed to marshal the ruledownload cursor")
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(errors.New("failed to marshal the ruledownload cursor"), struct{}{})
 	}
 
 	return response.APIResponse(

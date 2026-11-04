@@ -20,7 +20,7 @@ type FeedRuleRow struct {
 	dynamodb.PrimaryKey
 	rules.SantaRule
 	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType     types.DataType `dynamodbav:"DataType"`
+	DataType     types.DataType `dynamodbav:"DataType,omitempty"`
 }
 
 func GetSyncStateExpiresAfter(timeProvider clock.TimeProvider) int64 {

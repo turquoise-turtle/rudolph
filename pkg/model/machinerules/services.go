@@ -20,11 +20,19 @@ type ConcreteMachineRulesUpdater struct {
 	TimeProvider clock.TimeProvider
 }
 
+// UpdateMachineRulePolicy changes the policy of an existing machine rule and keeps its expiry, so that a permanent rule
+// stays permanent and an expiring rule does not get a new lifetime.
+//
+// When Updater can write conditionally (the DynamoDB client can) and TimeProvider is set, the write only happens while
+// the rule has not expired (see UpdateMachineRulePolicyUnlessExpired), so a rule that expires between being read and
+// being written is not reported as updated.
+//
 // @deprecated
 func (c ConcreteMachineRulesUpdater) UpdateMachineRulePolicy(machineID string, sha256 string, ruleType types.RuleType, rulePolicy types.Policy) error {
-	expires := c.TimeProvider.Now().Add(time.Hour * MachineRuleDefaultExpirationHours).UTC()
-
-	return UpdateMachineRule(c.Updater, machineID, sha256, ruleType, rulePolicy, expires)
+	if conditional, ok := c.Updater.(dynamodb.UpdateItemIfAPI); ok && c.TimeProvider != nil {
+		return UpdateMachineRulePolicyUnlessExpired(conditional, c.TimeProvider.Now(), machineID, sha256, ruleType, rulePolicy)
+	}
+	return UpdateMachineRule(c.Updater, machineID, sha256, ruleType, rulePolicy, time.Time{})
 }
 
 // This service exposes all machine rules access methods

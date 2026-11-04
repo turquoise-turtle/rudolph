@@ -49,8 +49,7 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 
 	machineRules, err := d.machineRules.rules(machineID, nil, nil)
 	if err != nil {
-		log.Printf("  Failed to build the machine rules page: %v", err)
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// The lack of a cursor in this response signals to the sensor that there is no more stuff to paginate over.

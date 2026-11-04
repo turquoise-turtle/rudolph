@@ -1,8 +1,8 @@
 package ruledownload
 
 import (
+	"fmt"
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -33,8 +33,7 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 
 	feedRules, lastEvaluatedKey, err := feedrules.GetPaginatedFeedRules(d.queryer, feedPageSize, ddbCursor)
 	if err != nil {
-		log.Printf("  GetPaginatedFeedRules Error %s", err.Error())
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(fmt.Errorf("reading a page of feed rules: %w", err), struct{}{})
 	}
 
 	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.

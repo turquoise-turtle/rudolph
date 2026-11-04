@@ -26,6 +26,9 @@ func init() {
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
+			if err := tf.ResolveMachineID(dynamodbClient); err != nil {
+				return err
+			}
 			timeProvider := clock.ConcreteTimeProvider{}
 
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)

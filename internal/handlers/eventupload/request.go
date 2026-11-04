@@ -26,7 +26,7 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
-	if request.Headers["content-type"] != "application/json" && request.Headers["Content-Type"] != "application/json" {
+	if !apirequest.HasJSONBody(request) {
 		errorResponse, err = response.APIResponse(http.StatusUnsupportedMediaType, response.ErrInvalidMediaTypeResponse)
 		return
 	}
