@@ -38,7 +38,7 @@ type SyncStateRow struct {
 //     apply now have the same digest, nothing was added or stopped applying, and ruledownload reads nothing more.
 //     Empty when unknown (rows written by versions of Rudolph that did not track delivery). MachineRulesTrackedDirty
 //     while the items may differ from the last digest written: ruledownload sets it before it changes the items, and
-//     preflight sets it when the previous sync did not complete (its ruledownload may still be running, or died).
+//     preflight sets it when the previous sync's ruledownload did not finish (it may still be running, or died).
 //     Every write of the digest by ruledownload is conditional on the row still being its sync's (SyncSeq).
 type SyncState struct {
 	MachineID      string `dynamodbav:"MachineID"`
@@ -67,12 +67,20 @@ type SyncState struct {
 	PreviousCleanSync string `dynamodbav:"PreviousCleanSync,omitempty"`
 	// How many syncs in a row before this one received no postflight. Santa ignores a failed postflight, so a Mac
 	// whose postflights never arrive keeps syncing; while this is not zero, ruledownload records when it served the
-	// sync's last page (LastPageServedAt), which then counts as the sync's completion.
+	// sync's last page (LastPageServedAt), which can then count as the sync's completion (see SettleLastPageServed).
 	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
-	// When ruledownload served this sync's last page; only recorded while SyncsWithoutPostflight is not zero.
-	LastPageServedAt string         `dynamodbav:"LastPageServedAt,omitempty"`
-	ExpiresAfter     int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType         types.DataType `dynamodbav:"DataType"`
+	// When ruledownload served this sync's last page; only recorded when it may count (see LastPageServedMayCount).
+	LastPageServedAt string `dynamodbav:"LastPageServedAt,omitempty"`
+	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
+	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
+	// tell whether the Mac applied this sync's rules (see SettleLastPageServed).
+	PreflightRulesHash string         `dynamodbav:"PreflightRulesHash,omitempty"`
+	ExpiresAfter       int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType           types.DataType `dynamodbav:"DataType"`
+
+	// Whether the served last page counts as this sync's completion; decided by the next preflight
+	// (SettleLastPageServed), never stored.
+	lastPageApplied bool
 }
 
 // CompletedSync identifies a sync that completed (see SyncState.Completed)

@@ -19,16 +19,63 @@ const FeedSyncCursorOverlap = 10 * time.Minute
 // completed syncs sent it, so a single stray postflight cannot make Rudolph believe a Mac got what it never received.
 const completedSyncsKept = 2
 
-// Completed reports whether a postflight was received for this sync, i.e. (unless the postflight was a stray one) the
-// Mac applied every rule it was sent.
-//
-// A sync that follows syncs without postflight also counts as completed once ruledownload served its last page
-// (LastPageServedAt): Santa ignores a failed postflight, so without this a Mac whose postflights never arrive (a
-// broken postflight route, a proxy dropping it) would never have a completed sync. Its feed cursor would never
-// advance, re-sending every feed change since its first sync on every sync, and no removal would ever count as
-// delivered. A last page that was served but never applied is then taken as delivered; like a stray postflight, one
-// such sync cannot lose anything, as a change counts as delivered only once two completed syncs sent it.
+// Completed reports whether this sync is known to have completed: a postflight was received for it, i.e. (unless the
+// postflight was a stray one) the Mac applied every rule it was sent, or the next preflight settled that its served
+// last page counts as its completion (see SettleLastPageServed).
 func (s SyncState) Completed() bool {
+	return s.PostflightAt != "" || s.lastPageApplied
+}
+
+// unconfirmedLastPageCountsAfter is how many syncs in a row without postflight a sync must follow for its served last
+// page to count as its completion when nothing shows whether the Mac applied it (no rules hash, see
+// SettleLastPageServed).
+//
+// A last page served but never applied (the response was lost, or santad failed to apply it) then counts as
+// delivered. A feed rule or removal is lost only when two such syncs count, so after at least
+// unconfirmedLastPageCountsAfter + 2 failed syncs in a row; one counted sync, like a stray postflight, cannot lose
+// anything. Raising the value delays by as many syncs the point from which a Mac whose postflights never arrive stops
+// re-reading the rules feed since its last completed sync on every sync.
+const unconfirmedLastPageCountsAfter = 3
+
+// LastPageServedMayCount reports whether this sync's served last page could count as its completion, i.e. whether
+// ruledownload records when it served it (LastPageServedAt). It never does after a sync that received a postflight.
+func (s SyncState) LastPageServedMayCount() bool {
+	if s.SyncsWithoutPostflight == 0 {
+		return false
+	}
+	return s.PreflightRulesHash != "" || s.SyncsWithoutPostflight >= unconfirmedLastPageCountsAfter
+}
+
+// SettleLastPageServed decides whether this sync counts as completed although no postflight arrived for it, because
+// ruledownload served its last page (LastPageServedAt). The next preflight of the machine calls it, with the rules
+// hash the Mac reports in that preflight, before anything reads Completed.
+//
+// Santa ignores a failed postflight, so without this a Mac whose postflights never arrive (a broken postflight route,
+// a proxy dropping it) would never have a completed sync: its feed cursor would never advance, re-sending every feed
+// change since its first sync on every sync, and no removal would ever count as delivered. But a served last page is
+// no proof that the Mac applied it: the response may have been lost, or santad may have failed to apply it, and
+// counting such syncs as completed loses the feed rules and removals they carried.
+//
+// So a served last page counts when the Mac's rules hash changed between this sync's preflight and the next: Santa
+// applies a sync's rules at once, after downloading its last page, so a changed hash shows it applied them. An
+// unchanged hash proves nothing either way (the pages may have changed nothing on the Mac), so the sync does not count
+// and what it sent is sent again, until a sync that changes the Mac's rules, or a postflight, completes. When either
+// preflight carried no hash (a Santa that does not report one, or a row written before the hash was recorded), the
+// page counts once the sync followed unconfirmedLastPageCountsAfter syncs without postflight.
+func (s *SyncState) SettleLastPageServed(nextRulesHash string) {
+	switch {
+	case s.LastPageServedAt == "":
+		s.lastPageApplied = false
+	case s.PreflightRulesHash != "" && nextRulesHash != "":
+		s.lastPageApplied = nextRulesHash != s.PreflightRulesHash
+	default:
+		s.lastPageApplied = s.SyncsWithoutPostflight >= unconfirmedLastPageCountsAfter
+	}
+}
+
+// ruledownloadFinished reports whether this sync's ruledownload has no tracking writes still to come: it received a
+// postflight, or ruledownload recorded serving the last page, which it does after its tracking writes.
+func (s SyncState) ruledownloadFinished() bool {
 	return s.PostflightAt != "" || s.LastPageServedAt != ""
 }
 

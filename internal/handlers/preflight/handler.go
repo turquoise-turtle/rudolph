@@ -92,6 +92,11 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
 	}
+	if prevSyncState != nil {
+		// Whether the previous sync's served last page counts as its completion depends on the rules hash the Mac
+		// reports now; everything below reads whether it completed
+		prevSyncState.SettleLastPageServed(preflightRequest.RulesHash)
+	}
 
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
@@ -138,6 +143,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		lastCleanSyncTime,
 		machineConfiguration.BatchSize,
 		feedSyncCursor,
+		preflightRequest.RulesHash,
 		prevSyncState,
 	)
 

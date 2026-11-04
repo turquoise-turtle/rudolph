@@ -140,10 +140,10 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		}
 	}
 
-	// This is the sync's last page. After syncs that received no postflight, record that it was served, which counts
-	// as the sync's completion (see syncstate.SyncState.Completed). It is recorded after the tracking above, so a sync
-	// counted as completed never has tracking writes still to come.
-	if syncState.SyncSeq > 0 && syncState.SyncsWithoutPostflight > 0 {
+	// This is the sync's last page. After syncs that received no postflight, record that it was served, which the next
+	// preflight may count as the sync's completion (see syncstate.SyncState.SettleLastPageServed). It is recorded after
+	// the tracking above, so a sync whose last page was served never has tracking writes still to come.
+	if syncState.SyncSeq > 0 && syncState.LastPageServedMayCount() {
 		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq)
 		if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
 			// Not fatal: the sync is then only counted as completed if its postflight arrives
