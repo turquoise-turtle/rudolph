@@ -50,7 +50,7 @@ Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `sil
 `cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac).
 There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
 
-The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits) and is upper-cased before use, as Santa sends the Mac's hardware UUID in upper case and the server matches machine IDs exactly. Every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else. The CLI warns when no Mac has ever synced under the ID, for example a Mac configured to sync under a lower-case ID.
+The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits); every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else, as the API does. It can be typed in any case. The server keeps a Mac's machine ID exactly as the Mac sends it, which is upper case for the hardware UUID but can be any case when Santa's `MachineID` setting is used, so the CLI looks the ID up in the case typed, in upper case and in lower case, and uses the first of these that a Mac has synced under; failing that, one with a machine configuration; failing that, one with machine rules (older CLIs stored the ID as typed); and otherwise upper case. The lookup is one DynamoDB BatchGetItem request, plus at most three one-item queries when nothing is known about the machine. The CLI warns when no Mac has ever synced under the ID it uses.
 
 Machine-specific rules expire after 24 hours unless created with:
 * `--expires <when>` — a duration from now (`48h`, `90m`) or an RFC 3339 time (`2026-12-31T18:00:00Z`); it must be in
@@ -63,7 +63,7 @@ From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` ac
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.
 
-Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. A machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated; create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
+Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. A machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated, including one that expires while the CLI waits for confirmation (the write is conditional on the rule not having expired); create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
 
 Removing a machine-specific rule restores
 the global rule for the same target, including its fields; so does its expiry. Without a global rule Santa can apply,
