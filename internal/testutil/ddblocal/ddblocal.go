@@ -107,7 +107,7 @@ func start() (func(), error) {
 
 	cmd := exec.Command(java,
 		"-Djava.library.path="+filepath.Join(dir, "DynamoDBLocal_lib"),
-		"-jar", jar, "-inMemory", "-sharedDb", "-port", fmt.Sprint(port))
+		"-jar", jar, "-inMemory", "-sharedDb", "-disableTelemetry", "-port", fmt.Sprint(port))
 	cmd.Dir = dir
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
