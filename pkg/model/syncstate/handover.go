@@ -26,26 +26,28 @@ func (s SyncState) Completed() bool {
 	return s.PostflightAt != "" || s.lastPageApplied
 }
 
-// unconfirmedLastPageCountsAfter is the fallback for a served last page that nothing shows was applied: the sync
-// counts as completed once more than this many syncs in a row, itself included, served the newest content it served
-// without completing (LastPageServedRun, see NextContentRun).
+// fallbackContentServings is the fallback for an incremental sync whose last page was served but that nothing shows
+// was applied. A feed rule or removal is lost (until the next clean sync) only when two syncs that carried it count as
+// completed without the Mac applying either: the cursor then moves past it, and a removal counts as delivered. So:
+//   - after a completed sync that did not count through the fallback (a postflight, a changed hash, or a sync that
+//     served nothing new), the next sync whose last page was served counts at once: whatever it carried, it is the
+//     first count to carry it;
+//   - after a sync that counted through the fallback, the next one counts only once the newest content that sync
+//     carried has been served by fallbackContentServings syncs (FallbackContentServings, counted from its first
+//     serving with LastPageServedRun). Content first served after that sync has not been counted yet, and older
+//     content has been served longer.
 //
-// A last page served but never applied (the response was lost, or santad failed to apply it) is then taken as
-// delivered. A feed rule or removal is lost (until the next clean sync) only when two syncs that carried it count
-// without the Mac applying either. The run starts again at every completion and whenever a sync serves newer
-// content, so after content is first served each count needs unconfirmedLastPageCountsAfter + 1 syncs of its own:
-// loss needs 2 × (3 + 1) = 8 syncs in a row whose last page was served but not applied, and 9 when the first of them
-// is also the first sync whose postflight did not arrive (its last page is not recorded). The same bound applies with
-// or without a rules hash. 3 is the smallest value with which 8 such syncs after a postflight lose nothing (with 2,
-// 7 do).
+// So no content is carried by a second count before fallbackContentServings syncs served it: it is lost only after 8
+// syncs in a row that served it failed after their last page was served, or 9 when the first of them is also the
+// first sync whose postflight did not arrive (its last page is not recorded, so its serving is not counted), however
+// the content arrives, with or without a rules hash. 8 is the smallest value with which 8 such syncs after a
+// postflight lose nothing (with 7, the eighth is the second count).
 //
-// It bounds what is sent again when a sync's content leaves the Mac's rules hash unchanged even though the Mac
-// applied it: an edit of a custom message or URL (Santa leaves them out of the hash), a rule the Mac already held, or
-// the REMOVE of a rule it does not hold. Such content is sent again by up to 8 syncs, then two fallback counts move
-// the feed cursor past it, or confirm the removal. A Mac that reports no hash has nothing else that shows a sync was
-// applied, so while new content keeps arriving its run keeps starting again and its feed cursor stays where its last
-// completed sync left it.
-const unconfirmedLastPageCountsAfter = 3
+// It also bounds the cost: whatever arrives, a sync counts at least every 8 syncs, so the feed cursor falls at most
+// about 16 syncs behind, and content that leaves the Mac's rules hash unchanged even though the Mac applied it (an
+// edit of a custom message or URL, which Santa leaves out of the hash, a rule written again as it was, a REMOVE of a
+// rule the Mac does not hold) is sent again by up to 8 syncs.
+const fallbackContentServings = 8
 
 // LastPageServedMayCount reports whether serving this sync's last page could matter to the next sync, i.e. whether
 // ruledownload records when it served it (LastPageServedAt). For a clean sync it always may (see
@@ -56,8 +58,8 @@ func (s SyncState) LastPageServedMayCount() bool {
 }
 
 // NextContentRun returns LastPageServedRun for this sync, given whether it served content the previous sync did not
-// serve: a feed row stamped after the previous sync started (PreviousPreflightAt), or a removal it sent for the first
-// time. The run counts the syncs in a row that served the same newest content without completing: it starts again at
+// serve: a feed row stamped after the previous sync started (PreviousPreflightAt), a removal it sent for the first
+// time, or, for a clean sync, any rule (it serves rules no feed position shows as new). The run counts the syncs in a row that served the same newest content without completing: it starts again at
 // 1 when this sync served newer content, or when the previous sync completed or recorded no served last page
 // (ContentRun 0).
 func (s SyncState) NextContentRun(servedNewContent bool) int {
@@ -109,9 +111,10 @@ func (s SyncState) coveringSync() (CompletedSync, bool) {
 // or a row written in the same second as that sync's start, as stamps have one-second resolution), which the
 // covering sync may have missed; this is why the feed cursor overlaps (FeedSyncCursorOverlap). A sync that served
 // such a row and was not applied still counts, and when the row is older than the newest completed sync's start, that
-// count moves the cursor past it: the row is lost (until the next clean sync) if the first sync to serve it fails
-// after its last page was served. A stray postflight for that sync loses it the same way, so this keeps the guarantee
-// late rows had before. A row stamped in the covering sync's own second is treated as covered, as it is no more
+// count moves the cursor past it: on a Mac whose postflights do not arrive, the row is lost (until the next clean
+// sync) if the first sync to serve it fails after its last page was served, as if a stray postflight arrived for every
+// failed sync. The window is narrow: minutes for a CLI whose clock is behind, about a second otherwise. A row stamped
+// in the covering sync's own second is treated as covered, as it is no more
 // likely to be late than one stamped a minute earlier; leaving it out would make a Mac whose postflights never arrive
 // wait for a fallback count after every rule written in the second its covering sync started.
 func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentUpTo int) bool {
@@ -133,7 +136,9 @@ func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentU
 // Santa applies all the rules of a sync in one transaction after downloading its last page, and only a sync's apply
 // changes a Mac's rules between two of its preflights. So when the hash the Mac reports changed since this sync's
 // preflight, the Mac applied this sync, whether or not ruledownload recorded serving its last page (it does not after
-// a sync whose postflight arrived).
+// a sync whose postflight arrived). Known exotic case: Santa stops waiting for santad's apply after 300 seconds and
+// goes on; an apply that only finishes after the next sync's preflight changes the hash between that sync's preflight
+// and the one after, so that later sync is marked applied instead of the one whose rules changed the Mac.
 //
 // Santa ignores a failed postflight, so without more a Mac whose postflights never arrive (a broken postflight route,
 // a proxy dropping it) would never have a completed sync: its feed cursor would never advance, and no removal would
@@ -142,12 +147,12 @@ func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentU
 //   - the Mac is proven to have applied it (the hash changed);
 //   - or its last page was served and it served nothing new (LastPageServedNothingNew, see ServedNothingNew):
 //     counting it cannot lose anything, and it lets the feed cursor of a Mac whose rules stopped changing move on;
-//   - or its last page was served, it is not a clean sync, and the fallback applies (see
-//     unconfirmedLastPageCountsAfter). A clean sync never counts this way: until one completes, the Mac may lack
-//     every rule written before it (e.g. after its sync state expired), which the incremental syncs after it would
-//     never send.
+//   - or its last page was served, it is not a clean sync, and the fallback allows it (see fallbackContentServings).
+//     A clean sync never counts this way: until one completes, the Mac may lack every rule written before it (e.g.
+//     after its sync state expired), which the incremental syncs after it would never send.
 func (s *SyncState) SettleCompletion(nextRulesHash string) {
 	s.appliedProven = s.PreflightRulesHash != "" && nextRulesHash != "" && nextRulesHash != s.PreflightRulesHash
+	s.countedThroughFallback = false
 	switch {
 	case s.appliedProven:
 		s.lastPageApplied = true
@@ -156,7 +161,9 @@ func (s *SyncState) SettleCompletion(nextRulesHash string) {
 	case s.LastPageServedNothingNew:
 		s.lastPageApplied = true
 	default:
-		s.lastPageApplied = !s.CleanSync && s.LastPageServedRun > unconfirmedLastPageCountsAfter
+		s.countedThroughFallback = s.PostflightAt == "" && !s.CleanSync &&
+			(s.FallbackContentServings == 0 || s.FallbackContentServings >= fallbackContentServings)
+		s.lastPageApplied = s.countedThroughFallback
 	}
 }
 
@@ -196,6 +203,23 @@ func (s SyncState) NextSyncsWithoutPostflight() int {
 		return 0
 	}
 	return s.SyncsWithoutPostflight + 1
+}
+
+// NextFallbackContentServings returns FallbackContentServings for the next sync of this machine, counting the next
+// sync's serving: after a sync that counted through the fallback, one more than its run; after any other completed
+// sync, 0; otherwise one more than this sync's, when this sync recorded serving its last page (a sync that did not is
+// not counted as a serving, which only delays the next count).
+func (s SyncState) NextFallbackContentServings() int {
+	switch {
+	case s.countedThroughFallback:
+		return s.LastPageServedRun + 1
+	case s.Completed():
+		return 0
+	case s.FallbackContentServings > 0 && s.LastPageServedAt != "":
+		return s.FallbackContentServings + 1
+	default:
+		return s.FallbackContentServings
+	}
 }
 
 // NextContentRunCarried returns ContentRun for the next sync of this machine: this sync's run, unless it completed or

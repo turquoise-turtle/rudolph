@@ -72,6 +72,10 @@ type SyncState struct {
 	// When the previous sync of the machine started (its PreflightAt), for this sync's ruledownload to tell which feed
 	// rows it serves for the first time (see ContentRun). Empty for a machine's first sync.
 	PreviousPreflightAt string `dynamodbav:"PreviousPreflightAt,omitempty"`
+	// When the last completed sync before this one counted through the fallback: how many syncs, this one included,
+	// have served the newest content it carried. 0 when the last completed sync did not count through the fallback.
+	// See SettleCompletion.
+	FallbackContentServings int `dynamodbav:"FallbackContentServings,omitempty"`
 	// How many syncs in a row before this one served the newest content the previous sync served without completing
 	// (the previous sync's LastPageServedRun, or 0 when it completed or recorded none). See NextContentRun.
 	ContentRun int `dynamodbav:"ContentRun,omitempty"`
@@ -81,8 +85,7 @@ type SyncState struct {
 	// served (see ServedNothingNew), so counting it as completed cannot lose anything.
 	LastPageServedNothingNew bool `dynamodbav:"LastPageServedNothingNew,omitempty"`
 	// Recorded with LastPageServedAt: how many syncs in a row, this one included, served the newest content this sync
-	// served without completing (see NextContentRun); the fallback counts the sync once it exceeds
-	// unconfirmedLastPageCountsAfter.
+	// served without completing (see NextContentRun).
 	LastPageServedRun int `dynamodbav:"LastPageServedRun,omitempty"`
 	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
 	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
@@ -91,10 +94,11 @@ type SyncState struct {
 	ExpiresAfter       int64          `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType           types.DataType `dynamodbav:"DataType"`
 
-	// Whether the served last page counts as this sync's completion, and whether the Mac is proven to have applied
-	// this sync; decided by the next preflight (SettleCompletion), never stored.
-	lastPageApplied bool
-	appliedProven   bool
+	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
+	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.
+	lastPageApplied        bool
+	appliedProven          bool
+	countedThroughFallback bool
 }
 
 // CompletedSync identifies a sync that completed (see SyncState.Completed)

@@ -161,7 +161,9 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		// Machine rules that apply are sent on every sync whether or not earlier ones completed, so only the feed rows
 		// and the removals decide whether this sync served anything new
 		nothingNew := feedServedUpTo != nil && syncState.ServedNothingNew(*feedServedUpTo, removalsFirstSentUpTo)
-		newContent := removalsFirstSentUpTo == syncState.SyncSeq ||
+		// A clean sync serves every global rule, including rules written just before it that no earlier sync served,
+		// which neither its feed position nor the next sync's would show as new
+		newContent := syncState.CleanSync || removalsFirstSentUpTo == syncState.SyncSeq ||
 			(feedServedUpTo != nil && syncState.ServesFeedRowsFirst(*feedServedUpTo))
 		run := syncState.NextContentRun(newContent)
 		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew, run)
