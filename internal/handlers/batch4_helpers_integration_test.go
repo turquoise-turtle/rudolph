@@ -25,7 +25,7 @@ import (
 // timestampAttributes hold RFC 3339 times; millisecondAttributes hold sync numbers, which are at least the preflight
 // time in milliseconds (see syncstate.SyncState.SyncSeq).
 var (
-	timestampAttributes   = []string{"PreflightAt", "PostflightAt", "LastCleanSync", "FeedSyncCursor", "MachineRulesTrackingRefreshedAt", "Time", "RuledownloadStartedAt", "RuledownloadFinishedAt"}
+	timestampAttributes   = []string{"PreflightAt", "PostflightAt", "LastCleanSync", "FeedSyncCursor", "MachineRulesTrackingRefreshedAt", "Time", "RuledownloadStartedAt", "RuledownloadFinishedAt", "PreviousCleanSync", "LastPageServedAt"}
 	millisecondAttributes = []string{"SyncSeq", "RemovalFirstSentInSync"}
 )
 
