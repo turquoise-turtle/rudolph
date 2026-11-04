@@ -81,14 +81,18 @@ resource "aws_api_gateway_deployment" "api_deployment" {
   }
 }
 
-# Stage-wide throttling, so that a runaway client or a flood of requests is answered with 429 by API Gateway instead
-# of running up Lambda and DynamoDB costs. It is a ceiling against floods, not a way to shed normal load: Santa retries
-# a 429 within the same sync stage (up to 5 attempts, backing off 4, 8, 16 and 32 seconds), so throttling a busy fleet
-# adds requests, and a stage that is still throttled after the last attempt fails the whole sync.
+# Throttling, so that a runaway client or a flood of requests is answered with 429 by API Gateway instead of running up
+# Lambda and DynamoDB costs. method_path "*/*" gives every method (6 routes) its own limit and token bucket; the limits
+# are not shared between routes. It is a ceiling against floods, not a way to shed normal load: Santa retries a 429
+# within the same sync stage (up to 5 attempts, backing off 4, 8, 16 and 32 seconds), so throttling a busy fleet adds
+# requests, and a stage that is still throttled after the last attempt fails the whole sync.
 #
 # A sync is a preflight, zero or more eventuploads, one or more ruledownload pages and a postflight: roughly 4-6
-# requests every 10 minutes per Mac, so ~clients/120 requests per second on average. The defaults (2,000/s, burst
-# 4,000) leave room for a fleet of 100,000 Macs (~830/s on average) with its clean syncs and morning peaks. The
+# requests every 10 minutes per Mac, one or two per route, so ~clients/600 to clients/300 requests per second on each
+# route. The default of 2,000/s per route (burst 2,000) leaves room for a fleet of 100,000 Macs (~170-330/s per route)
+# with its clean syncs and morning peaks. All routes together can take 12,000/s, above the account's regional limit
+# (10,000/s, burst 5,000 by default), so a flood across every route can still throttle other APIs in the account and
+# region; the burst is kept at the rate so that a burst on one route cannot take most of the account's burst. The
 # api_4xx alarm (monitoring.tf) fires when requests are throttled.
 resource "aws_api_gateway_method_settings" "throttling" {
   rest_api_id = aws_api_gateway_rest_api.api_gateway.id

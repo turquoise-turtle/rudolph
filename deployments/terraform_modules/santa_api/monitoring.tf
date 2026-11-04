@@ -4,10 +4,10 @@
 # Kept deliberately small for cost: seven alarms (six when no event sink is configured). Four alarm on AWS metrics,
 # which are published for free: api_5xx, api_4xx, lambda_errors and dynamodb_throttles. Three alarm on metrics that
 # metric filters extract from the Lambda logs: request_too_large, lambda_timeouts and event_sink_failures (filters
-# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 14 in
-# all, as lambda_errors sums one metric per function (7) and dynamodb_throttles adds reads and writes (2). At us-east-1
-# prices that is about 2.30 US dollars a month, independent of fleet size. Keep docs/costs.md and docs/deploy.md in
-# step with this list.
+# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 15 in
+# all, as lambda_errors sums one metric per function (7), dynamodb_throttles adds reads and writes (2) and api_4xx
+# divides 4xx responses by requests (2). At us-east-1 prices that is about 2.40 US dollars a month, independent of
+# fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
 #
 # Every alarm notifies var.alarm_sns_topic_arn when set, both when it fires and when it recovers.
 #
@@ -77,25 +77,57 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
 # sync stage, so sustained throttling means syncs are failing, not just slowing down. The same metric also counts
 # 401/403 from the authorizer, which fire this alarm when hosts lose their sync token (a botched token rotation).
 #
-# The statistic is the average, i.e. the fraction of requests answered 4xx, so that the threshold does not depend on
-# the fleet's size; two periods in a row keep a short burst of scanner requests from firing it.
+# It alarms on the fraction of requests answered 4xx, so that the threshold does not depend on the fleet's size, but
+# only in 5-minute periods with at least var.api_4xx_alarm_min_requests requests: in a quiet period (a small fleet
+# overnight) a handful of scanner requests answered 401 would otherwise be a large fraction. Two periods in a row
+# keep a short burst from firing it.
 #
 resource "aws_cloudwatch_metric_alarm" "api_4xx" {
   alarm_name          = "${var.prefix}_rudolph_api_4xx"
-  alarm_description   = "More than 5% of the requests to Rudolph's API were answered 4xx for 10 minutes: throttling (429, raise api_throttling_rate_limit) or rejected sync tokens (401/403)."
-  namespace           = "AWS/ApiGateway"
-  metric_name         = "4XXError"
-  statistic           = "Average"
-  period              = 300
+  alarm_description   = "More than 5% of the requests to Rudolph's API were answered 4xx for 10 minutes (counting only periods with at least ${var.api_4xx_alarm_min_requests} requests): throttling (429, raise api_throttling_rate_limit) or rejected sync tokens (401/403)."
   evaluation_periods  = 2
   datapoints_to_alarm = 2
   threshold           = 0.05
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
 
-  dimensions = {
-    ApiName = aws_api_gateway_rest_api.api_gateway.name
-    Stage   = aws_api_gateway_stage.stage.stage_name
+  metric_query {
+    id          = "fraction"
+    expression  = "IF(requests >= ${var.api_4xx_alarm_min_requests}, FILL(errors, 0) / requests, 0)"
+    label       = "Fraction of requests answered 4xx"
+    return_data = true
+  }
+
+  metric_query {
+    id = "errors"
+
+    metric {
+      namespace   = "AWS/ApiGateway"
+      metric_name = "4XXError"
+      stat        = "Sum"
+      period      = 300
+
+      dimensions = {
+        ApiName = aws_api_gateway_rest_api.api_gateway.name
+        Stage   = aws_api_gateway_stage.stage.stage_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "requests"
+
+    metric {
+      namespace   = "AWS/ApiGateway"
+      metric_name = "Count"
+      stat        = "Sum"
+      period      = 300
+
+      dimensions = {
+        ApiName = aws_api_gateway_rest_api.api_gateway.name
+        Stage   = aws_api_gateway_stage.stage.stage_name
+      }
+    }
   }
 
   alarm_actions = local.alarm_actions

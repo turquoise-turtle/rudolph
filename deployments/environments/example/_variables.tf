@@ -143,18 +143,24 @@ variable "log_retention_in_days" {
 
 variable "api_throttling_rate_limit" {
   type        = number
-  description = "Steady-state requests per second the API stage accepts before answering 429"
+  description = "Steady-state requests per second API Gateway accepts on each route (each method has its own limit) before answering 429"
   default     = 2000
 }
 
 variable "api_throttling_burst_limit" {
   type        = number
-  description = "Requests the API stage accepts in a burst above api_throttling_rate_limit"
-  default     = 4000
+  description = "Requests API Gateway accepts at once on each route (each method's token bucket size) before answering 429"
+  default     = 2000
 }
 
 variable "alarm_sns_topic_arn" {
   type        = string
   description = "OPTIONAL: ARN of an SNS topic that Rudolph's CloudWatch alarms notify"
   default     = ""
+}
+
+variable "api_4xx_alarm_min_requests" {
+  type        = number
+  description = "Requests in 5 minutes below which the api_4xx alarm does not fire"
+  default     = 100
 }

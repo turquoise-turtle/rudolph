@@ -39,4 +39,5 @@ module "santa_api" {
   api_throttling_rate_limit  = var.api_throttling_rate_limit
   api_throttling_burst_limit = var.api_throttling_burst_limit
   alarm_sns_topic_arn        = var.alarm_sns_topic_arn
+  api_4xx_alarm_min_requests = var.api_4xx_alarm_min_requests
 }

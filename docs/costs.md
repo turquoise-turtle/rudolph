@@ -32,15 +32,15 @@ request.
 CloudWatch log groups keep logs for `log_retention_in_days` (default 30) instead of forever.
 
 ## Throttling and Alarms
-The API stage is throttled (`api_throttling_rate_limit`, default 2,000 requests per second, burst 4,000), so a runaway client or a flood of requests gets HTTP 429 from API Gateway instead of running up Lambda and DynamoDB charges. The defaults leave room for the normal load of about 100,000 Macs; see [deploy](./deploy.md#0d-check-the-api-throttle) for why the throttle must stay above the fleet's peak.
+The API is throttled per route (`api_throttling_rate_limit`, default 2,000 requests per second on each of the 6 routes, burst 2,000), so a runaway client or a flood of requests gets HTTP 429 from API Gateway instead of running up Lambda and DynamoDB charges. The defaults leave room for the normal load of about 100,000 Macs; see [deploy](./deploy.md#0d-check-the-api-throttle) for why the throttle must stay above the fleet's peak.
 
 The alarms are kept few and cheap: seven alarms, or six when no event sink is configured (see `monitoring.tf` and [deploy](./deploy.md#alarms)).
 
 * Four alarm on metrics AWS publishes for free: `api_5xx`, `api_4xx`, `lambda_errors` and `dynamodb_throttles`.
 * Three alarm on metrics that metric filters extract from the Lambda logs: `request_too_large`, `lambda_timeouts` and `event_sink_failures`. The filters are free; each extracted metric is billed as one custom metric (3 in all, US$0.30 each a month).
-* Alarms are billed per metric they evaluate (US$0.10 each a month): 14 in all, as `lambda_errors` sums one metric per Rudolph function (7) and `dynamodb_throttles` adds reads and writes (2).
+* Alarms are billed per metric they evaluate (US$0.10 each a month): 15 in all, as `lambda_errors` sums one metric per Rudolph function (7), `dynamodb_throttles` adds reads and writes (2) and `api_4xx` divides 4xx responses by requests (2).
 
-At us-east-1 prices that is about US$2.30 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
+At us-east-1 prices that is about US$2.40 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
 ## Costs of Rules
 Due to Rudolph's sync logic, we have not observed noticable cost nor performance degradatation with very large numbers of
