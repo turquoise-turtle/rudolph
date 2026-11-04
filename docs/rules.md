@@ -113,5 +113,7 @@ export ENV=YOURENV
 ./rudolph rules import -f /path/to/rules.csv
 ```
 
+Import skips rules that are already stored with the same policy, custom message, custom URL, CEL expression, button label, notification app name and description (it reads each one first, strongly consistently), so importing an unchanged file again writes nothing and adds no rules feed row for Macs to download.
+
 ### Sample or Community Rules
 We've provided a directory with ... _some_ sample rules [examples/sample-rules.csv](/examples/sample-rules.csv), but each team is largely going to have to figure this stuff out on their own.
