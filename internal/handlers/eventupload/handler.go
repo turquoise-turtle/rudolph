@@ -2,6 +2,7 @@ package eventupload
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 
@@ -95,7 +96,7 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 	}
 
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err))
 	}
 
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
