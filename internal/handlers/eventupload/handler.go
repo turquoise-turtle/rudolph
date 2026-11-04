@@ -67,8 +67,9 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 }
 
 // HandleContext handles an upload within ctx's deadline (the Lambda invocation's). Sink calls stop
-// eventsink.DeadlineMargin before it, so the handler answers 5xx itself instead of being killed by the Lambda
-// timeout; without a deadline they are bounded by eventsink.DefaultBudget.
+// eventsink.DeadlineMargin before it (half the remaining time under a short timeout, see
+// eventsink.WithSendDeadline), so the handler answers 5xx itself instead of being killed by the Lambda timeout;
+// without a deadline they are bounded by eventsink.DefaultBudget.
 func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	machineID, eventsRequest, errorResponse, err := parseRequest(request)
 	if errorResponse != nil || err != nil {

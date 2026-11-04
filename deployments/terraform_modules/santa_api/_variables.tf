@@ -120,6 +120,12 @@ variable "eventupload_output_lambda_name" {
   default     = ""
 }
 
+variable "eventupload_lambda_timeout_seconds" {
+  type        = number
+  description = "Timeout of the eventupload Lambda function, in whole seconds (3 to 900). Event sinks stop 1.5 seconds before it so the handler can still answer; raise it for large uploads or busy Kinesis shards. API Gateway waits at most 29 seconds by default."
+  default     = 10
+}
+
 variable "kms_key_administrators_arns" {
   type = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"

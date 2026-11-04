@@ -65,6 +65,13 @@ variable "log_retention_in_days" {
 
 variable "lambda_timeout_seconds" {
   type        = number
-  description = "Lambda function timeout in seconds. Default lambda's timeout is intentionally short right now at 10 seconds."
+  description = "Lambda function timeout in whole seconds. Default lambda's timeout is intentionally short right now at 10 seconds."
   default     = 10
+
+  # Below 3 seconds the eventupload sinks lose their full 1.5 second deadline margin and share an ever smaller
+  # budget with the handler's answer, so large uploads keep failing and Santa re-sends them on every sync.
+  validation {
+    condition     = var.lambda_timeout_seconds >= 3 && var.lambda_timeout_seconds <= 900 && floor(var.lambda_timeout_seconds) == var.lambda_timeout_seconds
+    error_message = "lambda_timeout_seconds must be a whole number of seconds from 3 to 900 (the Lambda maximum)."
+  }
 }

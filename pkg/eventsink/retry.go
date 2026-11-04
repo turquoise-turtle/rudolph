@@ -68,7 +68,8 @@ func Wait(ctx context.Context, attempt int, throttled bool) error {
 }
 
 // DeadlineMargin is the time kept free before the caller's deadline (the Lambda invocation's) so a handler can
-// still answer when its sinks give up, instead of being killed by the Lambda timeout.
+// still answer when its sinks give up, instead of being killed by the Lambda timeout. Invocations shorter than
+// 2*DeadlineMargin keep half of their remaining time free instead (see WithSendDeadline).
 const DeadlineMargin = 1500 * time.Millisecond
 
 // DefaultBudget bounds sink calls when the caller has no deadline (outside Lambda).
@@ -76,11 +77,20 @@ const DefaultBudget = 20 * time.Second
 
 // WithSendDeadline returns the context sink calls should use: the caller's deadline minus DeadlineMargin, or
 // DefaultBudget from now if the caller has no deadline.
+//
+// When less than 2*DeadlineMargin remains, the margin shrinks to half of what remains. A fixed margin would hand
+// the sinks an already-expired context under a short Lambda timeout, so every upload would answer 500 and Santa
+// would re-send the same batch on every sync; half still leaves the handler ample time to write its answer.
 func WithSendDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	if deadline, ok := ctx.Deadline(); ok {
-		return context.WithDeadline(ctx, deadline.Add(-DeadlineMargin))
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithTimeout(ctx, DefaultBudget)
 	}
-	return context.WithTimeout(ctx, DefaultBudget)
+	margin := DeadlineMargin
+	if remaining := time.Until(deadline); remaining < 2*DeadlineMargin {
+		margin = max(remaining/2, 0)
+	}
+	return context.WithDeadline(ctx, deadline.Add(-margin))
 }
 
 // EnsureDeadline returns ctx unchanged if it has a deadline, and otherwise ctx bounded by DefaultBudget.
