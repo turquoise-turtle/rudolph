@@ -57,6 +57,10 @@ type MachineConfiguration struct {
 	RemountUsbMode            MountFlags             `dynamodbav:"RemountUsbMode,omitempty"`
 	EventDetailURL            *string                `dynamodbav:"EventDetailURL,omitempty"`
 	EventDetailText           *string                `dynamodbav:"EventDetailText,omitempty"`
+
+	// remountUsbModeDropped is set when the stored remount flags of the config could not be decoded, so the
+	// intended remount flags are unknown (see SanitizeForSanta).
+	remountUsbModeDropped bool
 }
 
 type MachineConfigurationUpdateRequest struct {

@@ -22,9 +22,11 @@ func unmarshalConfigItem(item map[string]awstypes.AttributeValue, source string)
 		return config
 	}
 	usable := make(map[string]awstypes.AttributeValue, len(item))
+	remountUsbModeDropped := false
 	for name, value := range item {
 		if err := decodesAsSetting(name, value); err != nil {
 			log.Printf("ignoring attribute %s of config %s: %v", name, source, err)
+			remountUsbModeDropped = remountUsbModeDropped || name == remountUsbModeAttribute
 			continue
 		}
 		usable[name] = value
@@ -35,6 +37,7 @@ func unmarshalConfigItem(item map[string]awstypes.AttributeValue, source string)
 		log.Printf("ignoring config %s that cannot be decoded: %v", source, err)
 		return MachineConfiguration{}
 	}
+	config.remountUsbModeDropped = remountUsbModeDropped
 	return config
 }
 
@@ -54,6 +57,9 @@ func mergeMachineConfig(global MachineConfiguration, machineItem map[string]awst
 	for _, name := range notInheritedAttributes {
 		delete(merged, name)
 	}
+	// Remount flags the machine config sets but that cannot be decoded are not replaced by the global ones: the
+	// machine's intended flags are unknown either way
+	remountUsbModeDropped := global.remountUsbModeDropped
 	for name, value := range machineItem {
 		if name == "PK" || name == "SK" {
 			continue
@@ -61,11 +67,17 @@ func mergeMachineConfig(global MachineConfiguration, machineItem map[string]awst
 		if _, isNull := value.(*awstypes.AttributeValueMemberNULL); isNull {
 			continue
 		}
-		if err := decodesAsSetting(name, value); err != nil {
+		err := decodesAsSetting(name, value)
+		if name == remountUsbModeAttribute {
+			remountUsbModeDropped = err != nil
+		}
+		if err != nil {
 			log.Printf("ignoring attribute %s of a machine config: %v", name, err)
 			continue
 		}
 		merged[name] = value
 	}
-	return unmarshalConfigItem(merged, "merged machine config"), nil
+	config := unmarshalConfigItem(merged, "merged machine config")
+	config.remountUsbModeDropped = remountUsbModeDropped
+	return config, nil
 }

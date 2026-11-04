@@ -128,7 +128,8 @@ func ValidateUpdateRequest(request MachineConfigurationUpdateRequest, global boo
 //   - a batch size out of range becomes DefaultBatchSize
 //   - a full sync interval out of range is left out (0), so Santa uses its default
 //   - an unknown file access action is left out; a legacy spelling is converted to the enum name
-//   - a remount flag list that is too long is left out
+//   - a remount flag list that is too long or cannot be decoded is left out, and so is block_usb_mount when it is
+//     true (Santa would block USB mass storage instead of remounting it)
 func SanitizeForSanta(config MachineConfiguration) MachineConfiguration {
 	if config.ClientMode != 0 {
 		if err := validateClientMode(config.ClientMode); err != nil {
@@ -153,9 +154,21 @@ func SanitizeForSanta(config MachineConfiguration) MachineConfiguration {
 		log.Printf("ignoring stored override file access action: %v", err)
 	}
 	config.OverrideFileAccessAction = action
+	remountUsbModeDropped := config.remountUsbModeDropped
 	if err := validateRemountUsbFlagCount(config.RemountUsbMode); err != nil {
 		log.Printf("ignoring stored remount USB mode: %v", err)
-		config.RemountUsbMode = nil
+		remountUsbModeDropped = true
 	}
+	if remountUsbModeDropped {
+		config.RemountUsbMode = nil
+		// Santa keeps its current remount flags when none are sent, or has none, and would then block USB mass
+		// storage outright where the config meant to remount it with restrictions. Leaving block_usb_mount out as
+		// well keeps the Mac's current USB behaviour until the config is fixed.
+		if config.BlockUsbMount != nil && *config.BlockUsbMount {
+			log.Printf("ignoring stored block USB mount, whose remount flags were ignored")
+			config.BlockUsbMount = nil
+		}
+	}
+	config.remountUsbModeDropped = false
 	return config
 }

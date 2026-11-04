@@ -9,13 +9,16 @@ import (
 	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
+const remountUsbModeAttribute = "RemountUsbMode"
+
 // MountFlags are the mount flags Santa remounts blocked USB mass storage devices with (santa.sync.v1
 // remount_usb_mode, a repeated string).
 type MountFlags []string
 
 // UnmarshalDynamoDBAttributeValue reads a list or string set of flags, and also the comma separated string
-// that hand-edited rows and older tooling store. An attribute of another type is ignored (with a log), so one
-// odd row does not fail the preflight of every host using it.
+// that hand-edited rows and older tooling store. An attribute of another type is an error; the config decoder then
+// leaves the attribute out (with a log), so one odd row does not fail the preflight of every host using it, and
+// remembers that the remount flags are unknown (see SanitizeForSanta).
 func (m *MountFlags) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue) error {
 	switch value := av.(type) {
 	case *awstypes.AttributeValueMemberL:
@@ -36,8 +39,7 @@ func (m *MountFlags) UnmarshalDynamoDBAttributeValue(av awstypes.AttributeValue)
 	case *awstypes.AttributeValueMemberNULL:
 		*m = nil
 	default:
-		log.Printf("ignoring RemountUsbMode of unsupported type %T", av)
-		*m = nil
+		return fmt.Errorf("RemountUsbMode of unsupported type %T", av)
 	}
 	return nil
 }
