@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 )
 
+const cleanSyncRequestAttribute = "CleanSyncRequest"
+
 // updateCleanSync is the fragment written to clear the clean sync flag
 type updateCleanSync struct {
 	CleanSync bool `dynamodbav:"CleanSync"`
@@ -27,20 +29,23 @@ func newCleanSyncRequest() string {
 // ClearMachineCleanSync clears the clean sync flag of a machine-specific config once the clean sync it requested is
 // confirmed, so the flag makes exactly one clean sync happen. request is the CleanSyncRequest the clean sync performed
 // ("" for a flag stored without one). Only a row that still holds that request is changed: a row that was deleted,
-// cleared in the meantime, or whose flag was set again since (a new request) is left alone.
-func ClearMachineCleanSync(client dynamodb.UpdateItemIfAPI, machineID string, request string) error {
+// cleared in the meantime, or whose flag was set again since (a new request) is left alone. The request identifier
+// is removed with the flag, so a flag set again later without a new identifier (by hand, or by other tooling) is not
+// taken for the request that was just performed.
+func ClearMachineCleanSync(client dynamodb.UpdateItemRemoveAPI, machineID string, request string) error {
 	condition := expression.Equal(expression.Name("CleanSync"), expression.Value(true))
 	if request == "" {
 		condition = condition.And(expression.AttributeNotExists(expression.Name("CleanSyncRequest")))
 	} else {
 		condition = condition.And(expression.Equal(expression.Name("CleanSyncRequest"), expression.Value(request)))
 	}
-	_, err := client.UpdateItemIf(
+	_, err := client.UpdateItemRemoveIf(
 		dynamodb.PrimaryKey{
 			PartitionKey: machineConfigurationPK(machineID),
 			SortKey:      machineConfigurationSK(),
 		},
 		updateCleanSync{CleanSync: false},
+		[]string{cleanSyncRequestAttribute},
 		condition,
 	)
 	if dynamodb.IsConditionalCheckFailed(err) {

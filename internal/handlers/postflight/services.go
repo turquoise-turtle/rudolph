@@ -35,7 +35,7 @@ type syncStateUpdater interface {
 type concreteSyncStateUpdater struct {
 	updater dynamodb.UpdateItemAPI
 	// configUpdater clears the clean sync flag of the machine config; nil leaves it to the next preflight
-	configUpdater dynamodb.UpdateItemIfAPI
+	configUpdater dynamodb.UpdateItemRemoveAPI
 	timeProvider  clock.TimeProvider
 }
 

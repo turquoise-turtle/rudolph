@@ -218,7 +218,13 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 		// Settings to inherit are removed from the row; a machine without a row already inherits everything
 		var removals []string
 		if exists {
-			removals = configRequest.Inherit
+			removals = append(removals, configRequest.Inherit...)
+			if !newMachineConfig.CleanSync && newMachineConfig.CleanSyncRequest != "" {
+				// A cancelled request leaves no identifier behind, so a flag set again later without a new one is
+				// not taken for it
+				removals = append(removals, cleanSyncRequestAttribute)
+				newMachineConfig.CleanSyncRequest = ""
+			}
 		}
 		newMachineConfig = withoutSettings(newMachineConfig, configRequest.Inherit)
 		if touchesUsbMountSettings(configRequest) {

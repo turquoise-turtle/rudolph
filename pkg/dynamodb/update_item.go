@@ -39,10 +39,17 @@ type UpdateItemRemoveAPI interface {
 	// UpdateItemRemove is UpdateItem that also removes the named attributes; removing an attribute the item does
 	// not have is not an error.
 	UpdateItemRemove(key PrimaryKey, item interface{}, remove []string) (*dynamodb.UpdateItemOutput, error)
+	// UpdateItemRemoveIf is UpdateItemRemove with an additional condition; when it does not hold, the item is left
+	// unchanged and the returned error satisfies IsConditionalCheckFailed.
+	UpdateItemRemoveIf(key PrimaryKey, item interface{}, remove []string, condition expression.ConditionBuilder) (*dynamodb.UpdateItemOutput, error)
 }
 
 func (dbc concreteDynamoDBClient) UpdateItemRemove(key PrimaryKey, item interface{}, remove []string) (*dynamodb.UpdateItemOutput, error) {
 	return updateItem(dbc.tableName, &dbc.awsclient, key, item, remove, nil, dbc.timeout)
+}
+
+func (dbc concreteDynamoDBClient) UpdateItemRemoveIf(key PrimaryKey, item interface{}, remove []string, condition expression.ConditionBuilder) (*dynamodb.UpdateItemOutput, error) {
+	return updateItem(dbc.tableName, &dbc.awsclient, key, item, remove, &condition, dbc.timeout)
 }
 
 func updateItemToDynamoDB(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
