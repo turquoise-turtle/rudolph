@@ -1,6 +1,8 @@
 package firehose
 
 import (
+	"context"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/firehose"
@@ -8,6 +10,12 @@ import (
 
 type FirehoseClient interface {
 	Send(machineID string, events FirehoseEvents) (err error)
+}
+
+// ContextClient is a FirehoseClient whose sends can be bounded by a context's deadline. GetClient returns one.
+type ContextClient interface {
+	FirehoseClient
+	SendContext(ctx context.Context, machineID string, events FirehoseEvents) error
 }
 
 type client struct {

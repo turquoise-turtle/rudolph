@@ -170,6 +170,12 @@ Before deploying, make consumers tolerate unknown record shapes: filter on `even
 dashboards that assume execution events, and add the new columns to any Glue/Athena schema (a table with a fixed
 schema will otherwise drop the new fields or fail on the new shapes).
 
+An event too large for the sink to ever store (larger than a Firehose or Kinesis record, or a Lambda async payload)
+is now dropped instead of failing the upload, so it no longer blocks every later event from that Mac. Each drop is
+logged in the eventupload function's log group with a line containing `dropped` (counts, machine ID and reason only);
+add a metric filter on it if you need to know how often it happens. Consumers may also see an event twice: when the
+sink fails part of an upload, Santa re-sends the whole batch. See [Delivery to the event sink](sync.md#delivery-to-the-event-sink).
+
 ### 0c. Alarm on rejected request bodies
 Sync handlers now refuse a request body that decompresses to more than 6 MiB with HTTP 413, so that a compressed
 payload cannot make a Lambda allocate unbounded memory. Normal syncs are orders of magnitude smaller, but a host that
