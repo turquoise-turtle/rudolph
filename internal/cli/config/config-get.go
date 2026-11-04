@@ -101,7 +101,12 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	fmt.Fprintln(writer, "BatchSize:\t", config.BatchSize)
 	fmt.Fprintln(writer, "BundlesEnabled:\t", config.EnableBundles)
 	fmt.Fprintln(writer, "EnabledTransitiveRules:\t", config.EnabledTransitiveRules)
-	fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
+	if tf.IsGlobal && config.CleanSync {
+		// Stored by an earlier version, which accepted --global --clean-sync
+		fmt.Fprintln(writer, "CleanSync:\t", "true (ignored: a clean sync is requested per machine; remove it with config update --global --clean-sync=false)")
+	} else {
+		fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
+	}
 	fmt.Fprintln(writer, "FullSyncInterval:\t", config.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", config.UploadLogsURL, "\"")
 	printSantaSettings(writer, config)

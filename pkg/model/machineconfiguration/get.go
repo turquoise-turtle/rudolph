@@ -62,7 +62,8 @@ type ConcreteConfigurationFetcher struct {
 //
 // A machine-specific config overrides only the settings stored on it; every other setting follows the current
 // global config. Rows written by `config set --machine` (and by earlier versions) store every base setting, so
-// they keep overriding all of them. The clean sync flag is never taken from the global config.
+// they keep overriding all of them. The clean sync flag is never taken from the global config (see
+// withoutCleanSyncRequest).
 func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
 	machineItem, err := f.machine.getMachineSpecificItem(machineID)
 	if err != nil {
@@ -85,11 +86,21 @@ func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (inten
 	}
 
 	if len(machineItem) == 0 {
-		intendedConfig = *globalConfig
+		intendedConfig = withoutCleanSyncRequest(*globalConfig)
 		return
 	}
 
-	return mergeMachineConfig(*globalConfig, machineItem)
+	return mergeMachineConfig(withoutCleanSyncRequest(*globalConfig), machineItem)
+}
+
+// withoutCleanSyncRequest returns a global config without its clean sync flag. The flag is refused for the global
+// config, but earlier versions stored it there; honouring it would make every machine that does not override it
+// clean sync on every sync, as nothing ever clears it. Clear it with `rudolph config update --global
+// --clean-sync=false`.
+func withoutCleanSyncRequest(global MachineConfiguration) MachineConfiguration {
+	global.CleanSync = false
+	global.CleanSyncRequest = ""
+	return global
 }
 
 // GetIntendedGlobalConfig returns the global configuration. It searches in the following order:
