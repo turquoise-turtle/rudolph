@@ -11,9 +11,11 @@ data "aws_iam_policy_document" "lambda_permissions" {
       "dynamodb:Scan",
     ]
 
+    # Only this deployment's table and its indexes. A pattern such as table/*_rudolph_store would let every Rudolph
+    # deployment in the account read every other deployment's table.
     resources = [
       aws_dynamodb_table.store.arn,
-      "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/*_rudolph_store",
+      "${aws_dynamodb_table.store.arn}/index/*",
     ]
   }
 
@@ -28,9 +30,9 @@ data "aws_iam_policy_document" "lambda_permissions" {
       "dynamodb:BatchWriteItem",
     ]
 
+    # Writes only ever go to this deployment's table (never to another deployment's table, never to an index).
     resources = [
       aws_dynamodb_table.store.arn,
-      "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/*_rudolph_store",
     ]
 
     # As an extra precaution, we prevent write operations to be conducted on GLOBAL rules and configurations

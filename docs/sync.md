@@ -115,6 +115,14 @@ Postflight applies the same kind of check to what it stores: `sync_type` must be
 `CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
 limited to 6 MiB after decompression (HTTP 413 above that).
 
+A Mac that reports no serial number (virtual machines and some repaired logic boards) syncs normally; its sensor data
+row is stored without `SerialNum`, so it is simply absent from the serial number index (`rudolph lookup serial-number` cannot
+find it). Rudolph never stores an empty string in an attribute that is a secondary index key, which DynamoDB rejects.
+
+Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
+and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
+charset=UTF-8` is accepted.
+
 ### Response - JSON
 
 More info found here: https://santa.readthedocs.io/en/latest/deployment/configuration/#sync-server-provided-configuration

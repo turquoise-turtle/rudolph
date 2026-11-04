@@ -18,8 +18,8 @@ const (
 // SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
 type SensorData struct {
 	dynamodb.PrimaryKey
-	MachineID       string `dynamodbav:"MachineID"`
-	SerialNum       string `dynamodbav:"SerialNum"`
+	MachineID       string `dynamodbav:"MachineID,omitempty"`
+	SerialNum       string `dynamodbav:"SerialNum,omitempty"`
 	Hostname        string `dynamodbav:"Hostname"`
 	ModelIdentifier string `dynamodbav:"ModelIdentifier"`
 	// SIPStatus is a pointer so that "SIP disabled" (0) is distinguishable from "the sensor reported none":
@@ -43,7 +43,7 @@ type SensorData struct {
 	TransitiveRuleCount  int              `dynamodbav:"TransitiveRuleCount"`
 	Time                 string           `dynamodbav:"Time"`
 	ExpiresAfter         int64            `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType             types.DataType   `dynamodbav:"DataType"`
+	DataType             types.DataType   `dynamodbav:"DataType,omitempty"`
 }
 
 // MachineIDSensorDataPKSK returns the partition and sort keys for a machine id

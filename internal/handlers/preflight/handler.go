@@ -78,19 +78,19 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	// Save the state of the preflight request - this is the sensor state
 	err := h.stateTrackingService.saveSensorDataFromPreflightRequest(machineID, preflightRequest)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("saving the sensor data: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// Retrieve the intended configuration for the machine
 	machineConfiguration, err := h.machineConfigurationService.GetIntendedConfig(machineID)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// Get the previous sync state
 	prevSyncState, err := h.stateTrackingService.getSyncState(machineID)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("reading the sync state: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// Determine if a Clean sync should be performed based on the preflight request
@@ -113,7 +113,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 			prevSyncState,
 		)
 		if err != nil {
-			return response.APIResponse(http.StatusInternalServerError, err)
+			return response.InternalServerError(fmt.Errorf("deciding whether to clean sync: %w", err), struct{}{})
 		}
 	default:
 		performCleanSync = true
@@ -142,7 +142,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 
 	if err != nil {
 		err = fmt.Errorf("encountered error trying to save new sync state: %w", err)
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(err, struct{}{})
 	}
 
 	// Construct the response

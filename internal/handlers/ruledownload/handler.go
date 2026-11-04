@@ -2,6 +2,7 @@ package ruledownload
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -109,7 +110,7 @@ func (h *PostRuledownloadHandler) Handle(request events.APIGatewayProxyRequest) 
 func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error) {
 	cursor, err := h.cursorService.ConstructCursor(*ruledownloadRequest, machineID)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("constructing the ruledownload cursor: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// Whenever the client requests a clean sync, we need to echo it back to the client in the response;
@@ -126,6 +127,5 @@ func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownl
 	}
 
 	// How did you get here??
-	log.Printf("Unreachable code reached in handleRuleDownload()!")
-	return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+	return response.InternalServerError(fmt.Errorf("unreachable: unknown ruledownload strategy %v", cursor.Strategy), response.ErrInternalServerErrorResponse)
 }

@@ -2,6 +2,7 @@ package eventupload
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 
@@ -105,7 +106,7 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 	}
 
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})

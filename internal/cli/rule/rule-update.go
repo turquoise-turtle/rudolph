@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -39,11 +40,16 @@ func init() {
 		Short:   "Update an existing rule",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// args[0] has already been validated as a file before this
+			if err := tf.RequireExplicitTarget(); err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			client := dynamodb.GetClient(table, region)
+			if err := tf.ResolveMachineID(client); err != nil {
+				return err
+			}
 			if err := clockcheck.Check(cmd, client); err != nil {
 				return err
 			}
@@ -56,14 +62,15 @@ func init() {
 				TransactWrite: client,
 			}
 			ruleHandler.machineRuleUpdater = machinerules.ConcreteMachineRulesUpdater{
-				Updater: client,
+				Updater:      client,
+				TimeProvider: timeProvider,
 			}
 
 			return ruleHandler.updateRulePolicy(tf, rf, ru)
 		},
 	}
 
-	tf.AddTargetFlags(ruleUpdateCmd)
+	tf.AddRuleTargetFlags(ruleUpdateCmd)
 	ru.AddRuleUpdateFlags(ruleUpdateCmd)
 	rf.AddRuleInfoFlags(ruleUpdateCmd)
 
@@ -81,12 +88,13 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	var description string
 	var identifier string
 
-	fileInfo, err := santa_sensor.RunSantaFileInfo(*rf.FilePath)
-	if err != nil {
-		return fmt.Errorf("encountered an error while attempting to get file information for %q", *rf.FilePath)
-	}
-
 	if *rf.FilePath != "" {
+		// Only a file path needs santactl: an identifier given with --identifier is used as it is, also on a computer
+		// without Santa
+		fileInfo, err := santa_sensor.RunSantaFileInfo(*rf.FilePath)
+		if err != nil {
+			return fmt.Errorf("encountered an error while attempting to get file information for %q", *rf.FilePath)
+		}
 		identifier = fileInfo.SHA256
 		description = fmt.Sprintf("%s from %s", fileInfo.Path, tf.SelfMachineID) // FIXME (derek.wang) tf.SelfMachineID is Not initialized.
 		switch ruleType {
@@ -117,6 +125,8 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		}
 	} else if *rf.Identifier != "" {
 		identifier = *rf.Identifier
+	} else {
+		return errors.New("pass the rule's --identifier, or --filepath to read it from a file")
 	}
 
 	// TODO
@@ -140,6 +150,8 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	// First, determine which machine to apply
 	machineID := "(Global)"
 	suffix := ""
+	// When the existing machine rule expires; empty for global rules, which never expire
+	expiry := ""
 	if !tf.IsGlobal {
 		machineID, err = tf.GetMachineID()
 		if err != nil {
@@ -200,12 +212,23 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 			return err
 		}
 
+		// The update keeps the rule's expiry, so it cannot bring back a rule that has expired (and that DynamoDB has
+		// not deleted yet): the update would look successful and change nothing on any Mac.
+		if existingItem.ExpiresAfter != 0 && existingItem.ExpiresAfter <= rh.timeProvider.Now().Unix() {
+			return fmt.Errorf("the machine rule expired at %s; create it again with --expires or --permanent", time.Unix(existingItem.ExpiresAfter, 0).UTC().Format(time.RFC3339))
+		}
+		expiry = "never"
+		if existingItem.ExpiresAfter != 0 {
+			expiry = time.Unix(existingItem.ExpiresAfter, 0).UTC().Format(time.RFC3339)
+		}
+
 		fmt.Println("The current rule is rule:")
 		fmt.Println("  MachineID:   ", machineID, suffix)
 		fmt.Println("  Identifier/SHA256:      ", existingItem.Identifier)
 		fmt.Println("  Policy:      ", existingItem.Policy, "  (", string(rulePolicyDescription), ")")
 		fmt.Println("  RuleType:    ", existingItem.RuleType, "  (", string(ruleTypeDescription), ")")
 		fmt.Println("  Description: ", description)
+		fmt.Println("  Expires:     ", expiry)
 	}
 
 	fmt.Println("Updating the rule to the following:")
@@ -214,6 +237,9 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	fmt.Println("  Policy:      ", rulePolicy, "  (", string(rulePolicyDescription), ")")
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
+	if expiry != "" {
+		fmt.Println("  Expires:     ", expiry, "  (unchanged)")
+	}
 	fmt.Println("")
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")
