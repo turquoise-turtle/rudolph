@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
@@ -41,7 +42,7 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 		rules[i] = rule.SantaRule
 	}
 
-	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules)
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, nil)
 }
 
 // cleanSyncPlaceholderIdentifier is the identifier of the rule sent by a clean sync that has no rule to send. It is
@@ -65,15 +66,17 @@ func cleanSyncPlaceholderRule() RuledownloadRule {
 
 // lastPageOrNext returns a page of global or feed rules. On the last one, the machine-specific rules are appended
 // and no cursor is returned, which ends the sync's ruledownload; otherwise the cursor for the next page is returned.
+// feedServedUpTo is only used on the last page (see machineRulePage.rules).
 func lastPageOrNext(
 	machineID string,
 	cursor ruledownloadCursor,
 	pageRules []rules.SantaRule,
 	lastEvaluatedKey *dynamodb.PrimaryKey,
 	machineRules machineRulePage,
+	feedServedUpTo *time.Time,
 ) (*events.APIGatewayProxyResponse, error) {
 	if lastEvaluatedKey == nil {
-		machineSpecific, err := machineRules.rules(machineID, cursor.syncState)
+		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo)
 		if err != nil {
 			log.Printf("  Failed to build the machine rules page: %v", err)
 			return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)

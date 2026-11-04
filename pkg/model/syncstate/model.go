@@ -71,6 +71,9 @@ type SyncState struct {
 	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
 	// When ruledownload served this sync's last page; only recorded when it may count (see LastPageServedMayCount).
 	LastPageServedAt string `dynamodbav:"LastPageServedAt,omitempty"`
+	// Recorded with LastPageServedAt: this sync served nothing the completed syncs it started with had not already
+	// served (see ServedNothingNew), so counting it as completed cannot lose anything.
+	LastPageServedNothingNew bool `dynamodbav:"LastPageServedNothingNew,omitempty"`
 	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
 	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
 	// tell whether the Mac applied this sync's rules (see SettleLastPageServed).
@@ -134,7 +137,8 @@ type updateMachineRulesTrackedOnlyItem struct {
 }
 
 type updateLastPageServedItem struct {
-	LastPageServedAt string `dynamodbav:"LastPageServedAt"`
+	LastPageServedAt         string `dynamodbav:"LastPageServedAt"`
+	LastPageServedNothingNew bool   `dynamodbav:"LastPageServedNothingNew"`
 }
 
 type updateMachineRulesTrackedItem struct {

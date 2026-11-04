@@ -40,16 +40,43 @@ const unconfirmedLastPageCountsAfter = 3
 // LastPageServedMayCount reports whether serving this sync's last page could matter to the next sync, i.e. whether
 // ruledownload records when it served it (LastPageServedAt). For a clean sync it always may (see
 // LastCompletedCleanSync); clean syncs are rare, so this costs about one write per Mac per periodic clean sync. For
-// other syncs only after a sync without postflight, and when the page could count as the sync's completion (see
-// SettleLastPageServed), so a Mac whose postflights arrive pays nothing on its other syncs.
+// other syncs only after a sync without postflight (see SettleLastPageServed), so a Mac whose postflights arrive pays
+// nothing on its other syncs.
 func (s SyncState) LastPageServedMayCount() bool {
-	if s.CleanSync {
-		return true
+	return s.CleanSync || s.SyncsWithoutPostflight > 0
+}
+
+// ServedNothingNew reports whether this incremental sync, which served the rules feed up to the row stamped
+// feedServedUpTo and removals first sent in syncs up to removalsFirstSentUpTo (0 when it served none), served only
+// what the completed syncs it started with (CompletedSyncs) had already served. Counting such a sync as completed
+// cannot lose anything, whether or not the Mac applied it.
+//
+// The coverage is the start of the older of the last two completed syncs: either of the two, if it really reached the
+// Mac (one of them might be a stray postflight), read the feed up to at least that time, and sent every removal first
+// sent up to it. Feed rows stamped after it, or removals first sent after it, are new. With a single completed sync
+// (a new Mac) it is that sync's start; that trusts it no more than its next completed sync would, which makes the
+// cursor move to its start too.
+//
+// What this cannot see: a row written late with a stamp at or before the coverage (a writer whose clock was behind,
+// or a row not yet visible to the covering sync's eventually consistent read), which the covering sync may have
+// missed; this is why the feed cursor overlaps (FeedSyncCursorOverlap). A sync that served such a row and was not
+// applied still counts. The row is lost (until the next clean sync) only when two such syncs count in a row, i.e.
+// the Mac failed to apply two consecutive syncs just after a late write into the covering sync's overlap window.
+func (s SyncState) ServedNothingNew(feedServedUpTo time.Time, removalsFirstSentUpTo int) bool {
+	var covering CompletedSync
+	switch len(s.CompletedSyncs) {
+	case 0:
+		return false
+	case 1:
+		covering = s.CompletedSyncs[0]
+	default:
+		covering = s.CompletedSyncs[completedSyncsKept-1]
 	}
-	if s.SyncsWithoutPostflight == 0 {
+	coveredUntil, err := clock.ParseRFC3339(covering.PreflightAt)
+	if err != nil {
 		return false
 	}
-	return s.PreflightRulesHash != "" || s.SyncsWithoutPostflight >= unconfirmedLastPageCountsAfter
+	return !feedServedUpTo.After(coveredUntil) && removalsFirstSentUpTo <= covering.Seq
 }
 
 // SettleLastPageServed decides whether this sync counts as completed although no postflight arrived for it, because
@@ -62,20 +89,30 @@ func (s SyncState) LastPageServedMayCount() bool {
 // no proof that the Mac applied it: the response may have been lost, or santad may have failed to apply it, and
 // counting such syncs as completed loses the feed rules and removals they carried.
 //
-// So a served last page counts when the Mac's rules hash changed between this sync's preflight and the next: Santa
-// applies a sync's rules at once, after downloading its last page, so a changed hash shows it applied them. An
-// unchanged hash proves nothing either way (the pages may have changed nothing on the Mac), so the sync does not count
-// and what it sent is sent again, until a sync that changes the Mac's rules, or a postflight, completes. When either
-// preflight carried no hash (a Santa that does not report one, or a row written before the hash was recorded), the
-// page counts once the sync followed unconfirmedLastPageCountsAfter syncs without postflight.
+// So a served last page counts when:
+//   - the Mac's rules hash changed between this sync's preflight and the next: Santa applies a sync's rules at once,
+//     after downloading its last page, so a changed hash shows it applied them;
+//   - or the sync served nothing new (LastPageServedNothingNew, see ServedNothingNew): counting it cannot lose
+//     anything, and it lets the feed cursor of a Mac whose rules stopped changing move on instead of re-sending the
+//     same rows on every sync;
+//   - or, when either preflight carried no hash (a Santa that does not report one, or a row written before the hash
+//     was recorded), the sync followed unconfirmedLastPageCountsAfter syncs without postflight.
+//
+// A sync that served something new and left the hash unchanged does not count, however many syncs failed in a row:
+// either the Mac did not apply it, or it already held what was sent; what it sent is sent again until a sync that
+// changes the Mac's rules, serves nothing new, or receives a postflight completes.
 func (s *SyncState) SettleLastPageServed(nextRulesHash string) {
 	switch {
 	case s.LastPageServedAt == "":
 		s.lastPageApplied = false
-	case s.PreflightRulesHash != "" && nextRulesHash != "":
-		s.lastPageApplied = nextRulesHash != s.PreflightRulesHash
-	default:
+	case s.PreflightRulesHash != "" && nextRulesHash != "" && nextRulesHash != s.PreflightRulesHash:
+		s.lastPageApplied = true
+	case s.LastPageServedNothingNew:
+		s.lastPageApplied = true
+	case s.PreflightRulesHash == "" || nextRulesHash == "":
 		s.lastPageApplied = s.SyncsWithoutPostflight >= unconfirmedLastPageCountsAfter
+	default:
+		s.lastPageApplied = false
 	}
 }
 

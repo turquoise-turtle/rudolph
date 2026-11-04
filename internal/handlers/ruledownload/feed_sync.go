@@ -3,6 +3,7 @@ package ruledownload
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
@@ -44,5 +45,20 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 		rules[i] = rule.SantaRule
 	}
 
-	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules)
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, feedServedUpTo(cursor, feedRules))
+}
+
+// feedServedUpTo returns the stamp of the newest feed row a sync served once it serves this page, or nil when it
+// cannot tell. The feed is read in sort key order, so that is the last row of this page; on a page without rows it is
+// the row the previous page ended on, or, on a first page, the sync's feed cursor (no row served at all).
+func feedServedUpTo(cursor ruledownloadCursor, page []*feedrules.FeedRuleRow) *time.Time {
+	sortKey := cursor.SortKey
+	if len(page) > 0 {
+		sortKey = page[len(page)-1].SortKey
+	}
+	stamp, err := feedrules.TimeOfSortKey(sortKey)
+	if err != nil {
+		return nil
+	}
+	return &stamp
 }
