@@ -243,9 +243,7 @@ This endpoint is called at the end of a successful sync process. It is the way f
 
 Rudolph keeps state records of every synchronization event that occurs including information on time to process the entire synchronization process. 
 
-Santa ignores a failed postflight. After a sync whose postflight did not arrive, Rudolph also counts a sync as
-completed when it served the sync's last rule page, so a Mac whose postflights never arrive keeps advancing its feed
-cursor and gets removals confirmed (see [rule-pagination](./rule-pagination.md#macs-whose-postflight-never-arrives)).
+Santa ignores a failed postflight. After a sync whose postflight did not arrive, Rudolph also counts a sync as completed when it served the sync's last rule page and the Mac's `rules_hash` in the next preflight shows it applied the rules (the hash changed), or, for a Mac that reports no hash, once the sync followed at least 3 syncs without postflight. A Mac whose postflights never arrive thus keeps advancing its feed cursor and gets removals confirmed, while a last page that was served but never applied does not count (see [rule-pagination](./rule-pagination.md#macs-whose-postflight-never-arrives)).
 
 #### Request - Blank
 

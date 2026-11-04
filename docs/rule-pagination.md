@@ -70,12 +70,7 @@ or be overtaken by a newer sync of the same Mac (Santa giving up on a slow respo
 - Both summary writes are conditional on the row still belonging to the ruledownload's sync (`SyncSeq`) and holding
   the value it last saw or wrote. A ruledownload overtaken by a newer sync's preflight fails instead of overwriting the
   newer sync's summary.
-- Preflight copies the previous summary only if the previous sync completed. If it did not, its ruledownload may still
-  be running or may have died after changing items, and preflight writes `dirty`. A preflight that read the row before
-  an overlapping ruledownload changed the items therefore never writes back a summary that hides the change: that
-  ruledownload's sync has not completed (Santa sends postflight only after the last rule page, and ruledownload records serving
-  the last page, see "Macs whose postflight never arrives", only after its tracking writes), so the summary written
-  is `dirty`.
+- Preflight copies the previous summary only if the previous sync's ruledownload finished: its postflight arrived, or ruledownload recorded serving its last page (`LastPageServedAt`, see "Macs whose postflight never arrives"), which it does only after its tracking writes, whether or not that sync later counts as completed. Otherwise its ruledownload may still be running or may have died after changing items, and preflight writes `dirty`. A preflight that read the row before an overlapping ruledownload changed the items therefore never writes back a summary that hides the change: Santa sends postflight only after the last rule page, and that ruledownload had not yet recorded serving it, so the summary written is `dirty`.
 - Retries of throttled batch requests wait at most 0.75 s per request in total, well within the API Lambda's 10 s
   timeout.
 
@@ -121,12 +116,12 @@ one sync state, their syncs interleave, and either can miss removals and feed ru
 every Mac its own machine ID (Santa's `MachineID` setting or the default, the hardware UUID).
 
 ### Macs whose postflight never arrives
-Santa ignores a failed postflight. A Mac whose postflights never reach Rudolph (a broken route or proxy, a postflight
-Lambda failing) would otherwise never have a completed sync: its feed cursor would never advance, so every sync would
-re-send every feed change since its first sync, and no removal would ever count as delivered. So a sync that follows
-syncs without postflight (`SyncsWithoutPostflight` > 0) also counts as completed once ruledownload served its last page
-(`LastPageServedAt`, one extra write per sync, only for such syncs). A last page that was served but not applied then
-counts as delivered, like a stray postflight; as above, one such sync cannot lose anything.
+Santa ignores a failed postflight. A Mac whose postflights never reach Rudolph (a broken route or proxy, a postflight Lambda failing) would otherwise never have a completed sync: its feed cursor would never advance, so every sync would re-send every feed change since its first sync, and no removal would ever count as delivered. So after syncs without postflight (`SyncsWithoutPostflight` > 0), ruledownload records when it served a sync's last page (`LastPageServedAt`, one extra conditional write per such sync), and the next preflight decides whether that sync counts as completed.
+
+A served last page is not proof that the Mac applied it: the response may have been lost, or santad may have failed to apply it. Counting such syncs as completed would let the feed cursor skip, and removals count as delivered, for rules the Mac never got. So the next preflight counts a served last page as the sync's completion only when there is evidence the Mac applied it:
+- Every preflight stores the `rules_hash` the Mac reports (`PreflightRulesHash` on the sync state). Santa applies all the rules of a sync at once, after downloading the last page, so when the hash in the next preflight differs from the one stored, the Mac applied the sync and it counts as completed.
+- When the hash did not change, the sync does not count, however many syncs in a row went without postflight. An unchanged hash is also what a Mac reports when the pages it applied changed nothing (the feed rows were already on it, or cancelled each other out), so such a sync is not counted either: the feed rows and removals it carried are sent again, until a sync that changes the Mac's rules (or a postflight) completes. The cost, only for Macs whose postflights do not arrive: each sync re-reads the feed since the start of the older of the last two syncs that changed the Mac's rules, and a periodic clean sync that changes nothing is repeated on every sync until the Mac's rules change.
+- When the Mac reports no hash (a Santa that does not send one), or the previous sync state was written by a version of Rudolph that did not store it, nothing shows whether the page was applied. The served last page then counts only once the sync followed at least 3 syncs in a row without postflight, so ruledownload does not record it before. A Mac whose postflights never arrive thus advances its feed cursor from its sixth sync on; a Mac whose syncs fail after the last page was served loses feed rules or removals only after five such failed syncs in a row (one counted sync, like a stray postflight, cannot lose anything), until its next clean sync.
 
 ## Feed cursor
 An incremental sync reads the rules feed from the machine's `FeedSyncCursor`. The next sync reads from 10 minutes
@@ -159,7 +154,8 @@ only writes to it when the tracked machine-specific rules change. It stays about
 | `LastCleanSync` | preflight | When the last clean sync started; for a clean sync, its own start. |
 | `PreviousCleanSync` | preflight | On a clean sync: the last completed clean sync before it. If this clean sync does not complete (e.g. a replayed preflight), the next preflight uses this value for the periodic clean sync instead of `LastCleanSync`. |
 | `SyncsWithoutPostflight` | preflight | How many syncs in a row before this one received no postflight. |
-| `LastPageServedAt` | ruledownload | When the last page was served; only written while `SyncsWithoutPostflight` > 0, and then counts as completion. |
+| `LastPageServedAt` | ruledownload | When the last page was served; only written while `SyncsWithoutPostflight` > 0 (and, when the Mac reported no `rules_hash`, at least 3). Counts as completion only when the next preflight's `rules_hash` differs from `PreflightRulesHash`, or, without a hash, from 3 syncs without postflight on. |
+| `PreflightRulesHash` | preflight | The `rules_hash` the Mac reported in this sync's preflight (at most 128 bytes, a 64-character hex digest from Santa); absent when it reported none. |
 | `RuledownloadStartedAt`, `RuledownloadFinishedAt` | no longer written | Written by earlier versions (two writes per sync that nothing read). |
 
 ### Upgrading
@@ -180,3 +176,4 @@ Rows written by earlier versions keep working:
 - A cursor with strategy 3 issued by the previous version during the deployment is still served.
 - A clean sync started by an earlier version that has not completed (no `PreviousCleanSync`) does not count as a
   clean sync: the next sync is a clean sync again.
+- A sync state without `PreflightRulesHash` (written by an earlier version) whose last page was served counts as completed only if it followed at least 3 syncs without postflight, as for a Mac that reports no hash.
