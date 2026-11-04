@@ -24,7 +24,7 @@ func sendToLambda(
 			Items:  forwardedEvents,
 		},
 	)
-	if err != nil {
+	if err = dropUnstorable(machineID, err); err != nil {
 		log.Printf("Lambda Failed: %s", err)
 		return fmt.Errorf("failed to events to AWS Lambda: %w", err)
 	}
