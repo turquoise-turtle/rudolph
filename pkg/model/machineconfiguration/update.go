@@ -8,7 +8,6 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/types"
-	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
@@ -346,12 +345,10 @@ func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineC
 		return
 	}
 
-	err = attributevalue.UnmarshalMap(output.Attributes, &updatedConfig)
-	if err != nil {
-		err = fmt.Errorf("succeeded UpdateItem but failed to unmarshalMap into MachineConfiguration: %w", err)
-		return
-	}
-
+	// Decoded like any stored row, so an attribute the update did not touch and that cannot be decoded (e.g. remount
+	// flags of the wrong type) does not turn the successful write into an error
+	decoded := unmarshalConfigItem(output.Attributes, pk)
+	updatedConfig = &decoded
 	return
 }
 
