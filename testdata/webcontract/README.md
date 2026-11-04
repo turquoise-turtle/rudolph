@@ -52,7 +52,11 @@ Encodings:
 Tolerate, rather than require:
 
 - attributes that are absent: optional config settings mean "not configured" (inherited from the global config by a
-  machine config, otherwise not sent to Santa), and older rows lack newer attributes;
+  machine config, otherwise not sent to Santa), and older rows lack newer attributes. A machine config may hold any
+  subset of the settings, or none, including `ClientMode`, `BatchSize`, `FullSyncInterval` and `UploadLogsUrl`: every
+  setting it lacks follows the global config;
+- a `CleanSync` attribute on the global config, written by earlier versions: it is ignored, as only a machine can be
+  asked for a clean sync;
 - new attributes and new row kinds;
 - `PrimaryUserGroups` on sensor data (it may move to its own item to keep syncs cheap) and the sync state's tracking
   internals (`MachineRulesTracked`, `CompletedSyncs`, `SyncSeq`), which are not a stable interface.
