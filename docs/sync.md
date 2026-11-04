@@ -226,10 +226,19 @@ Records the service fails individually are retried alone, up to 6 attempts. Afte
 upload to a single Kinesis shard therefore goes through at about 1 MiB per second.
 
 All sink calls, including the AWS SDK's own retries, are bounded by the Lambda invocation's deadline minus 1.5
-seconds. When that deadline is near, the handler stops and answers 500 itself rather than being killed by the Lambda
-timeout (which API Gateway would turn into a 502). With the module's default 10 second eventupload timeout this
-leaves about 8.5 seconds, enough for roughly 6 to 7 MiB of events to one Kinesis shard (a longer timeout, the
-`lambda_timeout_seconds` variable of the api-handler module, gives more; API Gateway itself waits at most 29 seconds).
+seconds (minus half the remaining time when less than 3 seconds remain, so a short invocation still leaves the sinks
+time to send). When that deadline is near, the handler stops and answers 500 itself rather than being killed by the
+Lambda timeout (which API Gateway would turn into a 502). With the module's default 10 second eventupload timeout this
+leaves about 8.5 seconds, enough for roughly 6 to 7 MiB of events to one Kinesis shard. A longer timeout gives more:
+set the `santa_api` module's `eventupload_lambda_timeout_seconds` variable (default 10; the api-handler module accepts
+3 to 900 whole seconds, and API Gateway itself waits at most 29 seconds by default).
+
+Uploads are accepted up to 6 MiB after decompression, so a maximum-size upload takes most of the default budget even
+on an idle shard. If the shard is also carrying other traffic (a stream shared with other producers, or many Macs whose
+machine IDs hash to the same shard), or an additional Lambda sink (`eventupload_output_lambda_name`) runs in the same
+invocation, the upload can reach the deadline on every retry, answer 500 each time and block that Mac's events. Raise
+`eventupload_lambda_timeout_seconds` for headroom, and add shards to the Kinesis stream if it is regularly throttled
+(the stream's `WriteProvisionedThroughputExceeded` CloudWatch metric shows this).
 
 The HTTP status tells Santa whether to keep the batch:
 
