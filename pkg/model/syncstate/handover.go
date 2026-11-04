@@ -37,9 +37,15 @@ func (s SyncState) Completed() bool {
 // re-reading the rules feed since its last completed sync on every sync.
 const unconfirmedLastPageCountsAfter = 3
 
-// LastPageServedMayCount reports whether this sync's served last page could count as its completion, i.e. whether
-// ruledownload records when it served it (LastPageServedAt). It never does after a sync that received a postflight.
+// LastPageServedMayCount reports whether serving this sync's last page could matter to the next sync, i.e. whether
+// ruledownload records when it served it (LastPageServedAt). For a clean sync it always may (see
+// LastCompletedCleanSync); clean syncs are rare, so this costs about one write per Mac per periodic clean sync. For
+// other syncs only after a sync without postflight, and when the page could count as the sync's completion (see
+// SettleLastPageServed), so a Mac whose postflights arrive pays nothing on its other syncs.
 func (s SyncState) LastPageServedMayCount() bool {
+	if s.CleanSync {
+		return true
+	}
 	if s.SyncsWithoutPostflight == 0 {
 		return false
 	}
@@ -79,14 +85,23 @@ func (s SyncState) ruledownloadFinished() bool {
 	return s.PostflightAt != "" || s.LastPageServedAt != ""
 }
 
-// LastCompletedCleanSync returns the start of the last clean sync known to have completed, from the point of view of
-// the next sync: this sync's LastCleanSync, unless this sync is a clean sync that did not complete. A nil sync state
-// has none.
+// LastCompletedCleanSync returns the start of the last clean sync that counts as performed, from the point of view of
+// the next sync, which uses it to schedule the periodic clean sync: this sync's LastCleanSync, unless this sync is a
+// clean sync that does not count. A nil sync state has none.
+//
+// A clean sync counts when it completed, or when its last page was served and an earlier clean sync counted
+// (PreviousCleanSync). The second case is for a Mac whose postflights never arrive: a clean sync that sends the rules
+// the Mac already holds leaves its rules hash unchanged, so it never counts as completed, and without this every
+// later sync would be a clean sync again (every rule, on every sync). Counting it for the schedule only cannot lose a
+// rule even if the Mac never applied it: what the feed cursor and removals rely on is still the completed syncs, and
+// the Mac got every rule through an earlier clean sync and the syncs since; at worst the periodic refresh comes one
+// period late. Without an earlier clean sync, the Mac may never have received the rules written before its first
+// one, so an unconfirmed clean sync does not count.
 func (s *SyncState) LastCompletedCleanSync() string {
 	if s == nil {
 		return ""
 	}
-	if s.CleanSync && !s.Completed() {
+	if s.CleanSync && !s.Completed() && (s.LastPageServedAt == "" || s.PreviousCleanSync == "") {
 		return s.PreviousCleanSync
 	}
 	return s.LastCleanSync
