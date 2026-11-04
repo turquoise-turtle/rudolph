@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/response"
+	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-lambda-go/events"
 )
 
@@ -41,27 +43,52 @@ func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownlo
 		rules[i] = rule.SantaRule
 	}
 
-	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules)
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, nil)
+}
+
+// cleanSyncPlaceholderIdentifier is the identifier of the rule sent by a clean sync that has no rule to send. It is
+// a well-formed SHA-256 that no binary has in practice; removing it from a Mac changes nothing.
+const cleanSyncPlaceholderIdentifier = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// cleanSyncPlaceholderRule is sent, alone, on the last page of a clean sync that would otherwise send no rule.
+//
+// Santa clears its rules at a clean sync only when the download produced at least one rule it could parse
+// (SNTSyncRuleDownload.mm returns early without any cleanup otherwise). Without a rule, a clean sync of a Mac that no
+// rule applies to any more (e.g. its machine-specific rules expired while it was offline, together with its sync
+// state and delivery tracking) would leave every rule the Mac holds in place, and nothing on the server would remember
+// them. A REMOVE for an identifier no binary has is a rule Santa parses, so the Mac clears its rules as asked.
+func cleanSyncPlaceholderRule() RuledownloadRule {
+	return RuledownloadRule{
+		RuleType:   rudolphtypes.RuleTypeBinary,
+		Policy:     rudolphtypes.RulePolicyRemove,
+		Identifier: cleanSyncPlaceholderIdentifier,
+	}
 }
 
 // lastPageOrNext returns a page of global or feed rules. On the last one, the machine-specific rules are appended
 // and no cursor is returned, which ends the sync's ruledownload; otherwise the cursor for the next page is returned.
+// feedServedUpTo is only used on the last page (see machineRulePage.rules).
 func lastPageOrNext(
 	machineID string,
 	cursor ruledownloadCursor,
 	pageRules []rules.SantaRule,
 	lastEvaluatedKey *dynamodb.PrimaryKey,
 	machineRules machineRulePage,
+	feedServedUpTo *time.Time,
 ) (*events.APIGatewayProxyResponse, error) {
 	if lastEvaluatedKey == nil {
-		machineSpecific, err := machineRules.rules(machineID, cursor.syncState)
+		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo, cursor.SyncSeq)
 		if err != nil {
 			return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
+		}
+		responseRules := DDBRulesToResponseRules(append(pageRules, machineSpecific...))
+		if cursor.Strategy == ruledownloadStrategyClean && len(responseRules) == 0 {
+			responseRules = append(responseRules, cleanSyncPlaceholderRule())
 		}
 		return response.APIResponse(
 			http.StatusOK,
 			RuledownloadResponse{
-				Rules: DDBRulesToResponseRules(append(pageRules, machineSpecific...)),
+				Rules: responseRules,
 				// Omit the cursor to signal to the sensor that there are no more pages to paginate through
 			},
 		)

@@ -92,6 +92,11 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the sync state: %w", err), response.ErrInternalServerErrorResponse)
 	}
+	if prevSyncState != nil {
+		// Whether the previous sync's served last page counts as its completion depends on the rules hash the Mac
+		// reports now; everything below reads whether it completed
+		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
+	}
 
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
@@ -126,7 +131,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	case true:
 		lastCleanSyncTime = clock.RFC3339(h.timeProvider.Now())
 	case false:
-		lastCleanSyncTime = prevSyncState.LastCleanSync
+		// Not prevSyncState.LastCleanSync: the previous sync may have been a clean sync that never completed
+		lastCleanSyncTime = prevSyncState.LastCompletedCleanSync()
 	}
 
 	err = h.stateTrackingService.saveSyncState(
@@ -137,6 +143,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		lastCleanSyncTime,
 		machineConfiguration.BatchSize,
 		feedSyncCursor,
+		preflightRequest.RulesHash,
 		prevSyncState,
 	)
 

@@ -38,7 +38,7 @@ type SyncStateRow struct {
 //     apply now have the same digest, nothing was added or stopped applying, and ruledownload reads nothing more.
 //     Empty when unknown (rows written by versions of Rudolph that did not track delivery). MachineRulesTrackedDirty
 //     while the items may differ from the last digest written: ruledownload sets it before it changes the items, and
-//     preflight sets it when the previous sync did not complete (its ruledownload may still be running, or died).
+//     preflight sets it when the previous sync's ruledownload did not finish (it may still be running, or died).
 //     Every write of the digest by ruledownload is conditional on the row still being its sync's (SyncSeq).
 type SyncState struct {
 	MachineID      string `dynamodbav:"MachineID"`
@@ -59,15 +59,54 @@ type SyncState struct {
 	CompletedSyncs         []CompletedSync `dynamodbav:"CompletedSyncs,omitempty"`
 	MachineRulesTracked    string          `dynamodbav:"MachineRulesTracked,omitempty"`
 	// When the machine's delivery tracking items last had their expiry extended (see machinerules.GetDeliveries)
-	MachineRulesTrackingRefreshedAt string         `dynamodbav:"MachineRulesTrackingRefreshedAt,omitempty"`
-	ExpiresAfter                    int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType                        types.DataType `dynamodbav:"DataType"`
+	// Empty when unknown (a sync state created for a Mac without one), which makes the next ruledownload extend it.
+	MachineRulesTrackingRefreshedAt string `dynamodbav:"MachineRulesTrackingRefreshedAt,omitempty"`
+	// For a clean sync, the start of the last clean sync that completed before it (LastCleanSync holds this sync's
+	// start). If this clean sync does not complete, e.g. its preflight response was lost and Santa sent the preflight
+	// again, the next preflight goes back to this value instead of counting a clean sync the Mac never performed.
+	PreviousCleanSync string `dynamodbav:"PreviousCleanSync,omitempty"`
+	// How many syncs in a row before this one received no postflight. Santa ignores a failed postflight, so a Mac
+	// whose postflights never arrive keeps syncing; while this is not zero, ruledownload records when it served the
+	// sync's last page (LastPageServedAt), which can then count as the sync's completion (see SettleCompletion).
+	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
+	// When the previous sync of the machine started (its PreflightAt), for this sync's ruledownload to tell which feed
+	// rows it serves for the first time (see ContentRun). Empty for a machine's first sync.
+	PreviousPreflightAt string `dynamodbav:"PreviousPreflightAt,omitempty"`
+	// When the last completed sync before this one counted through the fallback: how many syncs, this one included,
+	// have served the newest content it carried. 0 when the last completed sync did not count through the fallback.
+	// See SettleCompletion.
+	FallbackContentServings int `dynamodbav:"FallbackContentServings,omitempty"`
+	// How many syncs in a row before this one served the newest content the previous sync served without completing
+	// (the previous sync's LastPageServedRun, or 0 when it completed or recorded none). See NextContentRun.
+	ContentRun int `dynamodbav:"ContentRun,omitempty"`
+	// When ruledownload served this sync's last page; only recorded when it may count (see LastPageServedMayCount).
+	LastPageServedAt string `dynamodbav:"LastPageServedAt,omitempty"`
+	// Recorded with LastPageServedAt: this sync served nothing the covering completed sync had not already
+	// served (see ServedNothingNew), so counting it as completed cannot lose anything.
+	LastPageServedNothingNew bool `dynamodbav:"LastPageServedNothingNew,omitempty"`
+	// Recorded with LastPageServedAt: how many syncs in a row, this one included, served the newest content this sync
+	// served without completing (see NextContentRun).
+	LastPageServedRun int `dynamodbav:"LastPageServedRun,omitempty"`
+	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
+	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
+	// tell whether the Mac applied this sync's rules (see SettleCompletion).
+	PreflightRulesHash string         `dynamodbav:"PreflightRulesHash,omitempty"`
+	ExpiresAfter       int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType           types.DataType `dynamodbav:"DataType"`
+
+	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
+	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.
+	lastPageApplied        bool
+	appliedProven          bool
+	countedThroughFallback bool
 }
 
-// CompletedSync identifies a sync that reached postflight
+// CompletedSync identifies a sync that completed (see SyncState.Completed)
 type CompletedSync struct {
 	Seq         int    `dynamodbav:"Seq"`
 	PreflightAt string `dynamodbav:"PreflightAt"`
+	// The Mac is proven to have applied this sync: its rules hash changed (see SyncState.SettleCompletion).
+	Applied bool `dynamodbav:"Applied,omitempty"`
 }
 
 // Update fragments
@@ -101,6 +140,24 @@ type UpdatePostflightOutcomeItem struct {
 // MachineRulesTrackedDirty is the MachineRulesTracked value while the tracking items may not match the digest. It is
 // never the digest of a set of rules, so a sync that sees it reads the items.
 const MachineRulesTrackedDirty = "dirty"
+
+// MachineRulesTrackedOvertaken is the MachineRulesTracked value written by a ruledownload that changed tracking items
+// and then found that the sync state no longer holds what it expected (typically a newer sync of the machine took
+// over while its writes were in flight): its item writes may have landed after the newer sync's, so the summary
+// the newer sync wrote cannot be trusted. Like MachineRulesTrackedDirty it never matches a set of rules. It differs
+// from it so that a newer ruledownload still writing items, which expects MachineRulesTrackedDirty, cannot replace
+// it with a summary that hides the older writes.
+const MachineRulesTrackedOvertaken = "dirty:overtaken"
+
+type updateMachineRulesTrackedOnlyItem struct {
+	MachineRulesTracked string `dynamodbav:"MachineRulesTracked"`
+}
+
+type updateLastPageServedItem struct {
+	LastPageServedAt         string `dynamodbav:"LastPageServedAt"`
+	LastPageServedNothingNew bool   `dynamodbav:"LastPageServedNothingNew"`
+	LastPageServedRun        int    `dynamodbav:"LastPageServedRun"`
+}
 
 type updateMachineRulesTrackedItem struct {
 	MachineRulesTracked             string `dynamodbav:"MachineRulesTracked"`

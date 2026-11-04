@@ -199,8 +199,9 @@ func parseCsvRule(line map[string]string) (rule fileRule, err error) {
 // importResult tracks the outcome of an import across workers
 type importResult struct {
 	// Counters are incremented with atomic.Add
-	total   uint64
-	skipped uint64
+	total     uint64
+	skipped   uint64
+	unchanged uint64
 
 	mu     sync.Mutex
 	errors []error
@@ -216,6 +217,9 @@ func (r *importResult) fail(err error) {
 // Skipped legacy ALLOWLIST_TRANSITIVE rules alone are not an error.
 func (r *importResult) report() error {
 	fmt.Println("processed lines:", r.total)
+	if r.unchanged > 0 {
+		fmt.Printf("unchanged rules (not written): %d\n", r.unchanged)
+	}
 	if r.skipped > 0 {
 		fmt.Printf("[WARNING] skipped %d rule(s) with the ALLOWLIST_TRANSITIVE policy: %v\n", r.skipped, rudolphrules.ErrTransitivePolicy)
 	}
@@ -226,6 +230,24 @@ func (r *importResult) report() error {
 		fmt.Println("[ERROR]", err)
 	}
 	return fmt.Errorf("%d rule(s) could not be imported: %w", len(r.errors), errors.Join(r.errors...))
+}
+
+// storedRuleUnchanged reports whether the global rule is already stored with every field the file sets. The read is
+// strongly consistent, so a change written moments ago by someone else is not mistaken for the file's version.
+func storedRuleUnchanged(client dynamodb.BatchGetItemAPI, rule fileRule) (bool, error) {
+	sortKey := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
+	stored, err := globalrules.GetGlobalRulesBySortKeysConsistently(client, []string{sortKey})
+	if err != nil {
+		return false, err
+	}
+	current := stored[sortKey]
+	if current == nil || current.SHA256 != "" || current.RuleType != rule.RuleType || current.Identifier != rule.Identifier {
+		// Absent, or a legacy row that writing it again migrates
+		return false, nil
+	}
+	want := rudolphrules.SantaRule{RuleType: rule.RuleType, Policy: rule.Policy, Identifier: rule.Identifier}
+	want.ApplyOptions(rule.options()...)
+	return current.SantaRule == want && current.Description == rule.Description, nil
 }
 
 // startWriters starts the workers writing rules to DynamoDB; wait on the returned WaitGroup after closing rules
@@ -293,6 +315,17 @@ func ddbWriter(
 				"",
 			)
 		default:
+			// Writing a rule that is already stored as it is would add a feed row every Mac downloads again, and for
+			// Macs whose postflights do not arrive such rows hold back the feed cursor (see docs/rule-pagination.md)
+			unchanged, checkErr := storedRuleUnchanged(client, rule)
+			if checkErr != nil {
+				result.fail(fmt.Errorf("rule %s%s: %w", rule.Identifier, suffix, checkErr))
+				continue
+			}
+			if unchanged {
+				atomic.AddUint64(&result.unchanged, 1)
+				continue
+			}
 			fmt.Printf("  Writing rule: [%+v] %s%s\n", rule.Policy, rule.Identifier, suffix)
 			err = globalrules.AddNewGlobalRule(
 				timeProvider,

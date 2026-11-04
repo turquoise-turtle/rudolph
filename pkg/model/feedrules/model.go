@@ -2,6 +2,8 @@ package feedrules
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -27,6 +29,13 @@ func GetSyncStateExpiresAfter(timeProvider clock.TimeProvider) int64 {
 
 func GetDataType() types.DataType {
 	return types.DataTypeRulesFeed
+}
+
+// TimeOfSortKey returns the time a feed sort key is ordered by, the time its writer stamped the row with. It also
+// accepts a bare time, as in a feed cursor (see ReconstructFeedSyncLastEvaluatedKeyFromDate).
+func TimeOfSortKey(sortKey string) (time.Time, error) {
+	stamp, _, _ := strings.Cut(sortKey, "#")
+	return clock.ParseRFC3339(stamp)
 }
 
 func feedRulesSK(

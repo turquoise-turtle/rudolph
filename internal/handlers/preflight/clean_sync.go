@@ -79,14 +79,17 @@ func daysSinceLastCleanSync(timeProvider clock.TimeProvider, prevSyncState *sync
 		return infinity
 	}
 
-	if prevSyncState.LastCleanSync == "" {
+	// A clean sync that did not complete does not count: e.g. when its preflight response was lost and Santa sent the
+	// preflight again, the Mac never performed it.
+	lastCleanSync := prevSyncState.LastCompletedCleanSync()
+	if lastCleanSync == "" {
 		return infinity
 	}
 
-	lastCleanSyncTime, err := clock.ParseRFC3339(prevSyncState.LastCleanSync)
+	lastCleanSyncTime, err := clock.ParseRFC3339(lastCleanSync)
 	if err != nil {
 		// Disregard the error
-		log.Printf("failed to determine number of days since last sync from value: (%s); going to clean sync anyway", prevSyncState.LastCleanSync)
+		log.Printf("failed to determine number of days since last sync from value: (%s); going to clean sync anyway", lastCleanSync)
 		return infinity
 	}
 
