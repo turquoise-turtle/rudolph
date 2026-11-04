@@ -1,139 +1,158 @@
 package firehose
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"log"
-	"time"
 
+	"github.com/airbnb/rudolph/pkg/eventsink"
 	"github.com/aws/aws-sdk-go/aws"
 	awsfirehose "github.com/aws/aws-sdk-go/service/firehose"
 )
 
+// PutRecordBatch limits (https://docs.aws.amazon.com/firehose/latest/dev/limits.html).
 const (
-	maxRetries int = 3
-	maxRecords int = 500
+	maxRecordsPerRequest = 500
+	maxBytesPerRequest   = 4 * 1024 * 1024
+	maxBytesPerRecord    = 1000 * 1024
 )
+
+// errorCodeThrottled is the per-record error code Firehose uses when the stream's throughput is exceeded.
+const errorCodeThrottled = "ServiceUnavailableException"
 
 type FirehoseEvents struct {
 	Items []interface{}
 }
 
-type firehoseEventBatch struct {
-	Items []interface{}
+// Send is SendContext without a deadline of the caller's; it is bounded by eventsink.DefaultBudget.
+func (c client) Send(machineID string, events FirehoseEvents) error {
+	ctx, cancel := eventsink.EnsureDeadline(context.Background())
+	defer cancel()
+	return c.SendContext(ctx, machineID, events)
 }
 
-// Send will upload EventUploadEvents appended with the machineID to Firehose
-// This Send function is only for EventUploadEvents and will automatically split the records into equally spaced partitions as defined
-func (c client) Send(machineID string, events FirehoseEvents) (err error) {
-	batches := eventBatches(events, machineID, maxRecords)
-	for _, batch := range batches {
-		var response *awsfirehose.PutRecordBatchOutput
-		// Loop if not erroring and maxRetries not hit
-		for attempt := 1; attempt < maxRetries; attempt++ {
-			if response != nil {
-				// Filter out all successful records, leaving only the failed ones
-				batch, err = c.filterRecords(response, batch)
-				if err != nil {
-					break // unrecoverable error of some sort
-				}
-			}
-			response, err = c.sendToFirehose(machineID, batch)
-			if err != nil {
-				break // do not continue to retry if there is an error
-			}
-			if int(*response.FailedPutCount) == 0 {
-				break // all records sent properly, so exit loop
-			}
-			attempt++
-		}
+// SendContext writes every event to the delivery stream as one newline-terminated JSON record.
+//
+// Records are split into PutRecordBatch requests within the service's count and size limits. Records Firehose
+// fails individually (FailedPutCount) are retried, alone, with backoff (see eventsink.Backoff), up to
+// eventsink.MaxAttempts times and never past ctx's deadline. A record larger than Firehose stores is not sent.
+// SendContext returns nil only if every record was delivered; an *eventsink.UnstorableError alone if the only
+// records not delivered can never be stored; and another error if records failed in a way that may succeed later.
+func (c client) SendContext(ctx context.Context, machineID string, events FirehoseEvents) error {
+	if len(events.Items) == 0 {
+		return nil
 	}
-	return
-}
 
-func (c client) filterRecords(response *awsfirehose.PutRecordBatchOutput, batch firehoseEventBatch) (failedBatch firehoseEventBatch, err error) {
-	var failedEvents []interface{}
-	for i, requestResponse := range response.RequestResponses {
-		if requestResponse.RecordId != nil {
+	var records [][]byte
+	var sizes []int
+	unmarshalable := 0
+	for _, event := range events.Items {
+		data, err := json.Marshal(event)
+		if err != nil {
+			unmarshalable++
 			continue
 		}
-
-		awsErr := *requestResponse.ErrorMessage
-		switch awsErr {
-		case awsfirehose.ErrCodeInvalidKMSResourceException:
-			err = errors.New(awsErr)
-			return
-		case awsfirehose.ErrCodeServiceUnavailableException:
-			time.Sleep(1 * time.Second)
-		case awsfirehose.ErrCodeLimitExceededException:
-			err = errors.New(awsErr)
-			return
-		}
-
-		if requestResponse.ErrorCode != nil || requestResponse.ErrorMessage != nil {
-			failedEvents = append(failedEvents, batch.Items[i])
-		}
+		data = append(data, '\n')
+		records = append(records, data)
+		sizes = append(sizes, len(data))
 	}
 
-	log.Printf("retrying a total of %d failed records\n", len(failedEvents))
-	return firehoseEventBatch{Items: failedEvents}, nil
-}
+	// A record above the per-record limit would make Firehose reject the whole request.
+	requests, tooLarge := eventsink.Split(sizes, eventsink.Limits{
+		MaxRecords:      maxRecordsPerRequest,
+		MaxRequestBytes: maxBytesPerRequest,
+		MaxRecordBytes:  maxBytesPerRecord,
+	})
 
-// sendToFirehose appends the machineID and EventUploadEvents together and ships them via a PutRecordBatch request
-// if errors occur in the batch request, it will trigger attempt to retry them up to the max limit
-func (c client) sendToFirehose(machineID string, events firehoseEventBatch) (response *awsfirehose.PutRecordBatchOutput, err error) {
-	recordsBatchInput := &awsfirehose.PutRecordBatchInput{
-		DeliveryStreamName: aws.String(c.firehoseStreamName),
-	}
-	records := []*awsfirehose.Record{}
-
-	for _, event := range events.Items {
-		batch, err := json.Marshal(event)
-
+	var failures []error
+	for _, request := range requests {
+		batch := make([][]byte, len(request))
+		for j, i := range request {
+			batch[j] = records[i]
+		}
+		requestFailed, err := c.putWithRetries(ctx, batch)
 		if err != nil {
-			log.Printf("marshalling firehose eventupload event encountered an error, %v", err)
-			return nil, err
+			failures = append(failures, err)
 		}
-
-		records = append(
-			records,
-			&awsfirehose.Record{Data: append(batch, '\n')},
-		)
-	}
-
-	recordsBatchInput = recordsBatchInput.SetRecords(records)
-	response, err = c.firehoseService.PutRecordBatch(recordsBatchInput)
-	if err != nil {
-		log.Printf("PutRecordBatch err: %v\n", err)
-	}
-
-	return // response and error returned into order to see if retry needed
-}
-
-// eventBatches takes a slice of EventUploadEvents and splits them to a defined limit
-// the limit should be set to the firehose putbatchrecords max entries per request of 500
-// This creates our own array of FirehoseEventUploadEvent entries to avoid doing it multiple times later
-func eventBatches(events FirehoseEvents, machineID string, limit int) []firehoseEventBatch {
-	var batches []firehoseEventBatch
-	slice := events.Items
-	for {
-		if len(slice) == 0 {
+		if requestFailed {
+			// Firehose refused a whole request even after the SDK's retries (throttled or unavailable), or the
+			// deadline is near. The send fails either way, so do not hold the caller for the remaining requests.
 			break
 		}
-
-		if len(slice) < limit {
-			limit = len(slice)
-		}
-
-		var batchItems []interface{}
-		for _, item := range slice[0:limit] {
-			batchItems = append(batchItems, item)
-		}
-		batch := firehoseEventBatch{Items: batchItems}
-
-		batches = append(batches, batch)
-		slice = slice[limit:]
 	}
 
-	return batches
+	var unstorable *eventsink.UnstorableError
+	if dropped := len(tooLarge) + unmarshalable; dropped > 0 {
+		unstorable = &eventsink.UnstorableError{Sink: "firehose", Dropped: dropped, Reason: fmt.Sprintf(
+			"%d above the %d byte record limit, %d not encodable as JSON", len(tooLarge), maxBytesPerRecord, unmarshalable)}
+	}
+	return eventsink.Outcome(failures, unstorable)
+}
+
+// putWithRetries sends one request's records, re-sending only those that failed, and returns an error if any record
+// was still not accepted after the last attempt. requestFailed reports that a whole request failed or that there
+// was no time left to retry.
+func (c client) putWithRetries(ctx context.Context, batch [][]byte) (requestFailed bool, err error) {
+	throttled := false
+	for attempt := 1; ; attempt++ {
+		if err := eventsink.Wait(ctx, attempt, throttled); err != nil {
+			return true, fmt.Errorf("firehose: %d record(s) not delivered: %w", len(batch), err)
+		}
+		failed, err := c.putRecordBatch(ctx, batch)
+		if err != nil {
+			// The SDK has already retried the request; it carries no per-record result.
+			return true, fmt.Errorf("firehose PutRecordBatch of %d records failed: %w", len(batch), err)
+		}
+		if len(failed) == 0 {
+			return false, nil
+		}
+		if attempt >= eventsink.MaxAttempts {
+			return false, fmt.Errorf("firehose did not accept %d record(s) after %d attempts (last error code %s)", len(failed), attempt, failed[0].code)
+		}
+		log.Printf("firehose failed %d of %d record(s), retrying them", len(failed), len(batch))
+		throttled = false
+		next := make([][]byte, len(failed))
+		for j, f := range failed {
+			next[j] = batch[f.index]
+			throttled = throttled || f.code == errorCodeThrottled
+		}
+		batch = next
+	}
+}
+
+type failedRecord struct {
+	index int
+	code  string
+}
+
+func (c client) putRecordBatch(ctx context.Context, batch [][]byte) ([]failedRecord, error) {
+	records := make([]*awsfirehose.Record, len(batch))
+	for i, data := range batch {
+		records[i] = &awsfirehose.Record{Data: data}
+	}
+	response, err := c.firehoseService.PutRecordBatchWithContext(ctx, &awsfirehose.PutRecordBatchInput{
+		DeliveryStreamName: aws.String(c.firehoseStreamName),
+		Records:            records,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if response.FailedPutCount == nil || *response.FailedPutCount == 0 {
+		return nil, nil
+	}
+	if len(response.RequestResponses) != len(batch) {
+		return nil, fmt.Errorf("firehose answered %d results for %d records", len(response.RequestResponses), len(batch))
+	}
+	var failed []failedRecord
+	for i, r := range response.RequestResponses {
+		if r.ErrorCode != nil && *r.ErrorCode != "" {
+			failed = append(failed, failedRecord{index: i, code: *r.ErrorCode})
+		}
+	}
+	if len(failed) == 0 {
+		// FailedPutCount says records failed but none is marked: which ones were stored is unknown.
+		return nil, fmt.Errorf("firehose reported %d failed record(s) without saying which", *response.FailedPutCount)
+	}
+	return failed, nil
 }

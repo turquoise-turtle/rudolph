@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -43,9 +44,15 @@ func newHandlers() []HandlerInterface {
 // Only what is needed to operate the API is logged: the route, the machine it is for, the status and how
 // long it took. Handlers that answer 500 log the cause just before (see response.InternalServerError).
 func ApiRouter(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+	return ApiRouterContext(context.Background(), request)
+}
+
+// ApiRouterContext is ApiRouter for a Lambda invocation: ctx carries the invocation's deadline, which handlers
+// that call other services (eventupload) use to answer before the Lambda timeout.
+func ApiRouterContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	start := time.Now()
 
-	response, err := getResponse(request)
+	response, err := getResponse(ctx, request)
 
 	status := 0
 	if response != nil {
@@ -75,11 +82,14 @@ func loggedMachineID(request events.APIGatewayProxyRequest) string {
 	return machineID
 }
 
-func getResponse(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+func getResponse(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	for _, h := range handlers {
 		if h.Handles(request) {
 			if err := h.Boot(); err != nil {
 				return response.InternalServerError(fmt.Errorf("handler failed to start: %w", err), nil)
+			}
+			if hc, ok := h.(ContextHandler); ok {
+				return hc.HandleContext(ctx, request)
 			}
 			return h.Handle(request)
 		}
@@ -93,4 +103,9 @@ type HandlerInterface interface {
 	Handles(request events.APIGatewayProxyRequest) bool
 	Boot() error
 	Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error)
+}
+
+// ContextHandler is a handler that can use the Lambda invocation's context (its deadline).
+type ContextHandler interface {
+	HandleContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error)
 }

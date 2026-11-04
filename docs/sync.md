@@ -215,6 +215,43 @@ This endpoints accepts events logs from the Santa agent which records all binary
 
 #### RESPONSE - None
 
+#### Delivery to the event sink
+Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
+split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
+PutRecords: 500 records / 1 MiB; asynchronous Lambda invocations: 256 KB payloads). Kinesis requests are capped at
+1 MiB, below the API's 5 MiB, because every record of an upload has the machine ID as partition key and so goes to a
+single shard, which accepts 1 MiB and 1,000 records per second.
+
+Records the service fails individually are retried alone, up to 6 attempts. After a throughput error
+(`ProvisionedThroughputExceededException` from Kinesis, `ServiceUnavailableException` from Firehose) the retry waits
+1 to 1.5 seconds so it lands in the next throughput window; after any other error it backs off from 100 ms. A large
+upload to a single Kinesis shard therefore goes through at about 1 MiB per second.
+
+All sink calls, including the AWS SDK's own retries, are bounded by the Lambda invocation's deadline minus 1.5
+seconds (minus half the remaining time when less than 3 seconds remain, so a short invocation still leaves the sinks
+time to send). When that deadline is near, the handler stops and answers 500 itself rather than being killed by the
+Lambda timeout (which API Gateway would turn into a 502). With the module's default 10 second eventupload timeout this
+leaves about 8.5 seconds, enough for roughly 6 to 7 MiB of events to one Kinesis shard. A longer timeout gives more:
+set the `santa_api` module's `eventupload_lambda_timeout_seconds` variable (default 10; the api-handler module accepts
+3 to 900 whole seconds, and API Gateway itself waits at most 29 seconds by default).
+
+Uploads are accepted up to 6 MiB after decompression, so a maximum-size upload takes most of the default budget even
+on an idle shard. If the shard is also carrying other traffic (a stream shared with other producers, or many Macs whose
+machine IDs hash to the same shard), or an additional Lambda sink (`eventupload_output_lambda_name`) runs in the same
+invocation, the upload can reach the deadline on every retry, answer 500 each time and block that Mac's events. Raise
+`eventupload_lambda_timeout_seconds` for headroom, and add shards to the Kinesis stream if it is regularly throttled
+(the stream's `WriteProvisionedThroughputExceeded` CloudWatch metric shows this).
+
+The HTTP status tells Santa whether to keep the batch:
+
+- **200** when every event was delivered, and also when the only events not delivered are ones the sink can **never**
+  store (for example a single event larger than a Firehose or Kinesis record, about 1 MB, or a Lambda async payload).
+  Those events are dropped and the handler logs a line containing `dropped` with the count, the machine ID and the
+  reason, never the event itself. Santa stops at the first failed batch and re-sends it on every sync, so failing the
+  upload for such an event would block every later event from that Mac.
+- **500** when the sink is throttled or failing, or records kept failing after the retries. Santa keeps the batch and
+  sends it again on the next sync; events of that batch that were already delivered may then arrive twice.
+
 ### Ruledownload
 
 #### URL - HTTP POST /ruledownload/{machine_uuid}

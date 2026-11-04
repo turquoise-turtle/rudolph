@@ -6,5 +6,5 @@ import (
 )
 
 func main() {
-	lambda.Start(handlers.ApiRouter)
+	lambda.Start(handlers.ApiRouterContext)
 }
