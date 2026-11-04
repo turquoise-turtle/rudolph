@@ -65,6 +65,9 @@ func SetMachineConfig(client dynamodb.PutItemAPI, machineID string, clientMode t
 	if err != nil {
 		return
 	}
+	if isCleanSync {
+		machineConfigRow.CleanSyncRequest = newCleanSyncRequest()
+	}
 
 	_, err = client.PutItem(machineConfigRow)
 	if err != nil {
@@ -193,6 +196,7 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 	}
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
+	config.CleanSyncRequest = ""
 	globalConfigRow := buildConfigRow(globalConfigurationPK, config)
 
 	_, err = c.setter.PutItem(globalConfigRow)
@@ -240,6 +244,13 @@ func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, c
 	err = validateRemountUsbMode(config.RemountUsbMode, blockUsbMount)
 	if err != nil {
 		return err
+	}
+
+	// Every clean sync requested gets its own identifier; the row is replaced as a whole, so a request still pending
+	// is replaced by this one, or cancelled when this config requests none
+	config.CleanSyncRequest = ""
+	if config.CleanSync {
+		config.CleanSyncRequest = newCleanSyncRequest()
 	}
 
 	// Create the machineID specific PK

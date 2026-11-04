@@ -10,7 +10,7 @@ import (
 
 // Attributes of a machine-specific config row that are not settings, or settings never inherited from the global
 // config
-var notInheritedAttributes = []string{"PK", "SK", "DataType", "CleanSync"}
+var notInheritedAttributes = []string{"PK", "SK", "DataType", "CleanSync", "CleanSyncRequest"}
 
 // unmarshalConfigItem decodes a stored config row. An attribute whose stored type does not fit its setting (e.g. a
 // hand-edited "yes" for a boolean) is left out with a log, so one bad attribute does not make the whole config, and

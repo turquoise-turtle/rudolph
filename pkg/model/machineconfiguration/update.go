@@ -377,6 +377,12 @@ func applyUpdateRequest(current MachineConfiguration, configRequest MachineConfi
 	if configRequest.CleanSync != nil {
 		newConfig.CleanSync = *configRequest.CleanSync
 		changes["CleanSync"] = newConfig.CleanSync
+		if newConfig.CleanSync {
+			// A new request, even while an earlier one is pending: clearing the flag for a clean sync that started
+			// before it must not cancel it
+			newConfig.CleanSyncRequest = newCleanSyncRequest()
+			changes["CleanSyncRequest"] = newConfig.CleanSyncRequest
+		}
 	}
 
 	if configRequest.UploadLogsURL != nil && (always || *configRequest.UploadLogsURL != current.UploadLogsURL) {

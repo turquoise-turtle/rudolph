@@ -28,8 +28,9 @@ func (h *PostPostflightHandler) Boot() (err error) {
 	client := dynamodb.GetClient(dynamodbTableName, awsRegion)
 
 	h.syncStateUpdater = concreteSyncStateUpdater{
-		timeProvider: clock.ConcreteTimeProvider{},
-		updater:      client,
+		timeProvider:  clock.ConcreteTimeProvider{},
+		updater:       client,
+		configUpdater: client,
 	}
 
 	h.booted = true

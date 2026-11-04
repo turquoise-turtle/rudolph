@@ -3,31 +3,34 @@ package syncstate
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
+	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
-// UpdatePostflightDate closes out a sync the client reported nothing about. See UpdatePostflightItem.
-func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (err error) {
-	_, err = client.UpdateItem(
+// UpdatePostflightDate closes out a sync the client reported nothing about. See UpdatePostflightItem. It returns what
+// postflight needs to know about the sync it closed.
+func UpdatePostflightDate(timeProvider clock.TimeProvider, client dynamodb.UpdateItemAPI, machineID string) (*ClosedSync, error) {
+	output, err := client.UpdateItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
 		newUpdatePostflightItem(timeProvider),
 	)
-
 	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+		return nil, fmt.Errorf("failed to update item: %w", err)
 	}
-	return
+	return closedSync(output)
 }
 
 // UpdatePostflightOutcome closes out a sync: it marks the sync as completed, and records what the client reported
 // about the sync it just finished: the sync type it performed, and how many rules it received and successfully
-// applied. See UpdatePostflightOutcomeItem.
+// applied. See UpdatePostflightOutcomeItem. It returns what postflight needs to know about the sync it closed.
 func UpdatePostflightOutcome(
 	timeProvider clock.TimeProvider,
 	client dynamodb.UpdateItemAPI,
@@ -36,8 +39,8 @@ func UpdatePostflightOutcome(
 	rulesReceived int,
 	rulesProcessed int,
 	rulesHashAfterSync string,
-) (err error) {
-	_, err = client.UpdateItem(
+) (*ClosedSync, error) {
+	output, err := client.UpdateItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
@@ -51,11 +54,31 @@ func UpdatePostflightOutcome(
 			RulesHashAfterSync: rulesHashAfterSync,
 		},
 	)
-
 	if err != nil {
-		return fmt.Errorf("failed to update item: %w", err)
+		return nil, fmt.Errorf("failed to update item: %w", err)
 	}
-	return
+	return closedSync(output)
+}
+
+// ClosedSync is what postflight learns about the sync it closes from the updated sync state, without reading it again
+type ClosedSync struct {
+	ConfigCleanSync        bool   `dynamodbav:"ConfigCleanSync"`
+	ConfigCleanSyncRequest string `dynamodbav:"ConfigCleanSyncRequest"`
+}
+
+// closedSync decodes the attributes of the sync state an UpdateItem returned (all of them, as updated). Only the
+// attributes postflight acts on are decoded, and when even they cannot be, the sync is still closed: the next
+// preflight acts on the sync state instead.
+func closedSync(output *awsdynamodb.UpdateItemOutput) (*ClosedSync, error) {
+	closed := &ClosedSync{}
+	if output == nil || len(output.Attributes) == 0 {
+		return closed, nil
+	}
+	if err := attributevalue.UnmarshalMap(output.Attributes, closed); err != nil {
+		log.Printf("the sync was closed, but its sync state cannot be decoded: %v", err)
+		return &ClosedSync{}, nil
+	}
+	return closed, nil
 }
 
 func newUpdatePostflightItem(timeProvider clock.TimeProvider) UpdatePostflightItem {

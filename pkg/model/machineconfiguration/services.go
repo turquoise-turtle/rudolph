@@ -17,8 +17,9 @@ type MachineConfigurationService interface {
 	UpdateMachineConfig(machineID string, configRequest MachineConfigurationUpdateRequest) (*MachineConfiguration, error)
 	DeleteGlobalConfig() error
 	DeleteMachineConfig(machineID string) error
-	// ClearMachineCleanSync clears the clean sync flag of the machine-specific config after a sync acted on it
-	ClearMachineCleanSync(machineID string) error
+	// ClearMachineCleanSync clears the clean sync flag of the machine-specific config once the clean sync it
+	// requested is confirmed, if the flag still holds that request (see the ClearMachineCleanSync function)
+	ClearMachineCleanSync(machineID string, request string) error
 }
 
 type ConcreteMachineConfigurationService struct {
@@ -103,7 +104,7 @@ func (s ConcreteMachineConfigurationService) DeleteMachineConfig(machineID strin
 	return s.deleter.machine.deleteMachineConfig(machineID)
 }
 
-// ClearMachineCleanSync clears the clean sync flag of the machine-specific config, if it is still set
-func (s ConcreteMachineConfigurationService) ClearMachineCleanSync(machineID string) error {
-	return clearMachineCleanSync(s.dynamodb, machineID)
+// ClearMachineCleanSync clears the clean sync flag of the machine-specific config, if it still holds request
+func (s ConcreteMachineConfigurationService) ClearMachineCleanSync(machineID string, request string) error {
+	return ClearMachineCleanSync(s.dynamodb, machineID, request)
 }

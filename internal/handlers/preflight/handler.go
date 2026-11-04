@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
+	"github.com/airbnb/rudolph/pkg/model/syncstate"
 	apiRequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
@@ -101,11 +102,13 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
 	}
 
+	// The clean sync flag of a machine-specific config asks for one clean sync of that machine, until one is confirmed
+	configCleanSync, configCleanSyncConfirmed := configCleanSyncDue(machineConfiguration, prevSyncState)
+
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
 	// or if the machine is new
-	// The clean sync flag of a machine-specific config asks for one clean sync of that machine
-	switch preflightRequest.RequestCleanSync || machineConfiguration.CleanSync {
+	switch preflightRequest.RequestCleanSync || configCleanSync != nil {
 	case true:
 		performCleanSync = true
 	case false:
@@ -149,6 +152,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		feedSyncCursor,
 		preflightRequest.RulesHash,
 		prevSyncState,
+		configCleanSync,
 	)
 
 	if err != nil {
@@ -156,10 +160,10 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		return response.InternalServerError(err, struct{}{})
 	}
 
-	// The clean sync the flag asked for is now under way; clear the flag so it applies once. If clearing fails, the
-	// next sync is clean again, which is harmless.
-	if machineConfiguration.CleanSync {
-		if err := h.machineConfigurationService.ClearMachineCleanSync(machineID); err != nil {
+	// The clean sync the flag asked for was confirmed without a postflight clearing the flag. If clearing fails, the
+	// flag makes the next sync clean again, which is harmless.
+	if configCleanSyncConfirmed {
+		if err := h.machineConfigurationService.ClearMachineCleanSync(machineID, machineConfiguration.CleanSyncRequest); err != nil {
 			log.Printf("%v", err)
 		}
 	}
@@ -168,4 +172,25 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	preflightResponse := ConstructPreflightResponse(machineConfiguration, performCleanSync)
 
 	return response.APIResponse(http.StatusOK, preflightResponse)
+}
+
+// configCleanSyncDue decides what the clean sync flag of the machine's own config (CleanSync, never taken from the
+// global config) asks of this sync. The flag is cleared once a clean sync performing the request is confirmed: by
+// its postflight, which clears the flag itself, or at the next preflight (see syncstate.ConfigCleanSyncOutcome),
+// which reports it as confirmed. Until then every sync is a clean sync for it: progress describes it (nil when the
+// flag asks for nothing). A clean sync that does not complete is therefore performed again, and one whose last page
+// was served but that nothing confirms is repeated at most syncstate.ConfigCleanSyncServingsToConfirm times.
+func configCleanSyncDue(config machineconfiguration.MachineConfiguration, prevSyncState *syncstate.SyncStateRow) (progress *syncstate.ConfigCleanSyncProgress, confirmed bool) {
+	if !config.CleanSync {
+		return nil, false
+	}
+	var prev *syncstate.SyncState
+	if prevSyncState != nil {
+		prev = &prevSyncState.SyncState
+	}
+	confirmed, served := prev.ConfigCleanSyncOutcome(config.CleanSyncRequest)
+	if confirmed {
+		return nil, true
+	}
+	return &syncstate.ConfigCleanSyncProgress{Request: config.CleanSyncRequest, Served: served}, false
 }

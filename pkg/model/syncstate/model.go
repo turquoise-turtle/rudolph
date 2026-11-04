@@ -90,9 +90,18 @@ type SyncState struct {
 	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
 	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
 	// tell whether the Mac applied this sync's rules (see SettleCompletion).
-	PreflightRulesHash string         `dynamodbav:"PreflightRulesHash,omitempty"`
-	ExpiresAfter       int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType           types.DataType `dynamodbav:"DataType"`
+	PreflightRulesHash string `dynamodbav:"PreflightRulesHash,omitempty"`
+	// Set on a clean sync performed while the machine config's clean sync flag is set: this sync performs the
+	// requested clean sync, and the flag is cleared once it is confirmed (see ConfigCleanSyncConfirmed).
+	// ConfigCleanSyncRequest identifies the request (machineconfiguration.MachineConfiguration.CleanSyncRequest, empty
+	// for a flag stored without one), so a request made after this sync started is not cleared by it.
+	ConfigCleanSync        bool   `dynamodbav:"ConfigCleanSync,omitempty"`
+	ConfigCleanSyncRequest string `dynamodbav:"ConfigCleanSyncRequest,omitempty"`
+	// How many earlier clean syncs in a row for the same request had their last page served without anything
+	// confirming that the Mac applied them (see ConfigCleanSyncConfirmed).
+	ConfigCleanSyncServed int            `dynamodbav:"ConfigCleanSyncServed,omitempty"`
+	ExpiresAfter          int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType              types.DataType `dynamodbav:"DataType"`
 
 	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
 	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.

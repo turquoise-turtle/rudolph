@@ -34,9 +34,14 @@ type MachineConfiguration struct {
 	BatchSize              int              `dynamodbav:"BatchSize"`
 	EnableBundles          bool             `dynamodbav:"EnableBundles"`
 	EnabledTransitiveRules bool             `dynamodbav:"EnableTransitiveRules"`
-	CleanSync              bool             `dynamodbav:"CleanSync,omitempty"`
-	FullSyncInterval       int              `dynamodbav:"FullSyncInterval,omitempty"`
-	UploadLogsURL          string           `dynamodbav:"UploadLogsUrl,omitempty"`
+	// CleanSync requests one clean sync of a machine; it is cleared once that clean sync is confirmed (see
+	// syncstate.ConfigCleanSyncOutcome). Never taken from the global config.
+	CleanSync bool `dynamodbav:"CleanSync,omitempty"`
+	// CleanSyncRequest identifies the request, written with every CleanSync set to true, so that clearing the flag
+	// for a clean sync that started earlier does not cancel a request made in the meantime.
+	CleanSyncRequest string `dynamodbav:"CleanSyncRequest,omitempty"`
+	FullSyncInterval int    `dynamodbav:"FullSyncInterval,omitempty"`
+	UploadLogsURL    string `dynamodbav:"UploadLogsUrl,omitempty"`
 	// SyncType                 types.SyncType   `dynamodbav:"SyncType,omitempty"`
 	DataType types.DataType `dynamodbav:"DataType,omitempty"`
 
