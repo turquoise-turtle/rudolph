@@ -1,6 +1,7 @@
 package health
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 
@@ -44,9 +45,10 @@ func (h GetHealthHandler) healthHandler(request events.APIGatewayProxyRequest) (
 	// our system can be considered "healthy"
 	err := globalrules.PingDatabase(h.dynamodbClient)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, map[string]string{
+		// The error goes to the log only: AWS errors name the table, ARNs and the Lambda's role, which every holder of
+		// the fleet-wide sync token could otherwise read
+		return response.InternalServerError(fmt.Errorf("pinging the database: %w", err), map[string]string{
 			"status": "unhealthy",
-			"error":  err.Error(),
 		})
 	}
 

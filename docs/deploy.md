@@ -107,7 +107,7 @@ The 413, timeout and event sink alarms use metric filters on the Lambda log grou
 `Rudolph/PREFIX` namespace. Request bodies above API Gateway's own 10 MB limit are refused before reaching Lambda and
 only show up in API Gateway's `4XXError` metric (and so in `api_4xx`).
 
-The filters count the one line the API router logs per request, such as `POST /eventupload/{machine_id} machine=... status=413 duration=...`. The machine ID comes from the request path, so it is logged only when it is a UUID (otherwise `machine=invalid`); a client cannot add text or lines to the log that way. When a handler answers 500, it logs the cause on the line before, as `internal server error: "..."`.
+The filters count the one line the API router logs per request, such as `POST /eventupload/{machine_id} machine=... status=413 duration=...`. The machine ID comes from the request path, so it is logged only when it is a UUID (otherwise `machine=invalid`); a client cannot add text or lines to the log that way. When a handler answers 500, it logs the cause on the line before, as `internal server error: "..."`, and never puts it in the response: `GET /health` answers `{"status":"unhealthy"}` without the AWS error.
 
 
 ### Install Dependencies

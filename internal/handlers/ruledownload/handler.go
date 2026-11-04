@@ -127,6 +127,5 @@ func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownl
 	}
 
 	// How did you get here??
-	log.Printf("Unreachable code reached in handleRuleDownload()!")
-	return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+	return response.InternalServerError(fmt.Errorf("unreachable: unknown ruledownload strategy %v", cursor.Strategy), response.ErrInternalServerErrorResponse)
 }
