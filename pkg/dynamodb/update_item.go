@@ -85,7 +85,13 @@ func updateItem(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKe
 	for key, value := range updateItems {
 		updates = updates.Set(expression.Name(key), expression.Value(value))
 	}
+	// DynamoDB refuses an expression that names an attribute twice ("Two document paths overlap")
+	removed := map[string]bool{}
 	for _, name := range remove {
+		if _, set := updateItems[name]; set || removed[name] {
+			continue
+		}
+		removed[name] = true
 		updates = updates.Remove(expression.Name(name))
 	}
 

@@ -261,6 +261,7 @@ func normalizeUpdateRequest(configRequest MachineConfigurationUpdateRequest, glo
 	if err := ValidateUpdateRequest(configRequest, global); err != nil {
 		return configRequest, err
 	}
+	configRequest.Inherit = uniqueStrings(configRequest.Inherit)
 	if configRequest.OverrideFileAccessAction != nil {
 		action, err := normalizeOverrideFileAccessAction(*configRequest.OverrideFileAccessAction)
 		if err != nil {

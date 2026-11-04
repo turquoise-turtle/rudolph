@@ -71,3 +71,20 @@ func withoutSettings(config MachineConfiguration, names []string) MachineConfigu
 	}
 	return config
 }
+
+// uniqueStrings returns names without repetitions, in their first order: an update expression must not name an
+// attribute twice
+func uniqueStrings(names []string) []string {
+	if len(names) == 0 {
+		return names
+	}
+	seen := make(map[string]bool, len(names))
+	unique := make([]string, 0, len(names))
+	for _, name := range names {
+		if !seen[name] {
+			seen[name] = true
+			unique = append(unique, name)
+		}
+	}
+	return unique
+}
