@@ -118,7 +118,7 @@ func ValidateUpdateRequest(request MachineConfigurationUpdateRequest, global boo
 	if global && request.CleanSync != nil && *request.CleanSync {
 		return ErrGlobalCleanSync
 	}
-	return nil
+	return validateInherit(request, global)
 }
 
 // SanitizeForSanta returns the config with every value Santa cannot use replaced by a safe default, logging each

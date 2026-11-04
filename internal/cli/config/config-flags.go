@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -26,7 +27,55 @@ const (
 	flagRemountUsbMode            = "remount-usb-mode"
 	flagEventDetailURL            = "event-detail-url"
 	flagEventDetailText           = "event-detail-text"
+	flagCleanSync                 = "clean-sync"
+	flagInherit                   = "inherit"
 )
+
+// settingFlags maps the name of the flag of every setting a machine-specific configuration can override (as `config
+// set` and `config update` name it) to the setting's attribute name, for --inherit
+var settingFlags = map[string]string{
+	"client-mode":                 "ClientMode",
+	flagBlockedPaths:              "BlockedPathRegex",
+	flagAllowedPaths:              "AllowedPathRegex",
+	"batch-size":                  "BatchSize",
+	"bundles":                     "EnableBundles",
+	"transitive-rules":            "EnableTransitiveRules",
+	"full-sync-interval":          "FullSyncInterval",
+	"upload-logs":                 "UploadLogsUrl",
+	flagEnableAllEventUpload:      "EnableAllEventUpload",
+	flagDisableUnknownEventUpload: "DisableUnknownEventUpload",
+	flagOverrideFileAccessAction:  "OverrideFileAccessAction",
+	flagBlockUsbMount:             "BlockUsbMount",
+	flagRemountUsbMode:            "RemountUsbMode",
+	flagEventDetailURL:            "EventDetailURL",
+	flagEventDetailText:           "EventDetailText",
+}
+
+func inheritableSettingFlags() []string {
+	names := make([]string, 0, len(settingFlags))
+	for name := range settingFlags {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// inheritedSettings converts the setting names given with --inherit to attribute names
+func inheritedSettings(flagNames []string) ([]string, error) {
+	var settings []string
+	seen := map[string]bool{}
+	for _, name := range flagNames {
+		setting, ok := settingFlags[strings.TrimPrefix(name, "--")]
+		if !ok {
+			return nil, fmt.Errorf("--%s %q: unknown setting; must be one of %s", flagInherit, name, strings.Join(inheritableSettingFlags(), ", "))
+		}
+		if !seen[setting] {
+			seen[setting] = true
+			settings = append(settings, setting)
+		}
+	}
+	return settings, nil
+}
 
 // combinePathRegexes combines several path regexes into one regex that matches a path if and only if any of
 // them matches. Each pattern is validated with Go's regexp (RE2) syntax, which differs from the ICU syntax Santa

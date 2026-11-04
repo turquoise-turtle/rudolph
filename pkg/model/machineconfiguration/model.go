@@ -81,6 +81,18 @@ type MachineConfigurationUpdateRequest struct {
 	RemountUsbMode            *[]string
 	EventDetailURL            *string
 	EventDetailText           *string
+	// Inherit lists settings (attribute names, see InheritableSettings) to remove from a machine-specific config, so
+	// that the machine follows the global config for them again. Refused for the global config.
+	Inherit []string
+}
+
+// IsEmpty reports whether the update requests no change at all
+func (r MachineConfigurationUpdateRequest) IsEmpty() bool {
+	return r.ClientMode == nil && r.BlockedPathRegex == nil && r.AllowedPathRegex == nil && r.BatchSize == nil &&
+		r.EnableBundles == nil && r.EnableTransitiveRules == nil && r.CleanSync == nil && r.FullSyncInterval == nil &&
+		r.UploadLogsURL == nil && r.EnableAllEventUpload == nil && r.DisableUnknownEventUpload == nil &&
+		r.OverrideFileAccessAction == nil && r.BlockUsbMount == nil && r.RemountUsbMode == nil &&
+		r.EventDetailURL == nil && r.EventDetailText == nil && len(r.Inherit) == 0
 }
 
 // Fragments for updates

@@ -98,7 +98,7 @@ func init() {
 	configSetCmd.Flags().BoolVar(&isEnabledTransitiveRules, "transitive-rules", false, "Enables the usage of transitive rules")
 
 	// Flags define sync behavior and upload logs url
-	configSetCmd.Flags().BoolVar(&isCleanSync, "clean-sync", false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global")
+	configSetCmd.Flags().BoolVar(&isCleanSync, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global")
 	configSetCmd.Flags().StringVarP(&uploadLogsUrlArgs, "upload-logs", "u", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
 
 	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds, at least 60 (default 600)")

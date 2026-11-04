@@ -34,11 +34,26 @@ func (dbc concreteDynamoDBClient) UpdateItemIf(key PrimaryKey, item interface{},
 	return updateItemWithCondition(dbc.tableName, &dbc.awsclient, key, item, &condition, dbc.timeout)
 }
 
+// UpdateItemRemoveAPI updates an existing item, setting some attributes and removing others
+type UpdateItemRemoveAPI interface {
+	// UpdateItemRemove is UpdateItem that also removes the named attributes; removing an attribute the item does
+	// not have is not an error.
+	UpdateItemRemove(key PrimaryKey, item interface{}, remove []string) (*dynamodb.UpdateItemOutput, error)
+}
+
+func (dbc concreteDynamoDBClient) UpdateItemRemove(key PrimaryKey, item interface{}, remove []string) (*dynamodb.UpdateItemOutput, error) {
+	return updateItem(dbc.tableName, &dbc.awsclient, key, item, remove, nil, dbc.timeout)
+}
+
 func updateItemToDynamoDB(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
 	return updateItemWithCondition(tableName, api, updateKey, updateFields, nil, timeout)
 }
 
 func updateItemWithCondition(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, condition *expression.ConditionBuilder, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
+	return updateItem(tableName, api, updateKey, updateFields, nil, condition, timeout)
+}
+
+func updateItem(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKey, updateFields interface{}, remove []string, condition *expression.ConditionBuilder, timeout time.Duration) (*dynamodb.UpdateItemOutput, error) {
 	ctx := context.TODO()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -62,6 +77,9 @@ func updateItemWithCondition(tableName string, api dynamodbUpdateItemAPI, update
 	var updates expression.UpdateBuilder
 	for key, value := range updateItems {
 		updates = updates.Set(expression.Name(key), expression.Value(value))
+	}
+	for _, name := range remove {
+		updates = updates.Remove(expression.Name(name))
 	}
 
 	expr, err := expression.NewBuilder().

@@ -1,6 +1,7 @@
 package machineconfiguration
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
 // UpdateMachineConfigClientMode updates a machineID specific ClientMode configuration to the DynamoDB table via an UpdateItem API call
@@ -57,6 +59,8 @@ func UpdateGlobalConfigClientMode(client dynamodb.UpdateItemAPI, newClientMode t
 
 // ConfigurationWriter updates existing configuration rows and creates the ones that do not exist yet.
 // Creating requires a conditional put, so a client that cannot do one atomically is rejected at compile time.
+// Removing settings from a row (MachineConfigurationUpdateRequest.Inherit) also needs dynamodb.UpdateItemRemoveAPI,
+// which every DynamoDB client has.
 type ConfigurationWriter interface {
 	dynamodb.UpdateItemAPI
 	dynamodb.PutItemAPI
@@ -149,7 +153,7 @@ func (c ConcreteGlobalConfigurationUpdater) updateConfig(configRequest MachineCo
 		}
 
 		// Without a stored global config, the complete config (universal defaults plus the update) is created
-		updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, newGlobalConfig, changes, !isDefaultConfig, false)
+		updatedConfig, err = writeConfigUpdate(c.updater, globalConfigurationPK, newGlobalConfig, changes, nil, !isDefaultConfig, false)
 		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
 			// The row was created or deleted concurrently; apply the update to its current state
 			continue
@@ -212,6 +216,12 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 		// Every requested setting is written, even if the row already holds the same value or an equal value is
 		// inherited: writing it is what makes it a setting of this machine, which no longer follows the global one.
 		newMachineConfig, changes := applyUpdateRequest(*currentMachineConfig, configRequest, true)
+		// Settings to inherit are removed from the row; a machine without a row already inherits everything
+		var removals []string
+		if exists {
+			removals = configRequest.Inherit
+		}
+		newMachineConfig = withoutSettings(newMachineConfig, configRequest.Inherit)
 		if touchesUsbMountSettings(configRequest) {
 			blockUsbMount := newMachineConfig.BlockUsbMount
 			if blockUsbMount == nil && len(newMachineConfig.RemountUsbMode) > 0 {
@@ -228,7 +238,7 @@ func (c ConcreteMachineConfigurationUpdater) updateConfig(machineID string, conf
 			}
 		}
 
-		updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), newMachineConfig, changes, exists, true)
+		updatedConfig, err = writeConfigUpdate(c.updater, machineConfigurationPK(machineID), newMachineConfig, changes, removals, exists, true)
 		if dynamodb.IsConditionalCheckFailed(err) && attempt < maxConfigWriteAttempts {
 			// The row was created or deleted concurrently; apply the update to its current state
 			continue
@@ -257,17 +267,25 @@ func normalizeUpdateRequest(configRequest MachineConfigurationUpdateRequest, glo
 }
 
 func touchesUsbMountSettings(configRequest MachineConfigurationUpdateRequest) bool {
-	return configRequest.BlockUsbMount != nil || configRequest.RemountUsbMode != nil
+	if configRequest.BlockUsbMount != nil || configRequest.RemountUsbMode != nil {
+		return true
+	}
+	for _, name := range configRequest.Inherit {
+		if name == "BlockUsbMount" || name == remountUsbModeAttribute {
+			return true
+		}
+	}
+	return false
 }
 
 // writeConfigUpdate writes newConfig to the config row with the given pk. An existing row gets only the changed
-// attributes, and only if it still exists. A row that does not exist yet is created, and only if it still does not
+// attributes, and loses the removed ones, and only if it still exists. A row that does not exist yet is created, and only if it still does not
 // exist, so concurrent first updates cannot overwrite each other: with only the changed attributes if partial
 // (a machine config, which inherits the rest), else from the complete new config. If the row changed existence in
 // the meantime, the error satisfies dynamodb.IsConditionalCheckFailed.
-func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, exists bool, partial bool) (updatedConfig *MachineConfiguration, err error) {
+func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineConfiguration, changes map[string]interface{}, removals []string, exists bool, partial bool) (updatedConfig *MachineConfiguration, err error) {
 	// if no items of an existing row have been changed, return the same configuration
-	if exists && len(changes) == 0 {
+	if exists && len(changes) == 0 && len(removals) == 0 {
 		updatedConfig = &newConfig
 		return
 	}
@@ -309,13 +327,21 @@ func writeConfigUpdate(client ConfigurationWriter, pk string, newConfig MachineC
 	// Keep the DataType consistent with the row being written
 	changes["DataType"] = buildConfigRow(pk, newConfig).DataType
 
-	output, err := client.UpdateItem(
-		dynamodb.PrimaryKey{
-			PartitionKey: pk,
-			SortKey:      machineConfigurationSK(),
-		},
-		changes,
-	)
+	key := dynamodb.PrimaryKey{
+		PartitionKey: pk,
+		SortKey:      machineConfigurationSK(),
+	}
+	var output *awsdynamodb.UpdateItemOutput
+	if len(removals) > 0 {
+		remover, ok := client.(dynamodb.UpdateItemRemoveAPI)
+		if !ok {
+			err = errors.New("this DynamoDB client cannot remove settings from a config")
+			return
+		}
+		output, err = remover.UpdateItemRemove(key, changes, removals)
+	} else {
+		output, err = client.UpdateItem(key, changes)
+	}
 	if err != nil {
 		return
 	}
