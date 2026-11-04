@@ -56,8 +56,8 @@ func (r *SyncStateRow) ContinueFrom(prev *SyncStateRow, emptyMachineRulesDigest 
 		r.PreviousCleanSync = prev.LastCompletedCleanSync()
 	}
 	r.SyncsWithoutPostflight = prev.NextSyncsWithoutPostflight()
-	r.SyncsSinceCompleted = prev.NextSyncsSinceCompleted()
-	r.AppliedThroughSyncSeq = prev.NextAppliedThroughSyncSeq(r.SyncSeq)
+	r.PreviousPreflightAt = prev.PreflightAt
+	r.ContentRun = prev.NextContentRunCarried()
 	r.CompletedSyncs = prev.NextCompletedSyncs()
 	r.MachineRulesTracked = prev.MachineRulesTracked
 	r.MachineRulesTrackingRefreshedAt = prev.MachineRulesTrackingRefreshedAt

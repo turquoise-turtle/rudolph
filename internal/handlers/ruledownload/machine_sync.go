@@ -95,6 +95,11 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			return nil, errors.New("no sync state: ruledownload without a preflight")
 		}
 	}
+	if cursorSyncSeq != 0 && cursorSyncSeq != syncState.SyncSeq {
+		// The last page of an older sync, requested after a newer sync of the machine started (Santa gave up on it):
+		// its tracking writes and served page would be taken as the newer sync's
+		return nil, fmt.Errorf("ruledownload of a superseded sync: %w", syncstate.ErrSyncSuperseded)
+	}
 
 	rows, err := machinerules.GetMachineRules(p.queryer, machineID)
 	if err != nil {
@@ -152,13 +157,14 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	// served, which the next preflight may count as the sync's completion or as a clean sync performed (see
 	// syncstate.SyncState.LastPageServedMayCount). It is recorded after the tracking above, so a sync whose last page
 	// was served never has tracking writes still to come.
-	// The last page of an older sync, requested after a newer sync of the machine started, is not the newer sync's.
-	ownSync := cursorSyncSeq == 0 || cursorSyncSeq == syncState.SyncSeq
-	if syncState.SyncSeq > 0 && ownSync && syncState.LastPageServedMayCount() {
+	if syncState.SyncSeq > 0 && syncState.LastPageServedMayCount() {
 		// Machine rules that apply are sent on every sync whether or not earlier ones completed, so only the feed rows
 		// and the removals decide whether this sync served anything new
 		nothingNew := feedServedUpTo != nil && syncState.ServedNothingNew(*feedServedUpTo, removalsFirstSentUpTo)
-		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew)
+		newContent := removalsFirstSentUpTo == syncState.SyncSeq ||
+			(feedServedUpTo != nil && syncState.ServesFeedRowsFirst(*feedServedUpTo))
+		run := syncState.NextContentRun(newContent)
+		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew, run)
 		if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
 			// Not fatal: the sync is then only counted as completed if its postflight arrives
 			log.Printf("  %v", err)
@@ -179,8 +185,8 @@ func trackingNeedsRefresh(syncState *syncstate.SyncStateRow, now time.Time) bool
 }
 
 // trackDeliveries brings the tracked deliveries up to date with the rules that apply now, and returns what to send for
-// the rules the Mac may hold that no longer apply, and the latest sync in which one of those whose removal may change
-// the Mac (see syncstate.SyncState.RemovalMayChangeTheMac) was first sent (0 when there are none).
+// the rules the Mac may hold that no longer apply, and the latest sync in which one of those was first sent (0 when
+// there are none).
 //
 // The tracking items and the summary on the sync state cannot be written atomically. So before changing any item,
 // the summary is set to MachineRulesTrackedDirty, which never matches the rules that apply; if this ruledownload dies
@@ -217,12 +223,8 @@ func (p machineRulePage) trackDeliveries(
 	var forget, stopped []string
 	removalsFirstSentUpTo := 0
 	for sortKey := range applying {
-		switch delivery, ok := tracked[sortKey]; {
-		case !ok:
-			// Sent for the first time
-			set[sortKey] = machinerules.Delivery{FirstSentInSync: syncState.SyncSeq}
-		case untracked[sortKey] || delivery.RemovalFirstSentInSync != 0:
-			// Applying again after its removal was sent (the Mac may still hold it), or held since before tracking
+		if delivery, ok := tracked[sortKey]; !ok || untracked[sortKey] || delivery.RemovalFirstSentInSync != 0 {
+			// Sent for the first time, or applying again after its removal was sent
 			set[sortKey] = machinerules.Delivery{}
 		}
 	}
@@ -234,7 +236,7 @@ func (p machineRulePage) trackDeliveries(
 		switch {
 		case firstSent == 0:
 			firstSent = syncState.SyncSeq
-			set[sortKey] = machinerules.Delivery{RemovalFirstSentInSync: firstSent, FirstSentInSync: delivery.FirstSentInSync}
+			set[sortKey] = machinerules.Delivery{RemovalFirstSentInSync: firstSent}
 			stopped = append(stopped, sortKey)
 		case syncstate.DeliveryConfirmed(firstSent, syncState.CompletedSyncs):
 			forget = append(forget, sortKey)
@@ -242,9 +244,7 @@ func (p machineRulePage) trackDeliveries(
 		default:
 			stopped = append(stopped, sortKey)
 		}
-		if syncState.RemovalMayChangeTheMac(delivery.FirstSentInSync) {
-			removalsFirstSentUpTo = max(removalsFirstSentUpTo, firstSent)
-		}
+		removalsFirstSentUpTo = max(removalsFirstSentUpTo, firstSent)
 	}
 	sort.Strings(stopped)
 

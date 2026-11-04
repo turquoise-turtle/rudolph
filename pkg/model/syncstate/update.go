@@ -117,15 +117,15 @@ func InvalidateMachineRulesTracked(client dynamodb.UpdateItemIfAPI, machineID st
 }
 
 // MarkLastPageServed records that ruledownload served the last page of the sync syncSeq (see
-// SyncState.LastPageServedAt), and whether the sync served nothing new (see SyncState.ServedNothingNew). It returns
-// ErrSyncSuperseded and changes nothing when the row belongs to another sync.
-func MarkLastPageServed(timeProvider clock.TimeProvider, client dynamodb.UpdateItemIfAPI, machineID string, syncSeq int, nothingNew bool) error {
+// SyncState.LastPageServedAt), whether the sync served nothing new (see SyncState.ServedNothingNew) and its content run
+// (see SyncState.NextContentRun). It returns ErrSyncSuperseded and changes nothing when the row belongs to another sync.
+func MarkLastPageServed(timeProvider clock.TimeProvider, client dynamodb.UpdateItemIfAPI, machineID string, syncSeq int, nothingNew bool, run int) error {
 	_, err := client.UpdateItemIf(
 		dynamodb.PrimaryKey{
 			PartitionKey: syncStatePK(machineID),
 			SortKey:      syncStateSK,
 		},
-		updateLastPageServedItem{LastPageServedAt: clock.RFC3339(timeProvider.Now()), LastPageServedNothingNew: nothingNew},
+		updateLastPageServedItem{LastPageServedAt: clock.RFC3339(timeProvider.Now()), LastPageServedNothingNew: nothingNew, LastPageServedRun: run},
 		expression.Equal(expression.Name("SyncSeq"), expression.Value(syncSeq)),
 	)
 	if dynamodb.IsConditionalCheckFailed(err) {

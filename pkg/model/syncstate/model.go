@@ -69,17 +69,21 @@ type SyncState struct {
 	// whose postflights never arrive keeps syncing; while this is not zero, ruledownload records when it served the
 	// sync's last page (LastPageServedAt), which can then count as the sync's completion (see SettleCompletion).
 	SyncsWithoutPostflight int `dynamodbav:"SyncsWithoutPostflight,omitempty"`
-	// How many syncs in a row before this one did not complete, by postflight or otherwise (see SettleCompletion).
-	SyncsSinceCompleted int `dynamodbav:"SyncsSinceCompleted,omitempty"`
-	// A sync number at or after the newest sync the Mac is proven to have applied (its rules hash changed, see
-	// SettleCompletion) and before any later sync, so that a rule first sent in a sync numbered up to it reached the
-	// Mac. 0 when none is known (see RemovalMayChangeTheMac).
-	AppliedThroughSyncSeq int `dynamodbav:"AppliedThroughSyncSeq,omitempty"`
+	// When the previous sync of the machine started (its PreflightAt), for this sync's ruledownload to tell which feed
+	// rows it serves for the first time (see ContentRun). Empty for a machine's first sync.
+	PreviousPreflightAt string `dynamodbav:"PreviousPreflightAt,omitempty"`
+	// How many syncs in a row before this one served the newest content the previous sync served without completing
+	// (the previous sync's LastPageServedRun, or 0 when it completed or recorded none). See NextContentRun.
+	ContentRun int `dynamodbav:"ContentRun,omitempty"`
 	// When ruledownload served this sync's last page; only recorded when it may count (see LastPageServedMayCount).
 	LastPageServedAt string `dynamodbav:"LastPageServedAt,omitempty"`
 	// Recorded with LastPageServedAt: this sync served nothing the covering completed sync had not already
 	// served (see ServedNothingNew), so counting it as completed cannot lose anything.
 	LastPageServedNothingNew bool `dynamodbav:"LastPageServedNothingNew,omitempty"`
+	// Recorded with LastPageServedAt: how many syncs in a row, this one included, served the newest content this sync
+	// served without completing (see NextContentRun); the fallback counts the sync once it exceeds
+	// unconfirmedLastPageCountsAfter.
+	LastPageServedRun int `dynamodbav:"LastPageServedRun,omitempty"`
 	// The rules_hash the Mac reported in this sync's preflight (empty when it reported none, or the row was written
 	// by a version of Rudolph that did not record it). The next preflight compares it with the hash it receives to
 	// tell whether the Mac applied this sync's rules (see SettleCompletion).
@@ -148,6 +152,7 @@ type updateMachineRulesTrackedOnlyItem struct {
 type updateLastPageServedItem struct {
 	LastPageServedAt         string `dynamodbav:"LastPageServedAt"`
 	LastPageServedNothingNew bool   `dynamodbav:"LastPageServedNothingNew"`
+	LastPageServedRun        int    `dynamodbav:"LastPageServedRun"`
 }
 
 type updateMachineRulesTrackedItem struct {
