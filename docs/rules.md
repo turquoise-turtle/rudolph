@@ -50,6 +50,8 @@ Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `sil
 `cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac).
 There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
 
+The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits) and is upper-cased before use, as Santa sends the Mac's hardware UUID in upper case and the server matches machine IDs exactly. Every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else. The CLI warns when no Mac has ever synced under the ID, for example a Mac configured to sync under a lower-case ID.
+
 Machine-specific rules expire after 24 hours unless created with:
 * `--expires <when>` — a duration from now (`48h`, `90m`) or an RFC 3339 time (`2026-12-31T18:00:00Z`); it must be in
   the future.
@@ -61,8 +63,9 @@ From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` ac
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.
 
-Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot
-be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. Removing a machine-specific rule restores
+Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. A machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated; create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
+
+Removing a machine-specific rule restores
 the global rule for the same target, including its fields; so does its expiry. Without a global rule Santa can apply,
 the Mac drops the rule (see [rule-pagination](./rule-pagination.md#machine-specific-rules)).
 
