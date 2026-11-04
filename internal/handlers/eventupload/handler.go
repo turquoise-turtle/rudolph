@@ -96,7 +96,7 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 	}
 
 	if err != nil {
-		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err))
+		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})

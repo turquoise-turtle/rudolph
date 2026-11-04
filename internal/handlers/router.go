@@ -79,7 +79,7 @@ func getResponse(request events.APIGatewayProxyRequest) (*events.APIGatewayProxy
 	for _, h := range handlers {
 		if h.Handles(request) {
 			if err := h.Boot(); err != nil {
-				return response.InternalServerError(fmt.Errorf("handler failed to start: %w", err))
+				return response.InternalServerError(fmt.Errorf("handler failed to start: %w", err), nil)
 			}
 			return h.Handle(request)
 		}
