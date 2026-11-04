@@ -80,6 +80,12 @@ The Rudolph server can command the Santa sensor to destroy all of its local rule
 
 NOTE: Even if the Client requests a clean sync, the server is not obligated to respect it.
 
+Rudolph also clean syncs a Mac periodically (every 7 to 17 days, depending on its machine ID). Only a clean sync that
+completed counts: when the preflight that decided one is sent again (Santa retries a request whose response it did
+not get) or the sync fails, the next sync is a clean sync again. Santa 2026.8 only clears its rules at a clean sync
+whose download holds at least one rule it can parse, so a clean sync with no rule to send sends a `REMOVE` of a
+placeholder identifier (see [rule-pagination](./rule-pagination.md#tracking-storage-and-costs)).
+
 #### Request - JSON
 
 ```json
@@ -119,6 +125,14 @@ limited to 2 KB there) would make every preflight for that host fail.
 Postflight applies the same kind of check to what it stores: `sync_type` must be a sync type Rudolph knows (`NORMAL`,
 `CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
 limited to 6 MiB after decompression (HTTP 413 above that).
+
+A Mac that reports no serial number (virtual machines and some repaired logic boards) syncs normally; its sensor data
+row is stored without `SerialNum`, so it is simply absent from the serial number index (`rudolph lookup serial-number` cannot
+find it). Rudolph never stores an empty string in an attribute that is a secondary index key, which DynamoDB rejects.
+
+Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
+and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
+charset=UTF-8` is accepted.
 
 ### Response - JSON
 
@@ -212,6 +226,43 @@ This endpoints accepts events logs from the Santa agent which records all binary
 
 #### RESPONSE - None
 
+#### Delivery to the event sink
+Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
+split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
+PutRecords: 500 records / 1 MiB; asynchronous Lambda invocations: 256 KB payloads). Kinesis requests are capped at
+1 MiB, below the API's 5 MiB, because every record of an upload has the machine ID as partition key and so goes to a
+single shard, which accepts 1 MiB and 1,000 records per second.
+
+Records the service fails individually are retried alone, up to 6 attempts. After a throughput error
+(`ProvisionedThroughputExceededException` from Kinesis, `ServiceUnavailableException` from Firehose) the retry waits
+1 to 1.5 seconds so it lands in the next throughput window; after any other error it backs off from 100 ms. A large
+upload to a single Kinesis shard therefore goes through at about 1 MiB per second.
+
+All sink calls, including the AWS SDK's own retries, are bounded by the Lambda invocation's deadline minus 1.5
+seconds (minus half the remaining time when less than 3 seconds remain, so a short invocation still leaves the sinks
+time to send). When that deadline is near, the handler stops and answers 500 itself rather than being killed by the
+Lambda timeout (which API Gateway would turn into a 502). With the module's default 10 second eventupload timeout this
+leaves about 8.5 seconds, enough for roughly 6 to 7 MiB of events to one Kinesis shard. A longer timeout gives more:
+set the `santa_api` module's `eventupload_lambda_timeout_seconds` variable (default 10; the api-handler module accepts
+3 to 900 whole seconds, and API Gateway itself waits at most 29 seconds by default).
+
+Uploads are accepted up to 6 MiB after decompression, so a maximum-size upload takes most of the default budget even
+on an idle shard. If the shard is also carrying other traffic (a stream shared with other producers, or many Macs whose
+machine IDs hash to the same shard), or an additional Lambda sink (`eventupload_output_lambda_name`) runs in the same
+invocation, the upload can reach the deadline on every retry, answer 500 each time and block that Mac's events. Raise
+`eventupload_lambda_timeout_seconds` for headroom, and add shards to the Kinesis stream if it is regularly throttled
+(the stream's `WriteProvisionedThroughputExceeded` CloudWatch metric shows this).
+
+The HTTP status tells Santa whether to keep the batch:
+
+- **200** when every event was delivered, and also when the only events not delivered are ones the sink can **never**
+  store (for example a single event larger than a Firehose or Kinesis record, about 1 MB, or a Lambda async payload).
+  Those events are dropped and the handler logs a line containing `dropped` with the count, the machine ID and the
+  reason, never the event itself. Santa stops at the first failed batch and re-sends it on every sync, so failing the
+  upload for such an event would block every later event from that Mac.
+- **500** when the sink is throttled or failing, or records kept failing after the retries. Santa keeps the batch and
+  sends it again on the next sync; events of that batch that were already delivered may then arrive twice.
+
 ### Ruledownload
 
 #### URL - HTTP POST /ruledownload/{machine_uuid}
@@ -241,6 +292,8 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 This endpoint is called at the end of a successful sync process. It is the way for the Santa sensor to inform the Rudolph server that the sync process was successful and all rules were correctly committed.
 
 Rudolph keeps state records of every synchronization event that occurs including information on time to process the entire synchronization process. 
+
+Santa ignores a failed postflight. Rudolph also counts a sync as completed when the Mac's `rules_hash` in the next preflight shows it applied the sync (the hash changed), when the sync's last rule page was served and it served nothing that the covering completed sync had not already served, or, as a fallback for an incremental sync whose last page was served, when no earlier sync counting through the fallback carried content that fewer than 8 syncs have served. A Mac whose postflights never arrive thus keeps its feed cursor moving (a sync counts at least every 8 syncs, whatever arrives) and gets removals confirmed. Content that changes nothing on the Mac's rules hash (a custom message or URL edit, a REMOVE of a rule it does not hold) is sent again by up to about 15 syncs before the fallback moves past it. A feed rule or removal is lost only after 8 syncs in a row that served it failed after their last page was served (9 when the first is also the first postflight that did not arrive), unless a stray postflight arrives for one of them. The exception is a feed row written late with a stamp inside the feed cursor's overlap window (a CLI clock up to 2 minutes behind, or about a second of eventual consistency): a single such failed sync loses it, as if a stray postflight arrived for every failed sync. The fallback never counts a clean sync as completed; a periodic clean sync whose last page was served counts as performed for scheduling the next one when the Mac was already missing postflights and an earlier clean sync counted, so such a Mac does not repeat it on every sync, and a Mac whose postflights arrive retries a clean sync that did not complete (see [rule-pagination](./rule-pagination.md#macs-whose-postflight-never-arrives)).
 
 #### Request - Blank
 

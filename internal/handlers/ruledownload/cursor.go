@@ -20,6 +20,10 @@ type ruledownloadCursor struct {
 	ruledownloadCursorDDBLastEvaluatedKey
 	PageNumber int `json:"page,omitempty"`
 	BatchSize  int `json:"batch_size,omitempty"`
+	// SyncSeq is the sync (syncstate.SyncState.SyncSeq) whose first page issued the cursor, so that the last page of
+	// an older sync, served after a newer sync of the machine started, is not recorded as the newer sync's. Absent in
+	// cursors issued by earlier versions of Rudolph.
+	SyncSeq int `json:"seq,omitempty"`
 
 	// syncState is the sync state read for the first page of a sync; it is never sent to the client. When the first
 	// page is also the last one (e.g. a steady-state incremental sync), the machine rules page reuses it instead of
@@ -51,6 +55,7 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 		Strategy:   r.Strategy,
 		BatchSize:  r.BatchSize,
 		PageNumber: r.PageNumber + 1,
+		SyncSeq:    r.SyncSeq,
 	}
 }
 
@@ -134,6 +139,7 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 		}
 
 		cursor.syncState = syncState
+		cursor.SyncSeq = syncState.SyncSeq
 
 	} else {
 		cursor = *ruledownloadRequest.Cursor

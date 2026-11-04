@@ -20,10 +20,13 @@
 package fakesanta
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 
@@ -87,6 +90,9 @@ type Host struct {
 	PrimaryUserGroups []string
 	// RulesHash is the hash of the rule database Santa reports in preflight and postflight, when not empty.
 	RulesHash string
+	// HashRules makes the host report a hash of its current rules instead of RulesHash, as Santa 2026.8 does: the
+	// hash changes when applying a sync changes a rule's identifier, type, policy or CEL expression, and only then.
+	HashRules bool
 
 	// RequestCleanSync makes the next preflight ask for a clean sync (santactl sync --clean).
 	RequestCleanSync bool
@@ -310,7 +316,7 @@ func (h *Host) Sync(t testing.TB) (*SyncResult, error) {
 
 	// Postflight
 	post := fmt.Sprintf(`{"machine_id":%q,"rules_received":%d,"rules_processed":%d,"sync_type":%q,"rules_hash":%q}`,
-		h.MachineID, res.RulesReceived, res.RulesProcessed, res.SyncType, h.RulesHash)
+		h.MachineID, res.RulesReceived, res.RulesProcessed, res.SyncType, h.rulesHash())
 	if _, err := h.call(t, res, "postflight", "PostflightRequest", post, "PostflightResponse"); err != nil {
 		if h.IgnorePostflightFailure {
 			res.PostflightError = err
@@ -386,6 +392,22 @@ func (h *Host) Policy(ruleType, identifier string) string {
 	return h.Rules[RuleKey{Type: ruleType, Identifier: identifier}].Policy
 }
 
+// rulesHash is the rules_hash the host reports. Like Santa 2026.8 (SNTRuleTable.mm executionRulesHashSerialized,
+// which hashes identifier, state, type, cel_expr and seatbelt_policy), it leaves out custom messages and URLs: a sync
+// that only changes those does not change the hash.
+func (h *Host) rulesHash() string {
+	if !h.HashRules {
+		return h.RulesHash
+	}
+	lines := make([]string, 0, len(h.Rules))
+	for k, r := range h.Rules {
+		lines = append(lines, strings.Join([]string{k.Type, k.Identifier, r.Policy, r.CELExpr}, "\x00"))
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
 func (h *Host) preflightJSON() string {
 	counts := map[string]int{}
 	for k := range h.Rules {
@@ -402,7 +424,7 @@ func (h *Host) preflightJSON() string {
 		"binary_rule_count": %d, "certificate_rule_count": %d, "teamid_rule_count": %d,
 		"signingid_rule_count": %d, "cdhash_rule_count": %d
 	}`, h.SerialNumber, h.Hostname, h.ModelID, h.PrimaryUser, groups, h.ClientMode, h.RequestCleanSync, h.MachineID,
-		h.RulesHash, counts["BINARY"], counts["CERTIFICATE"], counts["TEAMID"], counts["SIGNINGID"], counts["CDHASH"])
+		h.rulesHash(), counts["BINARY"], counts["CERTIFICATE"], counts["TEAMID"], counts["SIGNINGID"], counts["CDHASH"])
 }
 
 func (h *Host) request(t testing.TB, stage string, body []byte) events.APIGatewayProxyRequest {

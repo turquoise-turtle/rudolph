@@ -13,7 +13,7 @@ import (
 
 // Parses the HTTP Request into the appropriate request type, or returns a HTTP Response if something is wrong
 func parseRequest(request events.APIGatewayProxyRequest) (parsedRequest *PreflightRequest, errorResponse *events.APIGatewayProxyResponse, err error) {
-	if request.Headers["content-type"] != "application/json" && request.Headers["Content-Type"] != "application/json" {
+	if !apirequest.HasJSONBody(request) {
 		errorResponse, err = response.APIResponse(http.StatusUnsupportedMediaType, response.ErrInvalidMediaTypeResponse)
 		return
 	}

@@ -105,6 +105,7 @@ module "eventupload_function" {
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "eventupload"
   lambda_memory_size        = 256
+  lambda_timeout_seconds    = var.eventupload_lambda_timeout_seconds
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
   log_retention_in_days     = var.log_retention_in_days
 

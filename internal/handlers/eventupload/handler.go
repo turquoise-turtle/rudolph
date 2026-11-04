@@ -2,9 +2,11 @@ package eventupload
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 
+	"github.com/airbnb/rudolph/pkg/eventsink"
 	"github.com/airbnb/rudolph/pkg/firehose"
 	"github.com/airbnb/rudolph/pkg/kinesis"
 	"github.com/airbnb/rudolph/pkg/lambda"
@@ -62,8 +64,14 @@ func (h *PostEventuploadHandler) Handles(request events.APIGatewayProxyRequest) 
 }
 
 func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
-	ctx := context.Background()
+	return h.HandleContext(context.Background(), request)
+}
 
+// HandleContext handles an upload within ctx's deadline (the Lambda invocation's). Sink calls stop
+// eventsink.DeadlineMargin before it (half the remaining time under a short timeout, see
+// eventsink.WithSendDeadline), so the handler answers 5xx itself instead of being killed by the Lambda timeout;
+// without a deadline they are bounded by eventsink.DefaultBudget.
+func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
 	machineID, eventsRequest, errorResponse, err := parseRequest(request)
 	if errorResponse != nil || err != nil {
 		return errorResponse, err
@@ -82,12 +90,15 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 		return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
 	}
 
+	ctx, cancel := eventsink.WithSendDeadline(ctx)
+	defer cancel()
+
 	if h.enableFirehose {
-		err = sendToFirehose(h.firehoseClient, machineID, forwardedEvents)
+		err = sendToFirehose(ctx, h.firehoseClient, machineID, forwardedEvents)
 	}
 
 	if err == nil && h.enableKinesis {
-		err = sendToKinesis(h.kinesisClient, machineID, forwardedEvents)
+		err = sendToKinesis(ctx, h.kinesisClient, machineID, forwardedEvents)
 	}
 
 	if err == nil && h.enableLambda {
@@ -95,7 +106,7 @@ func (h *PostEventuploadHandler) Handle(request events.APIGatewayProxyRequest) (
 	}
 
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})

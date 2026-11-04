@@ -12,6 +12,8 @@ import (
 
 // AddNewMachineRule creates a rule for a single machine.
 // Optional rule fields (e.g. custom message, CEL expression) are set with rules.RuleOption values.
+// The rule expires at expires; the zero time.Time creates a rule that never expires, stored without
+// ExpiresAfter (the table's TTL attribute).
 func AddNewMachineRule(
 	client dynamodb.PutItemAPI,
 	machineID string,
@@ -48,9 +50,11 @@ func AddNewMachineRule(
 			PartitionKey: machineRulePK(machineID),
 			SortKey:      machineRuleSK(identifier, ruleType),
 		},
-		Description:  description,
-		SantaRule:    santaRule,
-		ExpiresAfter: expires.Unix(),
+		Description: description,
+		SantaRule:   santaRule,
+	}
+	if !expires.IsZero() {
+		rule.ExpiresAfter = expires.Unix()
 	}
 
 	_, err = client.PutItem(rule)
@@ -90,13 +94,19 @@ func ruleValidation(
 		return false, err
 	}
 
+	// Bounded optional fields
+	err = rules.ValidateFieldSizes(rule)
+	if err != nil {
+		return false, err
+	}
+
 	// Identifier validation
 	if !rules.ValidIdentifier(rule.RuleType, rule.Identifier) {
 		return false, fmt.Errorf("invalid identifier %q for rule type %s", rule.Identifier, ruleTypeName)
 	}
 
-	// Expires validation - must be a positive time period
-	if expires.IsZero() {
+	// Expires validation: zero means permanent, anything else must be a positive Unix time
+	if !expires.IsZero() && expires.Unix() <= 0 {
 		err = errors.New("expires time is not a positive time")
 		return false, err
 	}

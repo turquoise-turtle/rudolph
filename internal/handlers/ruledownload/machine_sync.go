@@ -47,10 +47,13 @@ type concreteMachineRuleDownloader struct {
 func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error) {
 	log.Printf("  Ruledownload machine page")
 
-	machineRules, err := d.machineRules.rules(machineID, nil)
+	cursorSyncSeq := 0
+	if ruledownloadRequest != nil && ruledownloadRequest.Cursor != nil {
+		cursorSyncSeq = ruledownloadRequest.Cursor.SyncSeq
+	}
+	machineRules, err := d.machineRules.rules(machineID, nil, nil, cursorSyncSeq)
 	if err != nil {
-		log.Printf("  Failed to build the machine rules page: %v", err)
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// The lack of a cursor in this response signals to the sensor that there is no more stuff to paginate over.
@@ -78,7 +81,10 @@ type machineRulePage struct {
 // Mac may hold from now on.
 //
 // syncState is the machine's sync state as read at the start of this ruledownload; when nil, it is read again.
-func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow) ([]rules.SantaRule, error) {
+// feedServedUpTo is, for an incremental sync, the stamp of the newest feed row the sync served (or of its cursor when
+// it served none), and nil for any other sync. cursorSyncSeq is the sync the request's cursor was issued for, 0 when
+// unknown.
+func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow, feedServedUpTo *time.Time, cursorSyncSeq int) ([]rules.SantaRule, error) {
 	if syncState == nil {
 		var err error
 		syncState, err = syncstate.GetByMachineID(p.getter, machineID)
@@ -88,6 +94,11 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		if syncState == nil {
 			return nil, errors.New("no sync state: ruledownload without a preflight")
 		}
+	}
+	if cursorSyncSeq != 0 && cursorSyncSeq != syncState.SyncSeq {
+		// The last page of an older sync, requested after a newer sync of the machine started (Santa gave up on it):
+		// its tracking writes and served page would be taken as the newer sync's
+		return nil, fmt.Errorf("ruledownload of a superseded sync: %w", syncstate.ErrSyncSuperseded)
 	}
 
 	rows, err := machinerules.GetMachineRules(p.queryer, machineID)
@@ -111,16 +122,18 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	}
 
 	stopped := 0
+	removalsFirstSentUpTo := 0
 	refresh := trackingNeedsRefresh(syncState, now)
 	if refresh || machinerules.DeliveryDigest(applying) != syncState.MachineRulesTracked {
 		// Something was added or stopped applying, a removal is pending, delivery is not tracked yet, the summary may
 		// be stale (MachineRulesTrackedDirty), or the tracking items' expiry must be extended
-		replacements, err := p.trackDeliveries(machineID, syncState, *rows, applying, refresh, now)
+		replacements, firstSentUpTo, err := p.trackDeliveries(machineID, syncState, *rows, applying, refresh, now)
 		if err != nil {
 			return nil, err
 		}
 		page = append(page, replacements...)
 		stopped = len(replacements)
+		removalsFirstSentUpTo = firstSentUpTo
 	}
 
 	// Never log the rules themselves: they identify the binaries a machine is allowed or blocked from running.
@@ -139,6 +152,26 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			}
 		}
 	}
+
+	// This is the sync's last page. For a clean sync, or after syncs that received no postflight, record that it was
+	// served, which the next preflight may count as the sync's completion or as a clean sync performed (see
+	// syncstate.SyncState.LastPageServedMayCount). It is recorded after the tracking above, so a sync whose last page
+	// was served never has tracking writes still to come.
+	if syncState.SyncSeq > 0 && syncState.LastPageServedMayCount() {
+		// Machine rules that apply are sent on every sync whether or not earlier ones completed, so only the feed rows
+		// and the removals decide whether this sync served anything new
+		nothingNew := feedServedUpTo != nil && syncState.ServedNothingNew(*feedServedUpTo, removalsFirstSentUpTo)
+		// A clean sync serves every global rule, including rules written just before it that no earlier sync served,
+		// which neither its feed position nor the next sync's would show as new
+		newContent := syncState.CleanSync || removalsFirstSentUpTo == syncState.SyncSeq ||
+			(feedServedUpTo != nil && syncState.ServesFeedRowsFirst(*feedServedUpTo))
+		run := syncState.NextContentRun(newContent)
+		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew, run)
+		if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
+			// Not fatal: the sync is then only counted as completed if its postflight arrives
+			log.Printf("  %v", err)
+		}
+	}
 	return page, nil
 }
 
@@ -154,7 +187,8 @@ func trackingNeedsRefresh(syncState *syncstate.SyncStateRow, now time.Time) bool
 }
 
 // trackDeliveries brings the tracked deliveries up to date with the rules that apply now, and returns what to send for
-// the rules the Mac may hold that no longer apply.
+// the rules the Mac may hold that no longer apply, and the latest sync in which one of those was first sent (0 when
+// there are none).
 //
 // The tracking items and the summary on the sync state cannot be written atomically. So before changing any item,
 // the summary is set to MachineRulesTrackedDirty, which never matches the rules that apply; if this ruledownload dies
@@ -168,10 +202,10 @@ func (p machineRulePage) trackDeliveries(
 	applying map[string]machinerules.Delivery,
 	refresh bool,
 	now time.Time,
-) ([]rules.SantaRule, error) {
+) ([]rules.SantaRule, int, error) {
 	tracked, err := machinerules.GetDeliveries(p.queryer, machineID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	untracked := map[string]bool{}
 	if syncState.MachineRulesTracked == "" {
@@ -189,6 +223,7 @@ func (p machineRulePage) trackDeliveries(
 
 	set := map[string]machinerules.Delivery{}
 	var forget, stopped []string
+	removalsFirstSentUpTo := 0
 	for sortKey := range applying {
 		if delivery, ok := tracked[sortKey]; !ok || untracked[sortKey] || delivery.RemovalFirstSentInSync != 0 {
 			// Sent for the first time, or applying again after its removal was sent
@@ -199,24 +234,28 @@ func (p machineRulePage) trackDeliveries(
 		if _, ok := applying[sortKey]; ok {
 			continue
 		}
+		firstSent := delivery.RemovalFirstSentInSync
 		switch {
-		case delivery.RemovalFirstSentInSync == 0:
-			set[sortKey] = machinerules.Delivery{RemovalFirstSentInSync: syncState.SyncSeq}
+		case firstSent == 0:
+			firstSent = syncState.SyncSeq
+			set[sortKey] = machinerules.Delivery{RemovalFirstSentInSync: firstSent}
 			stopped = append(stopped, sortKey)
-		case syncstate.DeliveryConfirmed(delivery.RemovalFirstSentInSync, syncState.CompletedSyncs):
+		case syncstate.DeliveryConfirmed(firstSent, syncState.CompletedSyncs):
 			forget = append(forget, sortKey)
+			continue
 		default:
 			stopped = append(stopped, sortKey)
 		}
+		removalsFirstSentUpTo = max(removalsFirstSentUpTo, firstSent)
 	}
 	sort.Strings(stopped)
 
 	replacements, err := p.replacementsFor(stopped)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if !record {
-		return replacements, nil
+		return replacements, removalsFirstSentUpTo, nil
 	}
 
 	refreshedAt := ""
@@ -239,12 +278,12 @@ func (p machineRulePage) trackDeliveries(
 		if summary != "" && summary != syncstate.MachineRulesTrackedDirty {
 			// "" (not tracked yet) already makes every sync read the items and the rows, so it is kept until the end
 			if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, syncstate.MachineRulesTrackedDirty, ""); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 			summary = syncstate.MachineRulesTrackedDirty
 		}
 		if err := machinerules.WriteDeliveries(p.batchWriter, machineID, set, forget, now); err != nil {
-			return nil, err
+			return nil, 0, p.invalidateAfterItemWrites(machineID, err)
 		}
 	}
 	for sortKey, delivery := range set {
@@ -255,10 +294,29 @@ func (p machineRulePage) trackDeliveries(
 	}
 	if digest := machinerules.DeliveryDigest(tracked); digest != summary || refreshedAt != "" {
 		if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, digest, refreshedAt); err != nil {
-			return nil, err
+			if len(set) > 0 || len(forget) > 0 {
+				return nil, 0, p.invalidateAfterItemWrites(machineID, err)
+			}
+			return nil, 0, err
 		}
 	}
-	return replacements, nil
+	return replacements, removalsFirstSentUpTo, nil
+}
+
+// invalidateAfterItemWrites handles a failure after this ruledownload sent tracking item writes, and returns err.
+//
+// The item writes are not conditional (BatchWriteItem cannot be), so they may have landed after a newer sync of the
+// machine took over: e.g. Santa gave up on this slow sync and started another, which read the items, recorded a rule
+// it sent again, and wrote a summary of what it saw, and then this ruledownload's write deleted that item. The newer
+// summary would then hide a rule the Mac holds, and its removal would never be sent. So the summary is replaced, on
+// whichever sync's row, by a value that makes the next sync read the items again (which brings them back in line with
+// the rules that apply). When this ruledownload is still the machine's current sync, the summary is already dirty
+// and this changes nothing that matters.
+func (p machineRulePage) invalidateAfterItemWrites(machineID string, err error) error {
+	if ierr := syncstate.InvalidateMachineRulesTracked(p.updater, machineID); ierr != nil {
+		log.Printf("  Failed to invalidate the machine rules tracked after an interrupted update: %v", ierr)
+	}
+	return err
 }
 
 // replacementsFor returns what to send for machine rules the Mac may hold but that no longer apply, by rule sort key:

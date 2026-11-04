@@ -33,12 +33,17 @@ func (t *TargetFlags) AddTargetFlagsRules(cmd *cobra.Command) {
 
 }
 
+// GetMachineID returns the machine ID given with --machine, or else this Mac's own machine ID. Call ResolveMachineID
+// first, so that a machine ID typed in another case than the one it is stored under still addresses that machine.
 func (t TargetFlags) GetMachineID() (string, error) {
 	t.getSelfMachineID() // We do some ninja initialization
 
 	if t.IsGlobal {
 		return "", errors.New("do not call GetMachineID when IsGlobal is true")
 	} else if t.MachineID != "" {
+		if err := ValidateMachineIDFlag(t.MachineID); err != nil {
+			return "", err
+		}
 		return t.MachineID, nil
 	} else {
 		return santa_sensor.GetSelfMachineID()

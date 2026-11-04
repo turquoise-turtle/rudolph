@@ -1,8 +1,9 @@
 package ruledownload
 
 import (
+	"fmt"
 	"log"
-	"net/http"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
@@ -32,8 +33,7 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 
 	feedRules, lastEvaluatedKey, err := feedrules.GetPaginatedFeedRules(d.queryer, feedPageSize, ddbCursor)
 	if err != nil {
-		log.Printf("  GetPaginatedFeedRules Error %s", err.Error())
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(fmt.Errorf("reading a page of feed rules: %w", err), struct{}{})
 	}
 
 	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
@@ -44,5 +44,23 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 		rules[i] = rule.SantaRule
 	}
 
-	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules)
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, feedServedUpTo(cursor, feedRules))
+}
+
+// feedServedUpTo returns the stamp of the newest feed row a sync served once it serves this page, or nil when it
+// cannot tell. The feed is read in sort key order, so that is the last row of this page; on a later page without rows
+// it is the row the previous page ended on. A sync whose only page has no rows served none: the zero time.
+func feedServedUpTo(cursor ruledownloadCursor, page []*feedrules.FeedRuleRow) *time.Time {
+	if len(page) == 0 && cursor.PageNumber <= 1 {
+		return &time.Time{}
+	}
+	sortKey := cursor.SortKey
+	if len(page) > 0 {
+		sortKey = page[len(page)-1].SortKey
+	}
+	stamp, err := feedrules.TimeOfSortKey(sortKey)
+	if err != nil {
+		return nil
+	}
+	return &stamp
 }

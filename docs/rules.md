@@ -33,12 +33,39 @@ still have it (from older versions of Rudolph) to clients; remove them with `rud
 * Notification App Name (`notification_app_name`) — Santa notifies the user that this application is now allowed (not during clean syncs)
 * CEL Expression (`cel_expr`) — The expression evaluated by `CEL` rules; only allowed on `CEL` rules
 
+Every rule a Mac may hold is sent in its rule downloads, so these fields are bounded when a rule is created (global or
+machine-specific, CLI or import); a longer value is refused with an error naming the field. The limits, in bytes of
+UTF-8, are well above what Santa's block dialog and notifications can show:
+
+| Field | Limit |
+|---|---|
+| `custom_msg` | 4096 |
+| `custom_url` | 4096 |
+| `event_detail_button_label` | 256 |
+| `notification_app_name` | 256 |
+| `cel_expr` | 16384 |
+
+## Global and machine-specific rules
+Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `silent-gui`, `silent-tty`, `compiler`,
+`cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac).
+There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
+
+The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits); every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else, as the API does. It can be typed in any case. The server keeps a Mac's machine ID exactly as the Mac sends it, which is upper case for the hardware UUID but can be any case when Santa's `MachineID` setting is used, so the CLI looks the ID up in the case typed, in upper case and in lower case, and uses the first of these that a Mac has synced under; failing that, one with a machine configuration; failing that, one with machine rules (older CLIs stored the ID as typed); and otherwise upper case. The lookup is one DynamoDB BatchGetItem request, plus at most three one-item queries when nothing is known about the machine. The CLI warns when no Mac has ever synced under the ID it uses.
+
+Machine-specific rules expire after 24 hours unless created with:
+* `--expires <when>` — a duration from now (`48h`, `90m`) or an RFC 3339 time (`2026-12-31T18:00:00Z`); it must be in
+  the future.
+* `--permanent` — the rule never expires (it is stored without `ExpiresAfter`, the table's TTL attribute).
+
+Both flags are refused on global rules (which never expire) and together.
+
 From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` accept `--custom-msg`, `--custom-url`,
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.
 
-Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot
-be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. Removing a machine-specific rule restores
+Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. A machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated, including one that expires while the CLI waits for confirmation (the write is conditional on the rule not having expired); create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
+
+Removing a machine-specific rule restores
 the global rule for the same target, including its fields; so does its expiry. Without a global rule Santa can apply,
 the Mac drops the rule (see [rule-pagination](./rule-pagination.md#machine-specific-rules)).
 
@@ -85,6 +112,8 @@ export ENV=YOURENV
 export ENV=YOURENV
 ./rudolph rules import -f /path/to/rules.csv
 ```
+
+Import skips rules that are already stored with the same policy, custom message, custom URL, CEL expression, button label, notification app name and description (it reads each one first, strongly consistently), so importing an unchanged file again writes nothing and adds no rules feed row for Macs to download.
 
 ### Sample or Community Rules
 We've provided a directory with ... _some_ sample rules [examples/sample-rules.csv](/examples/sample-rules.csv), but each team is largely going to have to figure this stuff out on their own.

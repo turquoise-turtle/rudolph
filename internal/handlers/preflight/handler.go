@@ -79,13 +79,13 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	// Save the state of the preflight request - this is the sensor state
 	err := h.stateTrackingService.saveSensorDataFromPreflightRequest(machineID, preflightRequest)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("saving the sensor data: %w", err), response.ErrInternalServerErrorResponse)
 	}
 
 	// Retrieve the intended configuration for the machine
 	machineConfiguration, err := h.machineConfigurationService.GetIntendedConfig(machineID)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
 	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
 	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
@@ -93,7 +93,12 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	// Get the previous sync state
 	prevSyncState, err := h.stateTrackingService.getSyncState(machineID)
 	if err != nil {
-		return response.APIResponse(http.StatusInternalServerError, response.ErrInternalServerErrorResponse)
+		return response.InternalServerError(fmt.Errorf("reading the sync state: %w", err), response.ErrInternalServerErrorResponse)
+	}
+	if prevSyncState != nil {
+		// Whether the previous sync's served last page counts as its completion depends on the rules hash the Mac
+		// reports now; everything below reads whether it completed
+		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
 	}
 
 	// Determine if a Clean sync should be performed based on the preflight request
@@ -117,7 +122,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 			prevSyncState,
 		)
 		if err != nil {
-			return response.APIResponse(http.StatusInternalServerError, err)
+			return response.InternalServerError(fmt.Errorf("deciding whether to clean sync: %w", err), struct{}{})
 		}
 	default:
 		performCleanSync = true
@@ -130,7 +135,8 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	case true:
 		lastCleanSyncTime = clock.RFC3339(h.timeProvider.Now())
 	case false:
-		lastCleanSyncTime = prevSyncState.LastCleanSync
+		// Not prevSyncState.LastCleanSync: the previous sync may have been a clean sync that never completed
+		lastCleanSyncTime = prevSyncState.LastCompletedCleanSync()
 	}
 
 	err = h.stateTrackingService.saveSyncState(
@@ -141,12 +147,13 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		lastCleanSyncTime,
 		machineConfiguration.BatchSize,
 		feedSyncCursor,
+		preflightRequest.RulesHash,
 		prevSyncState,
 	)
 
 	if err != nil {
 		err = fmt.Errorf("encountered error trying to save new sync state: %w", err)
-		return response.APIResponse(http.StatusInternalServerError, err)
+		return response.InternalServerError(err, struct{}{})
 	}
 
 	// The clean sync the flag asked for is now under way; clear the flag so it applies once. If clearing fails, the
