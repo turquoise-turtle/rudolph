@@ -2,6 +2,7 @@ package sensordata
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -18,9 +19,12 @@ const (
 // SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
 type SensorData struct {
 	dynamodb.PrimaryKey
-	MachineID       string `dynamodbav:"MachineID,omitempty"`
-	SerialNum       string `dynamodbav:"SerialNum,omitempty"`
-	Hostname        string `dynamodbav:"Hostname"`
+	MachineID string `dynamodbav:"MachineID,omitempty"`
+	SerialNum string `dynamodbav:"SerialNum,omitempty"`
+	// Hostname and HostnameKey are omitted when empty: HostnameKey is the key of the web view's hostname index,
+	// and DynamoDB rejects a PutItem that stores an empty string in an index key attribute.
+	Hostname        string `dynamodbav:"Hostname,omitempty"`
+	HostnameKey     string `dynamodbav:"HostnameKey,omitempty"`
 	ModelIdentifier string `dynamodbav:"ModelIdentifier"`
 	// SIPStatus is a pointer so that "SIP disabled" (0) is distinguishable from "the sensor reported none":
 	// omitempty leaves out only a nil pointer, a reported 0 is stored.
@@ -44,6 +48,12 @@ type SensorData struct {
 	Time                 string           `dynamodbav:"Time"`
 	ExpiresAfter         int64            `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType             types.DataType   `dynamodbav:"DataType,omitempty"`
+}
+
+// HostnameKey is the form of a hostname the web view searches by prefix: trimmed and lower case, so the search is
+// case-insensitive and a blank hostname has no key.
+func HostnameKey(hostname string) string {
+	return strings.ToLower(strings.TrimSpace(hostname))
 }
 
 // MachineIDSensorDataPKSK returns the partition and sort keys for a machine id
