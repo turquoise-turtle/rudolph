@@ -138,6 +138,8 @@ A Mac that reports no serial number (virtual machines and some repaired logic bo
 row is stored without `SerialNum`, so it is simply absent from the serial number index (`rudolph lookup serial-number` cannot
 find it). Rudolph never stores an empty string in an attribute that is a secondary index key, which DynamoDB rejects.
 
+The sensor data row also stores `HostnameKey`, the reported hostname trimmed of surrounding whitespace and in lower case, so the web view can search Macs by hostname prefix without regard to case. `Hostname` itself is stored as reported. A Mac that reports no hostname has neither attribute, and one whose hostname is only whitespace has `Hostname` but no `HostnameKey`.
+
 Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
 and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
 charset=UTF-8` is accepted.

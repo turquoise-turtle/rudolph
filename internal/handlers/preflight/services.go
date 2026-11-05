@@ -65,6 +65,7 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 	// The rest of the inventory a sensor reports about its host; the web view and the CLI show it, and it is
 	// the only place an operator can see which Mac a machine ID belongs to.
 	sensorData.Hostname = request.Hostname
+	sensorData.HostnameKey = sensordata.HostnameKey(request.Hostname)
 	sensorData.ModelIdentifier = request.ModelIdentifier
 	sensorData.SIPStatus = request.SIPStatus
 	sensorData.PrimaryUserGroups = request.PrimaryUserGroups
