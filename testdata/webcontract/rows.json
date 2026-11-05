@@ -283,6 +283,9 @@
     "Hostname": {
       "S": "mac-aaaaaaaa.example.com"
     },
+    "HostnameKey": {
+      "S": "mac-aaaaaaaa.example.com"
+    },
     "MachineID": {
       "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
     },
@@ -387,6 +390,12 @@
       "S": "<timestamp>"
     },
     "PreflightAt": {
+      "S": "<timestamp>"
+    },
+    "PreflightRulesHash": {
+      "S": "0123456789abcdef"
+    },
+    "PreviousPreflightAt": {
       "S": "<timestamp>"
     },
     "RulesHashAfterSync": {
