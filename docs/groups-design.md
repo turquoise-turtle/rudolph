@@ -74,6 +74,6 @@ Differences from the design above, and choices it left open:
 Known limits, not fixed:
 
 - The machine-rule tail, group winners included, has no response-size budget, like machine rules alone (deferred with the SCALE work): a Mac with very many group rules gets them all on the last page.
-- Any change to a group's rules changes the digest of what applies only for keys that change, but the tail is rebuilt from the new version; a rule added or removed makes each member Mac read its delivery partition once.
+- A group rule added or removed changes the set of keys that apply, so each member Mac reads its whole delivery partition once at its next sync (an edit that keeps the key changes nothing tracked).
 - Server instances cache the registry independently for up to 60 s, so during that window one instance can send a new group rule and another its replacement (the global rule or a `REMOVE`); the Mac settles within a sync or two once all instances see the same version.
 - The 5,000-rule limit is checked before the write, not atomically with it: concurrent writers can take a group slightly past it.
