@@ -198,3 +198,22 @@ func TestClientVersions_IdentityUnverifiedReachesSinksAndTheEventsTable(t *testi
 	}
 }
 
+
+// From the review: a Mac going back to an older Santa (or an old client's first sync after Rudolph starts adapting
+// to it) holds rules that release does not apply, so its next sync is a clean sync too, with the adapted policies.
+func TestClientVersions_DowngradeToAnOldClientCleanSyncs(t *testing.T) {
+	transport := freshServer(t)
+	addGlobalRule(t, strings.Repeat("e5", 32), types.RuleTypeBinary, types.RulePolicyBlocklist)
+	addGlobalRule(t, sha1, types.RuleTypeBinary, types.RulePolicySilentGUIBlocklist)
+	h := hostOn(t, "2026.9", machineA, transport)
+	h.MustSync(t)
+	h.MustSync(t)
+	h.Version = "2025.12"
+	res := h.MustSync(t)
+	if res.SyncType == "NORMAL" {
+		t.Errorf("the first sync after going back to 2025.12 was NORMAL, want a clean sync")
+	}
+	if got := h.Policy("BINARY", sha1); got != "SILENT_BLOCKLIST" {
+		t.Errorf("after the downgrade: %q, want SILENT_BLOCKLIST", got)
+	}
+}
