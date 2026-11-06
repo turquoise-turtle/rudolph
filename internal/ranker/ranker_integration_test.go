@@ -111,7 +111,7 @@ func list(t *testing.T, kind string, window int) []row {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i, it := range q.Items {
+		for _, it := range q.Items {
 			var r struct {
 				SK, FileSHA256, FileName, SigningID, TeamID string
 				Count, Machines                             int
@@ -120,8 +120,8 @@ func list(t *testing.T, kind string, window int) []row {
 			if err := attributevalue.UnmarshalMap(it, &r); err != nil {
 				t.Fatal(err)
 			}
-			if want := fmt.Sprintf("%06d", len(rows)+i+1); r.SK != want {
-				t.Errorf("%s %d row %d has SK %q, want %q", kind, window, len(rows)+i+1, r.SK, want)
+			if want := fmt.Sprintf("%06d", len(rows)+1); r.SK != want {
+				t.Errorf("%s %d row %d has SK %q, want %q", kind, window, len(rows)+1, r.SK, want)
 			}
 			if exp := time.Unix(r.ExpiresAfter, 0); exp.Before(now.Add(24*time.Hour)) || exp.After(now.Add(3*24*time.Hour)) {
 				t.Errorf("%s %d row ExpiresAfter %v, want about now + 2 days", kind, window, exp)
