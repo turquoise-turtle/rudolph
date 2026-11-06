@@ -26,6 +26,7 @@ import (
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
@@ -95,8 +96,25 @@ func generateWebContractRows(t *testing.T) {
 	addMachine(shaN(11), types.RulePolicyAllowlist, time.Now().Add(24*time.Hour))
 	addMachine(shaN(1), types.RulePolicyAllowlist, time.Now().Add(24*time.Hour)) // overrides a global rule
 	addMachine(shaN(12), types.RulePolicyBlocklist, time.Now().Add(24*time.Hour))
+	// Device groups: a registered group with a rule, one Mac assigned to it that also reports it
+	gw, ok := client.(groups.RegistryWriter)
+	if !ok {
+		t.Fatal("the DynamoDB client cannot write groups")
+	}
+	if err := groups.CreateGroup(tp, gw, "eng", "Engineering", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := groups.PutRule(gw, "eng", rules.SantaRule{RuleType: types.RuleTypeSigningID, Policy: types.RulePolicyBlocklist,
+		Identifier: "EQHXZ8M8AV:com.google.GeminiMacOS", CustomMessage: "Not for Eng"}, "web contract"); err != nil {
+		t.Fatal(err)
+	}
+	if err := groups.AddAssigned(tp, gw, machineA, "eng"); err != nil {
+		t.Fatal(err)
+	}
+
 	host := newHost(t, machineA, transport)
 	host.RulesHash = "0123456789abcdef"
+	host.PrimaryUserGroups = []string{"Eng", "staff"}
 	host.MustSync(t)
 	host.MustSync(t)
 	if err := mr.Remove(machineA, shaN(1), types.RuleTypeBinary); err != nil { // falls back to the global rule

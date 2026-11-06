@@ -30,10 +30,14 @@ Keys (`PK`, `SK`):
 | Machine config | `Machine#<machine id>` | `Config` |
 | Sensor data (what the Mac last reported) | `Machine#<machine id>` | `Current` |
 | Sync state | `Machine#<machine id>` | `SyncState` |
-| Global rule | `GlobalRules` | `<RuleType>#<identifier>` (`Binary`, `Certificate`, `TeamID`, `SigningID`, `CDHash`) |
+| Global rule | `GlobalRules` | `<RuleType>#<identifier>` (`Binary`, `Cert`, `TeamID`, `SigningID`, `CDHash`) |
 | Rules feed entry | `RulesFeed` | `<RFC 3339 time>#<RuleType>#<identifier>` |
 | Machine rule | `MachineRules#<machine id>` | `<RuleType>#<identifier>` |
 | Delivery tracking | `MachineRuleDelivery#<machine id>` | `<RuleType>#<identifier>` |
+| Group registry (docs/groups.md) | `GroupRegistry` | `Current` |
+| Group rule | `GroupRules#<group>` | `<RuleType>#<identifier>` |
+| A Mac's groups (assigned, and reported groups Rudolph counts) | `Machine#<machine id>` | `Groups` |
+| A Mac's reported groups as Santa sent them | `Machine#<machine id>` | `ReportedGroups` |
 
 Machine IDs are canonical UUIDs in the case the Mac reports them; the same UUID in another case is another machine.
 
@@ -43,7 +47,8 @@ Encodings:
 - `Policy` (number): 1 ALLOWLIST, 2 BLOCKLIST, 3 SILENT_BLOCKLIST, 4 REMOVE, 5 ALLOWLIST_COMPILER, 6
   ALLOWLIST_TRANSITIVE (legacy, never sent to Macs), 7 CEL, 8 SILENT_GUI_BLOCKLIST, 9 SILENT_TTY_BLOCKLIST.
 - `ClientMode` (number): 1 MONITOR, 2 LOCKDOWN, 3 STANDALONE. The sensor data's `ClientMode` is what the Mac reported.
-- `DataType` (string): `GlobalConfig`, `MachineConfig`, `SensorData`, `SyncState`, `RulesFeed`.
+- `DataType` (string): `GlobalConfig`, `MachineConfig`, `SensorData`, `SyncState`, `RulesFeed`, `GroupRegistry`, `GroupRule`, and others for newer rows.
+- Group registry: `Groups` maps each group name to `Description`, `AcceptReported` (only then do reported groups count), `RulesVersion`, `CreatedAt`. A Mac's `Groups` item holds `Assigned` (a string set) and `Reported` (registered groups among those it reported); a Mac in neither is in the reserved group `rudolph:ungrouped`. Group rule rows carry the rule fields of a global rule plus `Group`.
 - `OverrideFileAccessAction`: `NONE`, `AUDIT_ONLY`, `DISABLE`; older rows may hold legacy spellings (`AuditOnly`).
 - `RemountUsbMode`: a list of strings; older rows may hold a comma separated string.
 - Optional rule fields: `CustomMessage`, `CustomURL`, `EventDetailButtonLabel`, `NotificationAppName`, `CELExpr`.

@@ -289,6 +289,72 @@
     }
   },
   {
+    "DataType": {
+      "S": "GroupRegistry"
+    },
+    "Groups": {
+      "M": {
+        "eng": {
+          "M": {
+            "AcceptReported": {
+              "BOOL": true
+            },
+            "CreatedAt": {
+              "S": "<timestamp>"
+            },
+            "Description": {
+              "S": "Engineering"
+            },
+            "RulesVersion": {
+              "N": "2"
+            }
+          }
+        }
+      }
+    },
+    "MembershipVersion": {
+      "N": "2"
+    },
+    "PK": {
+      "S": "GroupRegistry"
+    },
+    "RulesVersionCounter": {
+      "N": "2"
+    },
+    "SK": {
+      "S": "Current"
+    }
+  },
+  {
+    "CustomMessage": {
+      "S": "Not for Eng"
+    },
+    "DataType": {
+      "S": "GroupRule"
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "Group": {
+      "S": "eng"
+    },
+    "Identifier": {
+      "S": "EQHXZ8M8AV:com.google.GeminiMacOS"
+    },
+    "PK": {
+      "S": "GroupRules#eng"
+    },
+    "Policy": {
+      "N": "2"
+    },
+    "RuleType": {
+      "N": "3"
+    },
+    "SK": {
+      "S": "SigningID#EQHXZ8M8AV:com.google.GeminiMacOS"
+    }
+  },
+  {
     "BinaryRuleCount": {
       "N": "8"
     },
@@ -341,7 +407,7 @@
       "BOOL": false
     },
     "RuleCount": {
-      "N": "12"
+      "N": "13"
     },
     "RulesHash": {
       "S": "0123456789abcdef"
@@ -362,7 +428,7 @@
       "S": "C02AAAAAAAA1"
     },
     "SigningIDRuleCount": {
-      "N": "1"
+      "N": "2"
     },
     "TeamIDRuleCount": {
       "N": "1"
@@ -372,6 +438,54 @@
     },
     "TransitiveRuleCount": {
       "N": "0"
+    }
+  },
+  {
+    "Assigned": {
+      "SS": [
+        "eng"
+      ]
+    },
+    "DataType": {
+      "S": "MachineGroups"
+    },
+    "PK": {
+      "S": "Machine#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "Reported": {
+      "SS": [
+        "eng"
+      ]
+    },
+    "SK": {
+      "S": "Groups"
+    },
+    "UpdatedAt": {
+      "S": "<timestamp>"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "PK": {
+      "S": "Machine#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "PrimaryUserGroups": {
+      "L": [
+        {
+          "S": "Eng"
+        },
+        {
+          "S": "staff"
+        }
+      ]
+    },
+    "SK": {
+      "S": "ReportedGroups"
+    },
+    "Time": {
+      "S": "<timestamp>"
     }
   },
   {
@@ -405,7 +519,7 @@
       "S": "<timestamp>"
     },
     "GroupsBasis": {
-      "S": "none"
+      "S": "82fe032bd9337b5d"
     },
     "LastCleanSync": {
       "S": "<timestamp>"
@@ -437,14 +551,20 @@
     "PreviousPreflightAt": {
       "S": "<timestamp>"
     },
+    "ReportedGroupsHash": {
+      "S": "624fc09222bde040"
+    },
+    "ReportedGroupsWrittenAt": {
+      "S": "<timestamp>"
+    },
     "RulesHashAfterSync": {
       "S": "0123456789abcdef"
     },
     "RulesProcessed": {
-      "N": "13"
+      "N": "14"
     },
     "RulesReceived": {
-      "N": "13"
+      "N": "14"
     },
     "SK": {
       "S": "SyncState"
@@ -529,6 +649,17 @@
     },
     "SK": {
       "S": "Binary#000000000000000000000000000000000000000000000000000000000000000c"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "<number>"
+    },
+    "PK": {
+      "S": "MachineRuleDelivery#AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "SK": {
+      "S": "SigningID#EQHXZ8M8AV:com.google.GeminiMacOS"
     }
   },
   {
