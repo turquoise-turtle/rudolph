@@ -37,6 +37,30 @@ type Registry struct {
 	// MembershipVersion is incremented with every change to assigned membership or to the registry, for readers
 	// (such as rudolph-web) that cache membership
 	MembershipVersion int `dynamodbav:"MembershipVersion"`
+	// RulesVersionCounter is the last RulesVersion issued to any group. Versions are drawn from it, so a group deleted
+	// and created again never repeats a version an earlier group of that name had: servers cache group rules by name
+	// and version, and would otherwise serve the deleted group's rules.
+	RulesVersionCounter int `dynamodbav:"RulesVersionCounter,omitempty"`
+}
+
+// nextRulesVersion returns the version to issue next. Registries without a counter (or groups written by other
+// tools) may hold higher versions than the counter, so it starts above all of them.
+func (r *Registry) nextRulesVersion() int {
+	highest := r.RulesVersionCounter
+	for _, entry := range r.Groups {
+		highest = max(highest, entry.RulesVersion)
+	}
+	return highest + 1
+}
+
+// counterUnchanged returns the condition that RulesVersionCounter (#c) still has the value read into r, adding the
+// value it needs to values
+func (r *Registry) counterUnchanged(values map[string]types.AttributeValue) string {
+	if r.RulesVersionCounter == 0 {
+		return "attribute_not_exists(#c)"
+	}
+	values[":counter"] = number(r.RulesVersionCounter)
+	return "#c = :counter"
 }
 
 func registryKey() dynamodb.PrimaryKey {
@@ -140,21 +164,24 @@ func CreateGroup(timeProvider clock.TimeProvider, client RegistryWriter, name, d
 	if name != Ungrouped && registry.countable() >= MaxGroups {
 		return ErrTooManyGroups
 	}
+	next := registry.nextRulesVersion()
 	entry, err := attributevalue.Marshal(Entry{
 		Description:    description,
 		AcceptReported: acceptReported,
-		RulesVersion:   1,
+		RulesVersion:   next,
 		CreatedAt:      clock.RFC3339(timeProvider.Now()),
 	})
 	if err != nil {
 		return err
 	}
-	// The size condition keeps two concurrent creations from exceeding MaxGroups
+	// The size condition keeps two concurrent creations from exceeding MaxGroups, the counter one from issuing a
+	// version twice
+	values := map[string]types.AttributeValue{":e": entry, ":one": number(1), ":size": number(len(registry.Groups)), ":next": number(next)}
 	_, err = client.UpdateItemExpression(registryKey(),
-		"SET #g.#n = :e ADD #m :one",
-		"attribute_not_exists(#g.#n) AND size(#g) = :size",
-		names("#g", "Groups", "#n", name, "#m", "MembershipVersion"),
-		map[string]types.AttributeValue{":e": entry, ":one": number(1), ":size": number(len(registry.Groups))})
+		"SET #g.#n = :e, #c = :next ADD #m :one",
+		"attribute_not_exists(#g.#n) AND size(#g) = :size AND "+registry.counterUnchanged(values),
+		names("#g", "Groups", "#n", name, "#m", "MembershipVersion", "#c", "RulesVersionCounter"),
+		values)
 	if dynamodb.IsConditionalCheckFailed(err) {
 		return ErrRegistryChanged
 	}

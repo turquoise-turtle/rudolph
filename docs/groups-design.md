@@ -68,3 +68,12 @@ Differences from the design above, and choices it left open:
 - **Ungrouped** is registered by the CLI (with `AcceptReported` false) the first time an `--ungrouped` rule is written; it does not count towards the 64 groups.
 - **CLI writes.** `rule … --group` puts the rule row and increments the group's `RulesVersion` in one transaction (conditional on the group being registered); `rule remove … --group` deletes it the same way. `rule update` refuses group targets: writing the rule again replaces it. `group delete --force` deletes the group's rules first, then the registry entry; assigned membership is left on the Macs, inert while no group of that name exists. Registry and membership changes increment `MembershipVersion` for readers that cache them.
 - **IAM.** The Lambdas only read `GroupRegistry` and `GroupRules#…`, which the read statement already allows; they write only `Machine#<id>`/`Groups`, already covered by `Machine#*`. The group partitions are therefore not added to the write statement's `dynamodb:LeadingKeys`, as for global rules. No Terraform change is needed.
+- **Versions never repeat.** Every `RulesVersion` (at `group create` and at each rule change) is drawn from the registry's `RulesVersionCounter`, conditional on the counter not having moved, so a group deleted and created again never reuses a version a warm server instance may have cached for the old group.
+- **No reported membership** has the basis `none`, not the empty basis of a sync state that never recorded one. A sync state that expired, or was written by a Lambda that predates groups, therefore makes the next preflight clear a stale `Reported` (a conditional update that creates no item for Macs that never had one).
+
+Known limits, not fixed:
+
+- The machine-rule tail, group winners included, has no response-size budget, like machine rules alone (deferred with the SCALE work): a Mac with very many group rules gets them all on the last page.
+- Any change to a group's rules changes the digest of what applies only for keys that change, but the tail is rebuilt from the new version; a rule added or removed makes each member Mac read its delivery partition once.
+- Server instances cache the registry independently for up to 60 s, so during that window one instance can send a new group rule and another its replacement (the global rule or a `REMOVE`); the Mac settles within a sync or two once all instances see the same version.
+- The 5,000-rule limit is checked before the write, not atomically with it: concurrent writers can take a group slightly past it.

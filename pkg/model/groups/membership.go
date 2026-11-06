@@ -63,29 +63,35 @@ func ReportedMembership(registry *Registry, reported []string) []string {
 	return counted
 }
 
+// NoReportedBasis is the basis of no reported membership. It is not empty, the value of a sync state that never
+// recorded one (expired, or written by a Lambda that predates groups), so that such a sync state makes preflight clear
+// a Reported attribute the item may still hold.
+const NoReportedBasis = "none"
+
 // ReportedBasis is a short digest of the reported membership stored on the groups item, kept on the sync state so
-// that preflight only writes the item when it changes. It is empty for no membership, the value of a sync state that
-// never recorded one, so a Mac in no reported group never writes the item.
+// that preflight only writes the item when it changes.
 func ReportedBasis(reported []string) string {
 	if len(reported) == 0 {
-		return ""
+		return NoReportedBasis
 	}
 	sum := sha256.Sum256([]byte(strings.Join(reported, "\n")))
 	return hex.EncodeToString(sum[:8])
 }
 
-// SetReported stores the Mac's reported membership (none removes it). Assigned membership is left as it is.
+// SetReported stores the Mac's reported membership. Assigned membership is left as it is. No membership removes the
+// attribute, and creates no item where there is none (a Mac never in a reported group needs none).
 func SetReported(timeProvider clock.TimeProvider, client dynamodb.UpdateExpressionAPI, machineID string, reported []string) error {
 	values := map[string]types.AttributeValue{
 		":t":  &types.AttributeValueMemberS{Value: clock.RFC3339(timeProvider.Now())},
 		":dt": &types.AttributeValueMemberS{Value: machineGroupsDataType},
 	}
-	update := "SET UpdatedAt = :t, DataType = :dt REMOVE Reported"
+	update, condition := "SET UpdatedAt = :t, DataType = :dt REMOVE Reported", "attribute_exists(Reported)"
 	if len(reported) > 0 {
-		update = "SET UpdatedAt = :t, DataType = :dt, Reported = :r"
+		update, condition = "SET UpdatedAt = :t, DataType = :dt, Reported = :r", ""
 		values[":r"] = &types.AttributeValueMemberSS{Value: reported}
 	}
-	if _, err := client.UpdateItemExpression(machineGroupsKey(machineID), update, "", nil, values); err != nil {
+	_, err := client.UpdateItemExpression(machineGroupsKey(machineID), update, condition, nil, values)
+	if err != nil && !(condition != "" && dynamodb.IsConditionalCheckFailed(err)) {
 		return fmt.Errorf("failed to save the machine's reported groups: %w", err)
 	}
 	return nil

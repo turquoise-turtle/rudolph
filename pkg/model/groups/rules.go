@@ -105,12 +105,52 @@ func groupRuleKeys(client dynamodb.QueryAPI, group string) ([]dynamodb.PrimaryKe
 	return keys, nil
 }
 
-// bumpRulesVersion is the registry update that goes into the same transaction as every change to a group's rules
-func bumpRulesVersion(client dynamodb.TransactUpdateExpressionAPI, group string) (*awstypes.TransactWriteItem, error) {
+// bumpRulesVersion is the registry update that goes into the same transaction as every change to a group's rules. It
+// gives the group the next version from the registry-wide counter (see Registry.nextRulesVersion), conditional on
+// the counter not having moved since registry was read, so that no version is ever issued twice.
+func bumpRulesVersion(client dynamodb.TransactUpdateExpressionAPI, registry *Registry, group string) (*awstypes.TransactWriteItem, error) {
+	values := map[string]awstypes.AttributeValue{":next": number(registry.nextRulesVersion())}
 	return client.CreateTransactUpdateExpression(registryKey(),
-		"SET #g.#n.#v = #g.#n.#v + :one", "attribute_exists(#g.#n)",
-		names("#g", "Groups", "#n", group, "#v", "RulesVersion"),
-		map[string]awstypes.AttributeValue{":one": number(1)})
+		"SET #g.#n.#v = :next, #c = :next", "attribute_exists(#g.#n) AND "+registry.counterUnchanged(values),
+		names("#g", "Groups", "#n", group, "#v", "RulesVersion", "#c", "RulesVersionCounter"),
+		values)
+}
+
+// changeRules runs a transaction holding item and the version bump of group, reading the registry again and retrying
+// when another writer issued a version meanwhile. It returns ErrGroupNotFound when the group is not registered, and
+// errItemCondition when the registry did not change but the transaction's condition still failed (item's own).
+func changeRules(client RegistryWriter, group string, item awstypes.TransactWriteItem, errItemCondition error) error {
+	for attempt := 0; attempt < 5; attempt++ {
+		registry, err := GetRegistry(client, true)
+		if err != nil {
+			return err
+		}
+		if _, ok := registry.Groups[group]; !ok {
+			return ErrGroupNotFound
+		}
+		bump, err := bumpRulesVersion(client, registry, group)
+		if err != nil {
+			return err
+		}
+		_, err = client.TransactWriteItems([]awstypes.TransactWriteItem{item, *bump}, nil)
+		if err == nil {
+			return nil
+		}
+		if !dynamodb.IsTransactionConditionalCheckFailed(err) {
+			return err
+		}
+		after, rerr := GetRegistry(client, true)
+		if rerr != nil {
+			return rerr
+		}
+		if _, ok := after.Groups[group]; !ok {
+			return ErrGroupNotFound
+		}
+		if after.RulesVersionCounter == registry.RulesVersionCounter && after.nextRulesVersion() == registry.nextRulesVersion() {
+			return errItemCondition
+		}
+	}
+	return ErrRegistryChanged
 }
 
 // PutRule creates or replaces a rule of a registered group. A Mac receives the change at its next sync.
@@ -130,6 +170,7 @@ func PutRule(client RegistryWriter, group string, rule rules.SantaRule, descript
 	if err != nil {
 		return err
 	}
+	// Not atomic with the write: two operators adding rules at once can take a group slightly past the limit
 	if len(existing) >= MaxRulesPerGroup {
 		replacing := false
 		for _, key := range existing {
@@ -151,15 +192,10 @@ func PutRule(client RegistryWriter, group string, rule rules.SantaRule, descript
 	if err != nil {
 		return err
 	}
-	bump, err := bumpRulesVersion(client, group)
-	if err != nil {
-		return err
-	}
-	_, err = client.TransactWriteItems([]awstypes.TransactWriteItem{*put, *bump}, nil)
-	if dynamodb.IsTransactionConditionalCheckFailed(err) {
-		return ErrGroupNotFound
-	}
-	if err != nil {
+	if err := changeRules(client, group, *put, ErrRegistryChanged); err != nil {
+		if errors.Is(err, ErrGroupNotFound) || errors.Is(err, ErrRegistryChanged) {
+			return err
+		}
 		return fmt.Errorf("failed to write the group rule: %w", err)
 	}
 	return nil
@@ -173,15 +209,10 @@ func RemoveRule(client RegistryWriter, group string, sortKey string) error {
 		return err
 	}
 	del.Delete.ConditionExpression = aws.String("attribute_exists(PK)")
-	bump, err := bumpRulesVersion(client, group)
-	if err != nil {
-		return err
-	}
-	_, err = client.TransactWriteItems([]awstypes.TransactWriteItem{*del, *bump}, nil)
-	if dynamodb.IsTransactionConditionalCheckFailed(err) {
-		return ErrRuleNotFound
-	}
-	if err != nil {
+	if err := changeRules(client, group, *del, ErrRuleNotFound); err != nil {
+		if errors.Is(err, ErrGroupNotFound) || errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrRegistryChanged) {
+			return err
+		}
 		return fmt.Errorf("failed to remove the group rule: %w", err)
 	}
 	return nil

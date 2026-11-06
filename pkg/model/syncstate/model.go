@@ -110,7 +110,7 @@ type SyncState struct {
 	ReportedGroupsHash      string `dynamodbav:"ReportedGroupsHash,omitempty"`
 	ReportedGroupsWrittenAt string `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
 	// The digest of the reported group membership preflight last stored on the machine's groups item
-	// (groups.ReportedBasis), so that it only rewrites the item when that changes. Empty while it stores none.
+	// (groups.ReportedBasis), so that it only rewrites the item when that changes. Empty when never recorded.
 	GroupsBasis  string         `dynamodbav:"GroupsBasis,omitempty"`
 	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType     types.DataType `dynamodbav:"DataType"`
