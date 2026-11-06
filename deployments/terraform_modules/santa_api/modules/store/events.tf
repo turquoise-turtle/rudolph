@@ -87,14 +87,14 @@ resource "aws_dynamodb_table" "events" {
 
 #
 # Writes from the eventupload Lambda: items only, on this table only. Kept apart from lambda_permissions, which is
-# scoped to the store table and its machine partitions.
+# scoped to the store table and its machine partitions. TransactWriteItems (an event with its day counter) has no IAM
+# action of its own: it needs PutItem and UpdateItem on the table.
 #
 data "aws_iam_policy_document" "events_write" {
   statement {
     actions = [
       "dynamodb:PutItem",
       "dynamodb:UpdateItem",
-      "dynamodb:BatchWriteItem",
     ]
 
     resources = [

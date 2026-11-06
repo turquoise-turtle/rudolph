@@ -320,6 +320,6 @@ This applies to every existing deployment. The release adds a second DynamoDB ta
 
 - **Starts empty.** Only events uploaded after the deploy are stored; Santa does not re-send events it already delivered. The web view's lists and day counts fill in from the deploy onwards.
 - **Deploy code and infrastructure together** (step 0). An older Lambda ignores `EVENTS_DYNAMODB_NAME` and writes nothing; a new Lambda without the IAM policy answers every upload that holds a blocked or unknown execution with HTTP 500, and Santa keeps re-sending those events until the policy exists.
-- **Failures of the table hold back events.** A throttled or failing events table answers uploads with HTTP 500 like a failing sink, so Santa keeps the events and retries at its next sync, and they are delivered to the sinks again too. The `api_5xx` alarm covers this.
+- **Failures of the table hold back events.** A throttled or failing events table answers uploads with HTTP 500 like a failing sink, so Santa keeps the events and retries the whole upload at its next sync: Firehose, Kinesis and Lambda sinks then receive those records twice, so their consumers must tolerate duplicates. The `api_5xx` alarm covers this.
 - **Costs** grow with the number of uploaded events; see [Costs](events-table.md#costs).
 - **Restoring a backup.** Like the store table, the store module accepts `events_dynamodb_table_name` to point at a table restored under another name.
