@@ -107,13 +107,13 @@ type SyncState struct {
 	// The digest of the primary user groups the Mac last reported (sensordata.ReportedGroupsHash) and when preflight
 	// last wrote them to the machine's reported groups item, so that it only rewrites that item when the list changed
 	// or the item is due a refresh, without reading it. Both empty while the Mac reports no groups.
-	ReportedGroupsHash      string         `dynamodbav:"ReportedGroupsHash,omitempty"`
-	ReportedGroupsWrittenAt string         `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
+	ReportedGroupsHash      string `dynamodbav:"ReportedGroupsHash,omitempty"`
+	ReportedGroupsWrittenAt string `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
 	// The digest of the reported group membership preflight last stored on the machine's groups item
 	// (groups.ReportedBasis), so that it only rewrites the item when that changes. Empty while it stores none.
-	GroupsBasis string `dynamodbav:"GroupsBasis,omitempty"`
-	ExpiresAfter            int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType                types.DataType `dynamodbav:"DataType"`
+	GroupsBasis  string         `dynamodbav:"GroupsBasis,omitempty"`
+	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType     types.DataType `dynamodbav:"DataType"`
 
 	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
 	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.
