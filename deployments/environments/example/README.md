@@ -118,7 +118,11 @@ Consider this provided example:
   "mtls_truststore_uri": "",
   "mtls_truststore_version": "",
   "disable_execute_api_endpoint": false,
-  "log_retention_in_days": 30
+  "log_retention_in_days": 30,
+  "api_throttling_rate_limit": 2000,
+  "api_throttling_burst_limit": 2000,
+  "alarm_sns_topic_arn": "",
+  "api_4xx_alarm_min_requests": 100
 }
 ```
 
@@ -141,7 +145,7 @@ This is used for your Lambda aliases and your API Gateway stage names. You can j
 The AWS region, which must match the previous 2 aws regions.
 
 #### `eventupload_handler`
-It takes a value of `NONE`, `KINESIS`, or `FIREHOSE`. Use `"NONE"` if you do not intend to send events anywhere.
+It takes a value of `NONE`, `KINESIS`, or `FIREHOSE`. Use `"NONE"` if you do not intend to send events to a sink. Whatever you choose, blocked and unknown executions are also stored in the execution events table for the web view (see [Execution events table](../../../docs/events-table.md)).
 
 #### `eventupload_autocreate_policies`
 If `true` Rudolph will automatically create sufficient IAM policies to the specified kinesis stream or firehose.
@@ -178,3 +182,12 @@ Disable the default `execute-api` endpoint even without mTLS, so hosts can only 
 
 #### `log_retention_in_days`
 Retention of the Lambda and Firehose CloudWatch log groups. Defaults to `30`.
+
+#### `api_throttling_rate_limit` and `api_throttling_burst_limit`
+Requests per second, and requests at once, that API Gateway accepts on each route before answering HTTP 429. Both default to `2000`. See [Deployment Variables](../../../docs/deploy.md#deployment-variables) before changing them.
+
+#### `alarm_sns_topic_arn`
+Optional. An SNS topic notified when one of Rudolph's CloudWatch alarms fires or recovers. Leave as `""` to create the alarms without notifications.
+
+#### `api_4xx_alarm_min_requests`
+The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. Defaults to `100`, which covers fleets from about 40 Macs; lower it for smaller fleets.
