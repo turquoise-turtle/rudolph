@@ -14,9 +14,9 @@ variable "prefix" {
 #   When rotating in a new table that has been created from a backup snapshot under a different table
 #   name, make sure to use "terraform import" to bring the resource in.
 variable "dynamodb_table_name" {
-  type = string
+  type        = string
   description = "OPTIONAL: A DynamoDB table name that overrides the default. Used to import a restored backup."
-  default = ""
+  default     = ""
 }
 
 variable "region" {
@@ -47,6 +47,11 @@ variable "lambda_api_zip" {
 variable "lambda_authorizer_zip" {
   type        = string
   description = "Full path to zip with go binary for Lambda to be uploaded to S3"
+}
+
+variable "lambda_ranker_zip" {
+  type        = string
+  description = "Full path to zip with the ranker's go binary (build/package/ranker_deployment.zip) to be uploaded to S3"
 }
 
 variable "use_existing_route53_zone" {
@@ -127,9 +132,9 @@ variable "eventupload_lambda_timeout_seconds" {
 }
 
 variable "kms_key_administrators_arns" {
-  type = list(string)
+  type        = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
-  default = []
+  default     = []
 }
 
 #

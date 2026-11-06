@@ -8,9 +8,14 @@ variable "lambda_authorizer_zip" {
   description = "Full path to zip with go binary for Lambda to be uploaded to S3"
 }
 
+variable "lambda_ranker_zip" {
+  type        = string
+  description = "Full path to zip with the ranker's go binary (build/package/ranker_deployment.zip) to be uploaded to S3"
+}
+
 // These variables are provided by config.auto.tfvars.json
 variable "region" {
-  type    = string
+  type = string
 
   validation {
     condition     = can(regex("[a-z0-9\\-]+", var.region))
@@ -19,7 +24,7 @@ variable "region" {
 }
 
 variable "aws_account_id" {
-  type    = string
+  type = string
 
   validation {
     condition     = can(regex("[0-9]+", var.aws_account_id))
@@ -64,45 +69,45 @@ variable "allowed_inbound_ips" {
 }
 
 variable "eventupload_handler" {
-  type = string
+  type        = string
   description = "Type of handler to use for eventupload"
 }
 
 variable "eventupload_kinesis_name" {
-  type = string
+  type        = string
   description = "Name of the kinesis stream"
 }
 
 variable "eventupload_autocreate_policies" {
-  type = bool
+  type    = bool
   default = true
 }
 
 variable "route53_zone_name" {
-  type = string
+  type        = string
   description = "Route 53 Zone ID"
 }
 
 variable "use_existing_route53_zone" {
-  type = bool
+  type        = bool
   description = "Use exisiting Route 53 zone"
-  default = false
+  default     = false
 }
 
 variable "eventupload_output_lambda_name" {
-  type = string
+  type    = string
   default = ""
 }
 
 variable "enable_s3_logging" {
-  type = bool
+  type    = bool
   default = true
 }
 
 variable "kms_key_administrators_arns" {
-  type = list(string)
+  type        = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
-  default = []
+  default     = []
 }
 
 variable "sync_token_sha256" {

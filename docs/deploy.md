@@ -98,7 +98,7 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 | `api_5xx` | API Gateway answered 5 or more 5xx responses in 5 minutes. |
 | `api_4xx` | More than 5% of requests were answered 4xx in two 5-minute periods in a row, counting only periods with at least `api_4xx_alarm_min_requests` requests (default 100, so that a few scanner requests in a quiet night do not fire it; fleets below about 40 Macs need a lower value to be covered): the stage is throttling (429; raise `api_throttling_rate_limit`) or the authorizer is rejecting sync tokens (401/403, e.g. after a botched token rotation). Throttled requests never reach Lambda, so this is the only alarm that sees them. |
 | `request_too_large` | A handler refused a request body above 6 MiB with HTTP 413. That host cannot sync or upload those events until the cause is fixed. |
-| `lambda_errors` | Any Rudolph Lambda function returned an error. |
+| `lambda_errors` | Any Rudolph Lambda function, the hourly ranker included, returned an error. |
 | `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
 | `dynamodb_throttles` | Reads or writes to the table were throttled. |
 | `event_sink_failures` | eventupload could not forward events to Firehose, Kinesis or the output Lambda (only created when a sink is configured). |
@@ -323,3 +323,10 @@ This applies to every existing deployment. The release adds a second DynamoDB ta
 - **Failures of the table hold back events.** A throttled or failing events table answers uploads with HTTP 500 like a failing sink, so Santa keeps the events and retries the whole upload at its next sync: Firehose, Kinesis and Lambda sinks then receive those records twice, so their consumers must tolerate duplicates. The `api_5xx` alarm covers this.
 - **Costs** grow with the number of uploaded events; see [Costs](events-table.md#costs).
 - **Restoring a backup.** Like the store table, the store module accepts `events_dynamodb_table_name` to point at a table restored under another name.
+
+### 8. Top binaries ranker
+This applies to every existing deployment. The release adds a Lambda, `PREFIX_rudolph_ranker`, run every hour by an EventBridge rule, that builds the web view's top-blocked and top-allowed lists in the events table (see [Top binaries](events-table.md#top-binaries)), and the eventupload Lambda starts writing `LastSeenDay` on machine markers.
+
+- **New Terraform variable.** The `santa_api` module needs `lambda_ranker_zip`, the path of `build/package/ranker_deployment.zip`, which `make build` now creates and `make deploy` passes. If your environment directory was copied from `example` before this release, add the variable to its `_variables.tf` and pass it in `main.tf` (`lambda_ranker_zip = var.lambda_ranker_zip`), as `example` now does; `terraform` fails with a missing variable otherwise.
+- **No other manual steps.** `make deploy` creates the function, its role and policy, its log group (with `log_retention_in_days`), the schedule, and adds it to the `lambda_errors` and `lambda_timeouts` alarms. The lists exist from the first run, within an hour of the deploy.
+- **Machine counts fill in.** Markers written before this release have no `LastSeenDay`, so `Machines` counts only the Macs that have uploaded an event of the binary since the deploy; it is complete for a window once the window has passed since the deploy.
