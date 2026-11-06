@@ -292,3 +292,15 @@ func cursorBefore(sync CompletedSync) (string, bool) {
 func DeliveryConfirmed(firstSentInSync int, completed []CompletedSync) bool {
 	return len(completed) >= completedSyncsKept && completed[completedSyncsKept-1].Seq >= firstSentInSync
 }
+
+// MayHoldDowngradedPolicies reports whether, from the point of view of the next sync, the Mac may still hold rules that
+// were sent as SILENT_BLOCKLIST in place of SILENT_GUI_BLOCKLIST or SILENT_TTY_BLOCKLIST because its Santa predated
+// them. An incremental sync never sends those rules again, so once the Mac runs a Santa that knows them, it needs a
+// clean sync; they are gone only when a clean sync that sent the real policies completed. Whether this sync completed
+// must already be settled (SettleCompletion). A nil sync state holds none: the next sync is a clean sync anyway.
+func (s *SyncState) MayHoldDowngradedPolicies() bool {
+	if s == nil || !s.HoldsDowngradedPolicies {
+		return false
+	}
+	return !(s.CleanSync && !s.SilentBlocklistOnly && s.Completed())
+}

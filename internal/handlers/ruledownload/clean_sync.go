@@ -81,7 +81,7 @@ func lastPageOrNext(
 		if err != nil {
 			return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 		}
-		responseRules := DDBRulesToResponseRules(append(pageRules, machineSpecific...))
+		responseRules := ResponseRulesForClient(append(pageRules, machineSpecific...), cursor.SilentBlocklistOnly)
 		if cursor.Strategy == ruledownloadStrategyClean && len(responseRules) == 0 {
 			responseRules = append(responseRules, cleanSyncPlaceholderRule())
 		}
@@ -108,7 +108,7 @@ func lastPageOrNext(
 	return response.APIResponse(
 		http.StatusOK,
 		RuledownloadResponse{
-			Rules:  DDBRulesToResponseRules(pageRules),
+			Rules:  ResponseRulesForClient(pageRules, cursor.SilentBlocklistOnly),
 			Cursor: string(jsonCursor),
 		},
 	)

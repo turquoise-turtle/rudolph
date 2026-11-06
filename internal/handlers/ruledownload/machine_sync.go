@@ -52,7 +52,14 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 	if ruledownloadRequest != nil && ruledownloadRequest.Cursor != nil {
 		cursorSyncSeq = ruledownloadRequest.Cursor.SyncSeq
 	}
-	machineRules, err := d.machineRules.rules(machineID, nil, nil, cursorSyncSeq)
+	syncState, err := syncstate.GetByMachineID(d.machineRules.getter, machineID)
+	if err != nil {
+		return response.InternalServerError(fmt.Errorf("reading the sync state: %w", err), response.ErrInternalServerErrorResponse)
+	}
+	if syncState == nil {
+		return response.InternalServerError(errors.New("no sync state: ruledownload without a preflight"), response.ErrInternalServerErrorResponse)
+	}
+	machineRules, err := d.machineRules.rules(machineID, syncState, nil, cursorSyncSeq)
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
 	}
@@ -61,7 +68,7 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 	return response.APIResponse(
 		http.StatusOK,
 		RuledownloadResponse{
-			Rules: DDBRulesToResponseRules(machineRules),
+			Rules: ResponseRulesForClient(machineRules, syncState.SilentBlocklistOnly),
 			// Omit the cursor to signal to the sensor that there are no more pages to paginate through
 		},
 	)

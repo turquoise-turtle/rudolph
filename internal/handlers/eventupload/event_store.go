@@ -480,6 +480,10 @@ func eventItem(machineID string, c storableEvent, expiry string) map[string]type
 			item[name] = str(value)
 		}
 	}
+	if e.IdentityUnverified {
+		// Only when set, so ordinary events cost nothing more
+		item["IdentityUnverified"] = &types.AttributeValueMemberBOOL{Value: true}
+	}
 	return item
 }
 

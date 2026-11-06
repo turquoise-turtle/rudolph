@@ -12,6 +12,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/syncstate"
 	apiRequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
+	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-lambda-go/events"
 )
 
@@ -113,10 +114,22 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	// The clean sync flag of a machine-specific config asks for one clean sync of that machine, until one is confirmed
 	configCleanSync, configCleanSyncConfirmed := configCleanSyncDue(machineID, machineConfiguration, prevSyncState)
 
+	// A Mac whose Santa predated the silent GUI and TTY policies got those rules as SILENT_BLOCKLIST; once it runs a
+	// Santa that knows them, only a clean sync replaces them, since an incremental sync does not send them again
+	clientVersion := types.ParseSantaVersion(preflightRequest.SantaVersion)
+	policies := clientPolicies{silentBlocklistOnly: !clientVersion.KnowsSilentGUITTYPolicies()}
+	mayHoldDowngraded := prevSyncState != nil && prevSyncState.MayHoldDowngradedPolicies()
+	policies.holdsDowngradedPolicies = policies.silentBlocklistOnly || mayHoldDowngraded
+	// A Mac whose Santa went back below 2026.6 (or an old client whose previous sync state predates the flag, which
+	// reads as current) may hold silent GUI or TTY rules it no longer applies; an incremental sync would not resend
+	// them, so the policies the client understands change only with a clean sync
+	policiesChanged := prevSyncState != nil && prevSyncState.SilentBlocklistOnly != policies.silentBlocklistOnly
+	clientPoliciesCleanSync := (mayHoldDowngraded && !policies.silentBlocklistOnly) || policiesChanged
+
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
 	// or if the machine is new
-	switch preflightRequest.RequestCleanSync || configCleanSync != nil {
+	switch preflightRequest.RequestCleanSync || configCleanSync != nil || clientPoliciesCleanSync {
 	case true:
 		performCleanSync = true
 	case false:
@@ -162,6 +175,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		prevSyncState,
 		configCleanSync,
 		reportedGroups,
+		policies,
 	)
 
 	if err != nil {
@@ -179,6 +193,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 
 	// Construct the response
 	preflightResponse := ConstructPreflightResponse(machineConfiguration, performCleanSync)
+	preflightResponse.adaptToClient(clientVersion)
 
 	return response.APIResponse(http.StatusOK, preflightResponse)
 }

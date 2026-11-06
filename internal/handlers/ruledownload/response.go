@@ -49,3 +49,18 @@ func DDBRulesToResponseRules(rulesList []rules.SantaRule) (responseRules []Ruled
 	}
 	return
 }
+
+// ResponseRulesForClient converts rules like DDBRulesToResponseRules, for the sync's client. When silentBlocklistOnly
+// (Santa before 2026.6, see syncstate.SyncState.SilentBlocklistOnly), SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST are
+// sent as SILENT_BLOCKLIST: such a client skips a rule whose policy it does not know (SNTSyncRuleDownload.mm in
+// testdata/santa-2025.12), which would leave the binary unblocked. Only what is sent changes; delivery tracking keys
+// on rule type and identifier, so it is the same whichever policy the Mac got.
+func ResponseRulesForClient(rulesList []rules.SantaRule, silentBlocklistOnly bool) []RuledownloadRule {
+	responseRules := DDBRulesToResponseRules(rulesList)
+	if silentBlocklistOnly {
+		for i := range responseRules {
+			responseRules[i].Policy = responseRules[i].Policy.WithoutSilentGUITTY()
+		}
+	}
+	return responseRules
+}

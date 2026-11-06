@@ -53,7 +53,7 @@ Santa uploads allowed-by-rule executions only when `EnableAllEventUpload` is on 
 
 | Item | PK | SK | Attributes | Expires |
 |---|---|---|---|---|
-| Event | `Exec#<machine ID>` | `<TS>#<file SHA-256>#<pid>` | `MachineID`, `TS`, `Fleet` (always `Exec`), `Decision` (Santa's name, e.g. `BLOCK_BINARY`), `FileSHA256`, `FilePath`, `FileName`, `ExecutingUser`, `TeamID`, `SigningID`, `CDHash` | 90 days after upload |
+| Event | `Exec#<machine ID>` | `<TS>#<file SHA-256>#<pid>` | `MachineID`, `TS`, `Fleet` (always `Exec`), `Decision` (Santa's name, e.g. `BLOCK_BINARY`), `FileSHA256`, `FilePath`, `FileName`, `ExecutingUser`, `TeamID`, `SigningID`, `CDHash`, `IdentityUnverified` (boolean, only when Santa 2026.9 reported `identity_unverified`: Santa could not confirm that the file it evaluated is the image the kernel loaded, so the file hash is report-only) | 90 days after upload |
 | Day counter | `BinaryDay#<UTC date of the execution>` (`YYYY-MM-DD`) | `<file SHA-256>` | `Blocked`, `Allowed` (numbers; absent until the first such event), `FileName`, `SigningID`, `TeamID` | 100 days after its first event |
 | Machine marker | `BinarySeen#<file SHA-256>` | `<machine ID>` | `LastSeenDay` (UTC date, `YYYY-MM-DD`, of the Mac's latest upload of an event of the binary) | 100 days after the Mac last ran the binary |
 | Top list snapshot row | `TopSnapshot#<kind>#<window>#<snapshot ID>` | `<rank>` (6 digits from `000001`) | `FileSHA256`, `Count`, `Machines` (numbers; `Machines` on the first 100 rows only), `FileName`, `SigningID`, `TeamID` | 8 days after it was written |

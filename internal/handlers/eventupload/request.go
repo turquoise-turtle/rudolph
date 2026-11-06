@@ -96,6 +96,9 @@ type EventUploadEvent struct {
 	SecureSigningTime            uint32           `json:"secure_signing_time,omitempty"`
 	SigningTime                  uint32           `json:"signing_time,omitempty"`
 	StaticRule                   bool             `json:"static_rule,omitempty"`
+	// Santa 2026.9: Santa could not confirm that the file it evaluated is the image the kernel loaded, so the file
+	// hash and other content-derived fields are report-only.
+	IdentityUnverified bool `json:"identity_unverified,omitempty"`
 }
 
 // SigningEntry is optionally present when an event includes a binary that is signed
