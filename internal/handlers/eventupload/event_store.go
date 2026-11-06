@@ -48,9 +48,14 @@ const (
 	maxFutureSkew = 24 * time.Hour
 	maxEventAge   = eventTTL
 
-	// conflictAttempts bounds the attempts of a transaction cancelled by a conflicting write to its day counter
-	// (another upload of the same binary on the same day).
-	conflictAttempts = 5
+	// transientAttempts bounds the attempts of a transaction cancelled by a conflicting write to its day counter
+	// (another upload of the same binary on the same day) or by throttling.
+	transientAttempts = 5
+
+	// maxEventsPerTransaction leaves room for the day counter update in a transaction of at most 100 items. A
+	// crash-looping binary fills a whole upload (batch_size may be up to 500) with events of one counter; written one
+	// transaction each, one after another, they would not fit in the Lambda's deadline.
+	maxEventsPerTransaction = 99
 )
 
 type eventStoreAPI interface {
@@ -143,39 +148,53 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	eventExpiry := strconv.FormatInt(now.Add(eventTTL).Unix(), 10)
 	counterExpiry := strconv.FormatInt(now.Add(counterTTL).Unix(), 10)
 
-	// Events that add to the same day counter go one after another: concurrent transactions on one item cancel each
-	// other. Different counters go in parallel.
-	var groups [][]int
-	groupOf := map[counterKey]int{}
+	// Events that add to the same day counter are written in transactions of up to maxEventsPerTransaction, one after
+	// another: concurrent transactions on one item cancel each other. Different counters go in parallel.
+	var groupOrder []counterKey
+	groups := map[counterKey][]int{}
 	for i, c := range candidates {
-		g, ok := groupOf[c.counter]
-		if !ok {
-			g = len(groups)
-			groupOf[c.counter] = g
-			groups = append(groups, nil)
+		if _, ok := groups[c.counter]; !ok {
+			groupOrder = append(groupOrder, c.counter)
 		}
-		groups[g] = append(groups[g], i)
+		groups[c.counter] = append(groups[c.counter], i)
 	}
 
 	// stored marks events that are in the table and counted, whether by this call or by an earlier upload.
 	stored := make([]bool, len(candidates))
 	var rejected int
 	var mu sync.Mutex
-	writeErr := parallel(ctx, len(groups), func(ctx context.Context, g int) error {
-		for _, i := range groups[g] {
-			err := s.storeEvent(ctx, machineID, candidates[i], eventExpiry, counterExpiry)
-			var apiErr smithy.APIError
-			switch {
-			case err == nil:
-				stored[i] = true
-			case errors.As(err, &apiErr) && apiErr.ErrorCode() == "ValidationException":
-				// A retry would be rejected the same way, and failing the upload would block every later event of
-				// the Mac (Santa re-sends the failed batch first).
-				mu.Lock()
-				rejected++
-				mu.Unlock()
-			default:
-				return err
+	writeErr := parallel(ctx, len(groupOrder), func(ctx context.Context, g int) error {
+		group := groups[groupOrder[g]]
+		for start := 0; start < len(group); start += maxEventsPerTransaction {
+			batches := [][]int{group[start:min(start+maxEventsPerTransaction, len(group))]}
+			for len(batches) > 0 {
+				batch := batches[0]
+				batches = batches[1:]
+				events := make([]storableEvent, len(batch))
+				for k, i := range batch {
+					events[k] = candidates[i]
+				}
+				err := s.storeBatch(ctx, machineID, events, eventExpiry, counterExpiry)
+				var apiErr smithy.APIError
+				switch {
+				case err == nil:
+					for _, i := range batch {
+						stored[i] = true
+					}
+				case errors.As(err, &apiErr) && apiErr.ErrorCode() == "ValidationException" && len(batch) > 1:
+					// One event DynamoDB refuses rejects the whole transaction: write the events one by one to find it.
+					for _, i := range batch {
+						batches = append(batches, []int{i})
+					}
+				case errors.As(err, &apiErr) && apiErr.ErrorCode() == "ValidationException":
+					// A retry would be rejected the same way, and failing the upload would block every later event
+					// of the Mac (Santa re-sends the failed batch first).
+					mu.Lock()
+					rejected++
+					mu.Unlock()
+				default:
+					return err
+				}
 			}
 		}
 		return nil
@@ -216,35 +235,25 @@ func logDropped(machineID string, n int, reason string) {
 	}
 }
 
-// storeEvent writes one event and adds it to its day counter in one transaction, so an event is never stored without
-// being counted, whatever happens to the response. It returns nil when the event is stored and counted, by this call
-// or an earlier one.
+// storeBatch writes events of one day counter and adds them to the counter in one transaction, so an event is never
+// stored without being counted, nor counted twice, whatever happens to a response. It returns nil when every event
+// is stored and counted, by this call or an earlier one.
 //
-// The client request token makes the SDK's own retries of the transaction idempotent: DynamoDB answers a repeated
-// token within 10 minutes with the first outcome instead of applying it again. The token covers the expiries, which
-// change with each upload, because a token reused with different parameters is refused; Santa's retry therefore runs
-// a new transaction, which the event's condition cancels.
-func (s *eventStore) storeEvent(ctx context.Context, machineID string, c storableEvent, eventExpiry, counterExpiry string) error {
-	item := eventItem(machineID, c, eventExpiry)
-	update := counterUpdate(c, counterExpiry)
-	token := sha256.Sum256([]byte(s.table + "\x00" + eventPKPrefix + machineID + "\x00" + c.sk + "\x00" + eventExpiry + "\x00" + counterExpiry))
-	input := &dynamodb.TransactWriteItemsInput{
-		ClientRequestToken: aws.String(hex.EncodeToString(token[:])[:36]),
-		TransactItems: []types.TransactWriteItem{
-			{Put: &types.Put{
-				TableName:           aws.String(s.table),
-				Item:                item,
-				ConditionExpression: aws.String("attribute_not_exists(PK)"),
-			}},
-			{Update: &types.Update{
-				TableName:                 aws.String(s.table),
-				Key:                       update.key,
-				UpdateExpression:          aws.String(update.expression),
-				ExpressionAttributeValues: update.values,
-			}},
-		},
-	}
-	for attempt := 1; ; attempt++ {
+// Each event's Put has the condition that the event does not exist yet. When some already exist (Santa re-sent the
+// upload), DynamoDB cancels the transaction and says which Puts failed their condition; the transaction is sent again
+// without them, adding only the others. A transaction cancelled by a conflicting write to the counter (another upload
+// of the same binary) or by throttling is retried a bounded number of times.
+//
+// Each attempt carries its own client request token, derived from its contents, the expiries (which change with
+// every upload, so Santa's retry never reuses a token with different parameters) and the attempt number. The SDK's
+// own retries of one attempt reuse its token, so DynamoDB answers them with the first outcome instead of applying the
+// transaction twice; a new attempt after a cancellation gets a new token, as DynamoDB would otherwise answer it with
+// the cancellation again.
+func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []storableEvent, eventExpiry, counterExpiry string) error {
+	pending := events
+	retries := 0
+	for attempt := 1; len(pending) > 0; attempt++ {
+		input := s.batchInput(machineID, pending, eventExpiry, counterExpiry, attempt)
 		_, err := s.api.TransactWriteItems(ctx, input)
 		if err == nil {
 			return nil
@@ -254,22 +263,69 @@ func (s *eventStore) storeEvent(ctx context.Context, machineID string, c storabl
 			return err
 		}
 		reasons := cancelled.CancellationReasons
-		if len(reasons) > 0 && aws.ToString(reasons[0].Code) == "ConditionalCheckFailed" {
-			// Already stored, and so counted, by an earlier upload.
-			return nil
+		var remaining []storableEvent
+		retryable := false
+		for k, e := range pending {
+			code := ""
+			if k < len(reasons) {
+				code = aws.ToString(reasons[k].Code)
+			}
+			if code == "ConditionalCheckFailed" {
+				// Already stored, and so counted, by an earlier upload.
+				continue
+			}
+			remaining = append(remaining, e)
 		}
-		conflict := false
 		for _, r := range reasons {
-			if aws.ToString(r.Code) == "TransactionConflict" {
-				conflict = true
+			switch aws.ToString(r.Code) {
+			case "", "None", "ConditionalCheckFailed":
+			case "TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded", "RequestLimitExceeded":
+				retryable = true
+			default:
+				return err
 			}
 		}
-		if !conflict || attempt >= conflictAttempts {
+		if len(remaining) == len(pending) && !retryable {
+			// Cancelled for no reason this code knows how to resolve.
 			return err
 		}
-		if waitErr := eventsink.Wait(ctx, attempt+1, false); waitErr != nil {
-			return errors.Join(err, waitErr)
+		if retryable {
+			retries++
+			if retries >= transientAttempts {
+				return err
+			}
+			if waitErr := eventsink.Wait(ctx, retries+1, false); waitErr != nil {
+				return errors.Join(err, waitErr)
+			}
 		}
+		pending = remaining
+	}
+	return nil
+}
+
+// batchInput builds the transaction writing these events and adding them to their day counter.
+func (s *eventStore) batchInput(machineID string, events []storableEvent, eventExpiry, counterExpiry string, attempt int) *dynamodb.TransactWriteItemsInput {
+	token := sha256.New()
+	fmt.Fprintf(token, "%s\x00%s\x00%s\x00%s\x00%d", s.table, machineID, eventExpiry, counterExpiry, attempt)
+	items := make([]types.TransactWriteItem, 0, len(events)+1)
+	for _, e := range events {
+		fmt.Fprintf(token, "\x00%s", e.sk)
+		items = append(items, types.TransactWriteItem{Put: &types.Put{
+			TableName:           aws.String(s.table),
+			Item:                eventItem(machineID, e, eventExpiry),
+			ConditionExpression: aws.String("attribute_not_exists(PK)"),
+		}})
+	}
+	update := counterUpdate(events, counterExpiry)
+	items = append(items, types.TransactWriteItem{Update: &types.Update{
+		TableName:                 aws.String(s.table),
+		Key:                       update.key,
+		UpdateExpression:          aws.String(update.expression),
+		ExpressionAttributeValues: update.values,
+	}})
+	return &dynamodb.TransactWriteItemsInput{
+		ClientRequestToken: aws.String(hex.EncodeToString(token.Sum(nil))[:36]),
+		TransactItems:      items,
 	}
 }
 
@@ -311,20 +367,41 @@ type counterChange struct {
 	values     map[string]types.AttributeValue
 }
 
-// counterUpdate adds one event to its day counter. The display attributes and the expiry are set only if absent, so
-// concurrent uploads never overwrite each other and the counter expires 100 days after its first event.
-func counterUpdate(c storableEvent, expiry string) counterChange {
-	count := "Allowed"
-	if c.blocked {
-		count = "Blocked"
+// counterUpdate adds events of one binary on one day to its day counter. The display attributes and the expiry are
+// set only if absent, so concurrent uploads never overwrite each other and the counter expires 100 days after its
+// first event.
+func counterUpdate(events []storableEvent, expiry string) counterChange {
+	var blocked, allowed int
+	var fileName, signingID, teamID string
+	for _, e := range events {
+		if e.blocked {
+			blocked++
+		} else {
+			allowed++
+		}
+		if fileName == "" {
+			fileName = e.event.FileName
+		}
+		if signingID == "" {
+			signingID = e.event.SigningIDs
+		}
+		if teamID == "" {
+			teamID = e.event.TeamID
+		}
 	}
-	values := map[string]types.AttributeValue{
-		":one": &types.AttributeValueMemberN{Value: "1"},
-		":exp": &types.AttributeValueMemberN{Value: expiry},
+	values := map[string]types.AttributeValue{":exp": &types.AttributeValueMemberN{Value: expiry}}
+	var add []string
+	if blocked > 0 {
+		add = append(add, "Blocked :blocked")
+		values[":blocked"] = &types.AttributeValueMemberN{Value: strconv.Itoa(blocked)}
+	}
+	if allowed > 0 {
+		add = append(add, "Allowed :allowed")
+		values[":allowed"] = &types.AttributeValueMemberN{Value: strconv.Itoa(allowed)}
 	}
 	set := []string{"ExpiresAfter = if_not_exists(ExpiresAfter, :exp)"}
 	for _, field := range []struct{ name, value string }{
-		{"FileName", c.event.FileName}, {"SigningID", c.event.SigningIDs}, {"TeamID", c.event.TeamID},
+		{"FileName", fileName}, {"SigningID", signingID}, {"TeamID", teamID},
 	} {
 		if field.value == "" {
 			continue
@@ -333,12 +410,13 @@ func counterUpdate(c storableEvent, expiry string) counterChange {
 		set = append(set, fmt.Sprintf("%s = if_not_exists(%s, %s)", field.name, field.name, placeholder))
 		values[placeholder] = str(field.value)
 	}
+	counter := events[0].counter
 	return counterChange{
 		key: map[string]types.AttributeValue{
-			"PK": str(dayCounterPKPrefix + c.counter.day),
-			"SK": str(c.counter.sha),
+			"PK": str(dayCounterPKPrefix + counter.day),
+			"SK": str(counter.sha),
 		},
-		expression: "ADD " + count + " :one SET " + strings.Join(set, ", "),
+		expression: "ADD " + strings.Join(add, ", ") + " SET " + strings.Join(set, ", "),
 		values:     values,
 	}
 }
