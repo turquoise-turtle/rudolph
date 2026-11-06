@@ -143,7 +143,7 @@ func TestHandler_OK(t *testing.T) {
 	preflightRequestBody := &PreflightRequest{
 		OSBuild:              "23E214",
 		OSVersion:            "14.4",
-		SantaVersion:         "2024.2",
+		SantaVersion:         "2026.9.0",
 		Hostname:             "my-awesome-macbook-pro",
 		ClientMode:           types.Lockdown,
 		SerialNumber:         "C02123456789",
@@ -263,7 +263,7 @@ func TestHandler_OK_Refresh_CleanSync(t *testing.T) {
 	preflightRequestBody := &PreflightRequest{
 		OSBuild:              "23E214",
 		OSVersion:            "14.4",
-		SantaVersion:         "2024.2",
+		SantaVersion:         "2026.9.0",
 		Hostname:             "my-awesome-macbook-pro",
 		ClientMode:           types.Lockdown,
 		SerialNumber:         "C02123456789",
@@ -400,7 +400,7 @@ func TestHandler_OK_No_Refresh_CleanSync(t *testing.T) {
 		Headers:        map[string]string{"Content-Type": "application/json"},
 		Body: `{
 	"os_build":"20D5029f",
-	"santa_version":"2021.1",
+	"santa_version":"2026.9.0",
 	"hostname":"my-awesome-macbook-pro.attlocal.net",
 	"transitive_rule_count":0,
 	"os_version":"11.2",
