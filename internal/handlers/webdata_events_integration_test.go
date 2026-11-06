@@ -543,3 +543,32 @@ func TestR7_ManyEventsOfOneBinaryTakeFewCalls(t *testing.T) {
 		t.Errorf("Blocked = %v after the upload and its retry, want 300", n)
 	}
 }
+
+// From the third review: request fields such as file_path have no length limit, and an event item over DynamoDB's
+// 400 KB limit (or one making a transaction too big) could be refused in a way that fails the upload every time.
+// Stored strings are cut to at most 4 KB each, so every event can be stored; the rest of the event is unchanged.
+func TestR7_LongFieldsAreCutSoTheEventIsStored(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	long := "/" + strings.Repeat("p", 500_000)
+	host.PendingEvents = []string{
+		fmt.Sprintf(`{"file_sha256":%q,"file_path":%q,"file_name":"tool","signing_id":%q,"decision":"BLOCK_UNKNOWN","pid":1,"execution_time":%.3f}`,
+			sha1, long, "T:"+strings.Repeat("s", 10_000), float64(at.UnixMilli())/1000),
+		execEvent(sha2, "BLOCK_UNKNOWN", 2, at, ""),
+	}
+	host.MustSync(t)
+	item := eventsItem(t, "Exec#"+machineA, tsOf(at)+"#"+sha1+"#1")
+	if len(item) == 0 {
+		t.Fatal("the event with long fields was not stored")
+	}
+	for _, attr := range []string{"FilePath", "SigningID"} {
+		got, _ := sensorString(t, item, attr)
+		if len(got) == 0 || len(got) > 4096 {
+			t.Errorf("%s stored with %d bytes, want 1 to 4096", attr, len(got))
+		}
+	}
+	if len(eventsOf(t, machineA)) != 2 {
+		t.Error("the other event of the upload was not stored")
+	}
+}
