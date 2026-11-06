@@ -70,6 +70,9 @@ type Hook struct {
 	Before func(*Call) *Fault
 	// After runs on the response of a forwarded call.
 	After func(*Call)
+	// LoseResponse runs after a call was executed. Returning a non-nil Fault answers the client with it instead of
+	// the real response, as when DynamoDB applied a write but its response was lost or the client gave up waiting.
+	LoseResponse func(*Call) *Fault
 }
 
 type hookEntry struct {
@@ -466,6 +469,15 @@ func serveCall(w http.ResponseWriter, r *http.Request, reverse *httputil.Reverse
 			}
 			if rewritten, err := json.Marshal(call.Output); err == nil {
 				respBody = rewritten
+			}
+		}
+	}
+
+	for _, h := range active {
+		if h.hook.LoseResponse != nil {
+			if fault := h.hook.LoseResponse(call); fault != nil {
+				writeFault(w, *fault)
+				return
 			}
 		}
 	}

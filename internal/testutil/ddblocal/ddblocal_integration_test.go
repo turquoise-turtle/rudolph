@@ -13,6 +13,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go"
 )
 
@@ -185,5 +186,29 @@ func TestPauseFirstHoldsACallUntilReleased(t *testing.T) {
 	}
 	if item, _ := Client(t).GetItem(dynamodb.PrimaryKey{PartitionKey: "p", SortKey: "paused"}, true); len(item.Item) == 0 {
 		t.Fatal("the released call was not executed")
+	}
+}
+
+// LoseResponse: the write happens, but the client gets the fault.
+func TestLoseResponseAppliesTheCallButAnswersAFault(t *testing.T) {
+	Reset(t)
+	lost := false
+	AddHook(t, Hook{LoseResponse: func(c *Call) *Fault {
+		if c.Op == "PutItem" && !lost {
+			lost = true
+			return &Fault{Status: 400, Type: "ValidationException", Message: "lost"}
+		}
+		return nil
+	}})
+	item := map[string]awstypes.AttributeValue{
+		"PK": &awstypes.AttributeValueMemberS{Value: "Lost"},
+		"SK": &awstypes.AttributeValueMemberS{Value: "Response"},
+	}
+	if _, err := Raw(t).PutItem(context.Background(), &awsdynamodb.PutItemInput{TableName: aws.String(TableName), Item: item}); err == nil {
+		t.Fatal("the client got no error")
+	}
+	out, err := Raw(t).GetItem(context.Background(), &awsdynamodb.GetItemInput{TableName: aws.String(TableName), Key: item, ConsistentRead: aws.Bool(true)})
+	if err != nil || len(out.Item) == 0 {
+		t.Fatalf("the write was not applied: %v %v", err, out.Item)
 	}
 }
