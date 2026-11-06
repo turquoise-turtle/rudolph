@@ -2,10 +2,12 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -37,7 +39,9 @@ func init() {
 
 The configuration replaces the whole stored configuration. For a machine, this also cancels a clean sync requested
 for it that has not been performed yet (which, for a Mac that is offline, can stay pending for weeks), unless
---clean-sync is given again; use "config update" to change settings without touching a requested clean sync.`,
+--clean-sync is given again; use "config update" to change settings without touching a requested clean sync.
+A temporary client mode of the machine that has not ended is kept (see config update --for); end it with
+config update --end-temporary-mode.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
@@ -128,6 +132,7 @@ func applyConfig(
 
 	// Get machineID from flags
 	var machineID string
+	var temporaryModeSnapshot *machineconfiguration.TemporaryClientModeSnapshot
 	if tf.IsGlobal {
 		// Fail before asking for confirmation; the service enforces this as well
 		if machineconfiguration.RequiresGlobalLockdownConfirmation(clientMode) && !confirmGlobalLockdown {
@@ -139,15 +144,25 @@ func applyConfig(
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
 		}
-		if !newConfig.CleanSync {
-			current, eerr := service.GetIntendedConfig(machineID)
-			if eerr != nil {
-				return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
-			}
-			if current.CleanSync {
-				fmt.Println("Warning: the machine has a requested clean sync that has not been performed yet; replacing its configuration without --clean-sync cancels it.")
-				fmt.Println()
-			}
+		// Read before the configuration, so a temporary mode set or ended after either read fails the write below
+		snapshot, eerr := service.ReadTemporaryClientModeSnapshot(machineID)
+		if eerr != nil {
+			return eerr
+		}
+		temporaryModeSnapshot = &snapshot
+		current, eerr := service.GetIntendedConfig(machineID)
+		if eerr != nil {
+			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
+		}
+		if !newConfig.CleanSync && current.CleanSync {
+			fmt.Println("Warning: the machine has a requested clean sync that has not been performed yet; replacing its configuration without --clean-sync cancels it.")
+			fmt.Println()
+		}
+		// Replacing the configuration is about the machine's usual settings: a temporary client mode still running
+		// is kept, so it still ends when it was meant to. An ended one is dropped with the old row.
+		if _, active := current.TemporaryClientModeAt(time.Now()); active {
+			newConfig.TemporaryClientMode = current.TemporaryClientMode
+			newConfig.TemporaryClientModeExpiresAt = current.TemporaryClientModeExpiresAt
 		}
 	}
 
@@ -178,7 +193,13 @@ func applyConfig(
 	fmt.Fprintln(writer, "FullSyncInterval:\t", newConfig.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", newConfig.UploadLogsURL, "\"")
 	printSantaSettings(writer, newConfig)
+	if !tf.IsGlobal {
+		printTemporaryMode(writer, newConfig, time.Now())
+	}
 	writer.Flush()
+	if newConfig.TemporaryClientMode != 0 {
+		fmt.Printf("\nThe temporary client mode is kept: ClientMode %s applies once it ends. End it now with config update --machine %s --end-temporary-mode.\n", clientModeName(clientMode), machineID)
+	}
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")
@@ -197,7 +218,12 @@ func applyConfig(
 	if tf.IsGlobal {
 		err = service.SetGlobalConfig(newConfig, globalConfigOptions(confirmGlobalLockdown)...)
 	} else {
-		err = service.SetMachineConfig(machineID, newConfig)
+		// The prompt may have waited a long time: the row is only replaced while its temporary client mode is still the
+		// one read above, so one ended or set meanwhile is neither brought back nor lost
+		err = service.SetMachineConfigIfTemporaryClientMode(machineID, newConfig, *temporaryModeSnapshot)
+		if errors.Is(err, machineconfiguration.ErrTemporaryClientModeChanged) {
+			return fmt.Errorf("%w; run the command again", err)
+		}
 	}
 
 	if err != nil {

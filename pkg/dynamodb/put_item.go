@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -36,6 +37,34 @@ type PutItemIfNotExistsAPI interface {
 // returned error satisfies IsConditionalCheckFailed.
 func (dbc concreteDynamoDBClient) PutItemIfNotExists(item interface{}) (*dynamodb.PutItemOutput, error) {
 	return putItemWithCondition(dbc.tableName, &dbc.awsclient, item, aws.String("attribute_not_exists(PK)"), dbc.timeout)
+}
+
+// PutItemIfAPI writes an item only while a condition on the item it replaces holds
+type PutItemIfAPI interface {
+	// PutItemIf is PutItem with a condition; when it does not hold, the item is left unchanged and the returned error
+	// satisfies IsConditionalCheckFailed.
+	PutItemIf(item interface{}, condition expression.ConditionBuilder) (*dynamodb.PutItemOutput, error)
+}
+
+func (dbc concreteDynamoDBClient) PutItemIf(item interface{}, condition expression.ConditionBuilder) (*dynamodb.PutItemOutput, error) {
+	ctx, cancel := context.WithTimeout(context.TODO(), dbc.timeout)
+	defer cancel()
+
+	putItemItem, err := attributevalue.MarshalMap(item)
+	if err != nil {
+		return nil, err
+	}
+	expr, err := expression.NewBuilder().WithCondition(condition).Build()
+	if err != nil {
+		return nil, err
+	}
+	return dbc.awsclient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:                 aws.String(dbc.tableName),
+		Item:                      putItemItem,
+		ConditionExpression:       expr.Condition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
 }
 
 func putItemWithCondition(tableName string, api dynamodbPutItemAPI, item interface{}, condition *string, timeout time.Duration) (*dynamodb.PutItemOutput, error) {

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -23,12 +25,13 @@ func init() {
 		confirmGlobalLockdown bool
 		cleanSyncArg          bool
 		inheritArgs           []string
+		temporaryModeArgs     temporaryModeFlags
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]... [--clean-sync] [--inherit <setting>]...",
+		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]... [--clean-sync] [--inherit <setting>]... [-c <mode> --for <duration>|--until <time>] [--end-temporary-mode]",
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
@@ -39,12 +42,17 @@ global lockdown).
 Pass --allowed-paths "" or --blocked-paths "" to remove a path regex.
 
 --clean-sync requests one clean sync of a machine and changes nothing else. --inherit <setting> removes a setting
-from a machine-specific configuration, so that the machine follows the global value of it again.`,
+from a machine-specific configuration, so that the machine follows the global value of it again.
+
+-c <mode> with --for <duration> or --until <RFC 3339 time> sets a temporary client mode for a machine, for at most 30
+days: the Mac gets it at its next sync, and its usual client mode (its own or the global one, which this leaves as it
+is) again at its first sync after the end. --end-temporary-mode ends it early. A temporary lockdown or standalone mode
+asks for confirmation; Santa blocks unknown binaries in them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
 			var updateRequest machineconfiguration.MachineConfigurationUpdateRequest
-			if clientModeArg.set {
+			if clientModeArg.set && !temporaryModeArgs.given(cmd) {
 				clientMode := clientModeArg.mode.AsClientMode()
 				updateRequest.ClientMode = &clientMode
 			}
@@ -73,7 +81,14 @@ from a machine-specific configuration, so that the machine follows the global va
 			if err != nil {
 				return err
 			}
-			if updateRequest.IsEmpty() {
+			var temporaryMode *temporaryModeRequest
+			if temporaryModeArgs.given(cmd) {
+				request, err := temporaryModeArgs.request(cmd, tf, &clientModeArg, !updateRequest.IsEmpty(), time.Now())
+				if err != nil {
+					return err
+				}
+				temporaryMode = &request
+			} else if updateRequest.IsEmpty() {
 				return errors.New("no settings to update were given")
 			}
 			// Refuse invalid values before connecting to the sync server; the service enforces this as well
@@ -92,6 +107,10 @@ from a machine-specific configuration, so that the machine follows the global va
 
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)
 
+			if temporaryMode != nil {
+				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now())
+			}
+
 			return updateConfig(
 				service,
 				tf,
@@ -106,6 +125,7 @@ from a machine-specific configuration, so that the machine follows the global va
 	// client-mode should be one of "monitor", "lockdown" or "standalone"; it is only changed when given
 	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)
 	addConfirmGlobalLockdownFlag(configUpdateClientModeCmd, &confirmGlobalLockdown)
+	temporaryModeArgs.addFlags(configUpdateClientModeCmd)
 
 	// Flags defining blocked and allowed regex paths
 	pathRegexArgs.addFlags(configUpdateClientModeCmd)
@@ -141,6 +161,18 @@ func updateConfig(
 		machineID, err = tf.GetMachineID()
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
+		}
+	}
+
+	// While a temporary client mode runs, a change of the machine's own mode only shows once it ends
+	var runningTemporaryMode string
+	if !tf.IsGlobal && (updateRequest.ClientMode != nil || slices.Contains(updateRequest.Inherit, "ClientMode")) {
+		current, eerr := service.GetIntendedConfig(machineID)
+		if eerr != nil {
+			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
+		}
+		if mode, active := current.TemporaryClientModeAt(time.Now()); active {
+			runningTemporaryMode = fmt.Sprintf("\nWarning: the machine is in temporary %s mode until %s. Its new client mode applies only after that; end the temporary mode now with --%s.\n", clientModeName(mode), formatTemporaryModeEnd(current.TemporaryClientModeEnd()), flagEndTemporaryMode)
 		}
 	}
 
@@ -213,6 +245,7 @@ func updateConfig(
 			fmt.Printf("\nWarning: the global client mode is %s, which blocks unknown executions; the machine follows it from its next sync.\n", clientModeText)
 		}
 	}
+	fmt.Print(runningTemporaryMode)
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")

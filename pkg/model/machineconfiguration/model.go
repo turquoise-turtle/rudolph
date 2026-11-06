@@ -58,6 +58,11 @@ type MachineConfiguration struct {
 	EventDetailURL            *string                `dynamodbav:"EventDetailURL,omitempty"`
 	EventDetailText           *string                `dynamodbav:"EventDetailText,omitempty"`
 
+	// A temporary client mode of a machine (see temporary_mode.go): sent instead of ClientMode until
+	// TemporaryClientModeExpiresAt (Unix seconds). Never taken from the global config.
+	TemporaryClientMode          types.ClientMode `dynamodbav:"TemporaryClientMode,omitempty"`
+	TemporaryClientModeExpiresAt int64            `dynamodbav:"TemporaryClientModeExpiresAt,omitempty"`
+
 	// remountUsbModeDropped is set when the stored remount flags of the config could not be decoded, so the
 	// intended remount flags are unknown (see SanitizeForSanta).
 	remountUsbModeDropped bool

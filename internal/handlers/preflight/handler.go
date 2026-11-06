@@ -88,6 +88,9 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
+	// A temporary client mode applies until it expires; the machine config is read on every preflight, so an expired
+	// one is never served from a cache
+	machineConfiguration = machineconfiguration.ApplyTemporaryClientMode(machineConfiguration, h.timeProvider.Now())
 	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
 	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
 

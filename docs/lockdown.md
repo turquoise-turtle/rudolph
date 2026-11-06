@@ -32,6 +32,8 @@ Without `--confirm-global-lockdown` (or `ConfirmGlobalLockdown()` when using the
 rudolph config update --machine <machine-uuid> --client-mode lockdown
 ```
 
+A machine can also be put into lockdown, standalone or monitor mode for a limited time, e.g. to unblock a developer for an afternoon without changing the machine's own mode: `rudolph config update --machine <machine-uuid> -c monitor --for 2h`. The Mac switches at its next sync and returns to its usual mode at its first sync after the end; see [temporary client modes](./sync.md#temporary-client-modes).
+
 Warm Lambda instances cache the global configuration for at most one minute, so global changes reach hosts on their first sync after that.
 
 For rules, there is a set of global rules which is deployed to all machines. Each machine can also have their own machine-specific rules, which are appended onto the global rules (and override them, when applicable). This allows you to deploy rules to specific machines without influencing other machines.
