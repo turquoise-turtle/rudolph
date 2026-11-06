@@ -54,6 +54,11 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 				return err
 			}
 			approval := flags.ApprovalOf(cmd)
+			if approval.DryRun {
+				if err := requireRuleToRemove(dynamodbClient, tf, ruleName); err != nil {
+					return err
+				}
+			}
 			if tf.IsGroup() {
 				return removeGroupRule(dynamodbClient, tf.Group, ruleName, approval)
 			}
@@ -164,6 +169,55 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 		return fmt.Errorf("failed to remove global rule %s: %w", ruleName, err)
 	}
 	fmt.Printf("Removed global rule %s; Macs drop it at their next sync\n", ruleName)
+	return nil
+}
+
+// requireRuleToRemove fails, as the removal itself would, when there is no rule to remove. A dry run needs it: the
+// removals only find out when they write.
+func requireRuleToRemove(client dynamodb.DynamoDBClient, tf flags.TargetFlags, ruleName string) error {
+	if tf.IsGroup() {
+		reader, ok := client.(groups.RegistryWriter)
+		if !ok {
+			return errors.New("this DynamoDB client cannot read group rules")
+		}
+		registry, err := groups.GetRegistry(reader, true)
+		if err != nil {
+			return err
+		}
+		if _, ok := registry.Groups[tf.Group]; !ok {
+			return fmt.Errorf("rule %s of group %s: %w", ruleName, tf.Group, groups.ErrGroupNotFound)
+		}
+		rows, err := groups.GetRules(reader, tf.Group)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.SortKey == ruleName {
+				return nil
+			}
+		}
+		return fmt.Errorf("rule %s of group %s: %w", ruleName, tf.Group, groups.ErrRuleNotFound)
+	}
+	if err := tf.RequireExplicitTarget(); err != nil {
+		return err
+	}
+	if tf.IsGlobal {
+		rule, err := globalrules.GetGlobalRuleBySortKey(client, ruleName)
+		if err != nil {
+			return fmt.Errorf("failed to remove global rule %s: query to retrieve existing rule failed: %w", ruleName, err)
+		}
+		if rule == nil {
+			return fmt.Errorf("failed to remove global rule %s: no such rule with sk (%s) exists", ruleName, ruleName)
+		}
+		return nil
+	}
+	rule, err := machinerules.GetMachineRuleConsistently(client, tf.MachineID, ruleName)
+	if err != nil {
+		return fmt.Errorf("failed to remove rule %s of machine %s: %w", ruleName, tf.MachineID, err)
+	}
+	if rule == nil {
+		return fmt.Errorf("machine %s has no rule %s", tf.MachineID, ruleName)
+	}
 	return nil
 }
 

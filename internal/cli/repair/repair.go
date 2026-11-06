@@ -30,13 +30,17 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			deleteFound := deleteItems
-			if deleteItems {
+			approval := flags.ApprovalOf(cmd)
+			if deleteItems && approval.DryRun {
+				fmt.Println("Legacy items found would be deleted as they are found.")
+				approval.Write()
+				deleteFound = false
+			} else if deleteItems {
 				fmt.Println("Legacy items found are deleted as they are found.")
-				apply, err := flags.ApprovalOf(cmd).Confirm()
+				apply, err := approval.Confirm()
 				if err != nil {
 					return err
 				}
-				// A dry run lists them
 				deleteFound = apply
 			} else {
 				fmt.Println("Dry run: legacy items are listed, not deleted (pass --delete to delete them).")
