@@ -119,6 +119,8 @@ Once Santa syncs, Rudolph sends the client mode and the other settings it manage
 Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or otherwise. We've included an example file,
 [configs/com.google.santa.machine-mapping.plist](/configs/com.google.santa.machine-mapping.plist).
 
+The file name is not a preference domain, so it did not change when Santa moved to `com.northpolesec.santa`: Santa reads whatever file `MachineIDPlist` names. The example profile and the `rudolph` CLI keep `/Library/Preferences/com.google.santa.machine-mapping.plist`; the CLI reads that path when a command run on a Mac targets that Mac (no `--global` or `--machine`), so keep it unless you always pass `--machine`.
+
 We **_highly recommend_** using **UPPER-CASE-HEXADECIMAL-UUID-WITH-SPACES** (e.g. `AAAABBBB-CCCC-DDDD-EEEE-123456780000`)
 for the `MachineID`. The `MachineID` must be a UUID: the API rejects sync requests for any other machine ID.
 
@@ -149,7 +151,7 @@ enabled, a TLS handshake failure means Santa did not find or present a client ce
 ## Other Miscellaneous
 Santa dumps tons of logs into `/var/db/santa/santa.log`. These logs are extremely useful but this file can fill up very quickly.
 
-We recommend a newsyslog configuration: `/private/etc/newsyslog.d/com.google.santa.newsyslog.conf`
+We recommend a newsyslog configuration, for example `/private/etc/newsyslog.d/com.northpolesec.santa.newsyslog.conf` (newsyslog reads every file in that directory, whatever its name):
 ```
 # logfilename             [owner:group]       mode   count size(KiB) when   flags [/pid_file] # [sig_num]
 /var/db/santa/santa.log   root:wheel          644    10    5000     *      NZ

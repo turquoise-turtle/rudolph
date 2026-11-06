@@ -43,7 +43,7 @@ The alarms are kept few and cheap: seven alarms, or six when no event sink is co
 At us-east-1 prices that is about US$2.50 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
 ## Execution Events Table
-Blocked and unknown executions are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, a few US dollars a month for 1,000 Macs in monitor mode); see [Execution events table](./events-table.md#costs).
+Blocked and unknown executions, and those allowed by rules flagged for collection, are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, a few US dollars a month for 1,000 Macs in monitor mode); see [Execution events table](./events-table.md#costs).
 
 The hourly ranker, which builds the web view's top-blocked and top-allowed lists, reads 90 days of day counters and the machine markers of up to 800 binaries per run and writes up to 4,000 snapshot rows: about US$2 a month for 1,000 Macs and about US$19 a month for 100,000 Macs (up to about US$70 if the listed binaries all run on every Mac), mostly reading the day counters. See [Top binaries](./events-table.md#top-binaries).
 

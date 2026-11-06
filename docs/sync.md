@@ -19,11 +19,7 @@ One key point about syncing: All API endpoints are HTTP POST by design: they are
 Additionally, API endpoints only write synchronization state back to the DynamoDB and API endpoints have no functionality to write/inject rules back into the DynamoDB table. 
 
 ### XSRF - CSRF
-** This endpoint is not enabled in the deployed version of Rudolph, as it is not clear how this feature improves security **
-
-If implemented, this API endpoint generates a token which is linked to the client sync session. This token will be sent in the header of each POST request to the sync server and will validate, on the server end, that this matches the current session XSRF token.
-
-A simple API endpoint has been created that will always return status 200. 
+Rudolph deploys `POST /xsrf/{machine_id}` behind the same sync token authoriser and throttle as the other routes, but only as a stub: it refuses a machine ID that is not a UUID and a body it cannot decode, and otherwise always answers 200 `{"status":"ok"}`. It issues no XSRF token and checks none, as it is not clear how this feature would improve security.
 
 Rudolph is a RestAPI for the Santa agent to synchronize rulesets from Rudolph. In this case, clients do not need to authenticate nor are cookies present during this synchronization session and the Santa agent manages states during the sync. XSRF/CSRF is not a vulnerable vector due to the way Santa agents communicate with Rudolph.
 
@@ -139,7 +135,7 @@ rule, before relying on events from such Macs.
 ```json
 {
     "os_build":"20D5029f",
-    "santa_version":"2021.1",
+    "santa_version":"2026.9.0",
     "hostname":"my-awesome-macbook-pro.attlocal.net",
     "transitive_rule_count":0,
     "os_version":"11.2",
@@ -230,7 +226,7 @@ More info found here: https://santa.readthedocs.io/en/latest/deployment/configur
 ### Logupload - Not implemented
 
 #### URL - HTTP POST /logupload/{machine_uuid}
-** This endpoint is not enabled in the deployed version of Rudolph and must be enabled via configuration MDM profiles **
+Rudolph has no handler or route for this endpoint. Santa uploads logs only to the `upload_logs_url` the preflight sends (`rudolph config ... --upload-logs`), so leave that unset unless it names a server of your own that accepts them.
 
 logupload - endpoint will upload all new changes to the Santa.log file and uploads the contents to the sync server for ingestion
 Logs stored in /var/db/santa/santa.log
@@ -240,9 +236,9 @@ If KEXT is in use → /usr/bin/log show --info --debug --predicate 'senderImageP
 ### Eventupload
 
 #### URL - HTTP POST /eventupload/{machine_uuid}
-This endpoint allows the Santa sensor to upload any DENY events to the Rudolph server. This endpoint is useful for gathering logs but is unimportant to the ruledownload part of sync.
+This endpoint allows the Santa sensor to upload execution events: by default blocked executions and, on Macs in monitor mode, unknown binaries it allowed; with `enable_all_event_upload`, every execution. It is useful for gathering logs but is unimportant to the ruledownload part of sync.
 
-This endpoints accepts events logs from the Santa agent which records all binary/application executions. Once the data is uploaded to Rudolph, it is sent via Kinesis Stream.
+Rudolph forwards the events to the configured sinks (Firehose, Kinesis Data Streams, a Lambda function, several of them or none; see [Delivery to the event sink](#delivery-to-the-event-sink)) and stores blocked and unknown executions, and those allowed by rules flagged for collection, in the [execution events table](events-table.md).
 
 #### Request - JSON
 
@@ -297,8 +293,7 @@ This endpoints accepts events logs from the Santa agent which records all binary
 Santa 2026.9 adds `identity_unverified` (true when Santa could not confirm that the file it evaluated is the image the kernel loaded; the file hash and other content-derived fields are then report-only). Rudolph forwards it to every sink as sent, omitted when false, and stores it on the event's item as `IdentityUnverified`.
 
 #### Delivery to the event sink
-Blocked and unknown executions are also stored in the execution events table, whatever sink is configured, and a
-failed write answers 500 like a failing sink; see [Execution events table](events-table.md).
+Blocked and unknown executions, and those allowed by rules flagged for collection, are also stored in the execution events table, whatever sink is configured, and a failed write answers 500 like a failing sink; see [Execution events table](events-table.md).
 
 Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
 split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
