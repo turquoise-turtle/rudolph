@@ -3,8 +3,10 @@
 package handlers
 
 // R3 and R4 of rudolph-web's docs/data-layer-design.md: the web view lists Macs from two GSIs on the sensor data
-// rows, DataType_SerialNum (ordered by serial, serial prefix search) and DataType_HostnameKey (hostname prefix
-// search). Both use an INCLUDE projection of attributes that rarely change, so a steady-state preflight, which
+// rows, DataType_SerialKey (ordered by serial, serial prefix search) and DataType_HostnameKey (hostname prefix
+// search). SerialKey is the trimmed upper-case serial, so a search matches whatever case a serial was reported in
+// (Apple serials are upper case, some virtual machines report mixed case); SerialNum keeps the serial as reported.
+// Both use an INCLUDE projection of attributes that rarely change, so a steady-state preflight, which
 // rewrites the row with a new Time and ExpiresAfter, writes nothing to either index. LastSeenDay (the UTC date of
 // the last preflight) changes at most once a day and gives the list a last-seen column.
 
@@ -22,13 +24,13 @@ import (
 )
 
 const (
-	serialIndex   = "DataType_SerialNum"
+	serialIndex   = "DataType_SerialKey"
 	hostnameIndex = "DataType_HostnameKey"
 )
 
 // The attributes the machine list shows, plus the table and index keys DynamoDB always projects.
 var machineListAttributes = []string{
-	"PK", "SK", "DataType", "SerialNum", "HostnameKey",
+	"PK", "SK", "DataType", "SerialKey", "HostnameKey", "SerialNum",
 	"MachineID", "Hostname", "ModelIdentifier", "OSVersion", "SantaVersion", "ClientMode", "PrimaryUser", "LastSeenDay",
 }
 
@@ -75,12 +77,12 @@ func TestR4_SerialIndexListsMacsBySerial(t *testing.T) {
 		h.MustSync(t)
 	}
 
-	got := machineIDs(t, queryIndex(t, serialIndex, "SerialNum", ""))
+	got := machineIDs(t, queryIndex(t, serialIndex, "SerialKey", ""))
 	want := []string{machineB, machineA, "CCCCCCCC-3333-4333-8333-CCCCCCCCCCCC"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("serial index order %v, want %v", got, want)
 	}
-	if got := machineIDs(t, queryIndex(t, serialIndex, "SerialNum", "C02")); len(got) != 2 {
+	if got := machineIDs(t, queryIndex(t, serialIndex, "SerialKey", "C02")); len(got) != 2 {
 		t.Errorf("serial prefix C02 found %v, want the two C02 Macs", got)
 	}
 }
@@ -117,7 +119,7 @@ func TestR4_IndexesProjectOnlyTheMachineListAttributes(t *testing.T) {
 	for _, a := range machineListAttributes {
 		allowed[a] = true
 	}
-	for _, index := range []struct{ name, rangeKey string }{{serialIndex, "SerialNum"}, {hostnameIndex, "HostnameKey"}} {
+	for _, index := range []struct{ name, rangeKey string }{{serialIndex, "SerialKey"}, {hostnameIndex, "HostnameKey"}} {
 		items := queryIndex(t, index.name, index.rangeKey, "")
 		if len(items) != 1 {
 			t.Fatalf("%s: %d items, want 1", index.name, len(items))
@@ -167,10 +169,38 @@ func TestR4_MacWithoutSerialOrHostnameStillSyncs(t *testing.T) {
 	b.Hostname = ""
 	b.MustSync(t)
 
-	if got := machineIDs(t, queryIndex(t, serialIndex, "SerialNum", "")); len(got) != 1 || got[0] != machineB {
+	if got := machineIDs(t, queryIndex(t, serialIndex, "SerialKey", "")); len(got) != 1 || got[0] != machineB {
 		t.Errorf("serial index has %v, want only %s", got, machineB)
 	}
 	if got := machineIDs(t, queryIndex(t, hostnameIndex, "HostnameKey", "")); len(got) != 1 || got[0] != machineA {
 		t.Errorf("hostname index has %v, want only %s", got, machineA)
+	}
+}
+
+func TestR4_SerialKeyIsTheTrimmedUpperCaseSerial(t *testing.T) {
+	transport := freshServer(t)
+	h := newHost(t, machineA, transport)
+	h.SerialNumber = "VMk3xQ9pLr2a"
+	h.MustSync(t)
+
+	item := getItem(t, "Machine#"+machineA, "Current")
+	if got, _ := sensorString(t, item, "SerialKey"); got != "VMK3XQ9PLR2A" {
+		t.Errorf("SerialKey = %q, want %q", got, "VMK3XQ9PLR2A")
+	}
+	if got, _ := sensorString(t, item, "SerialNum"); got != "VMk3xQ9pLr2a" {
+		t.Errorf("SerialNum = %q, want it stored as reported", got)
+	}
+	items := queryIndex(t, serialIndex, "SerialKey", "VMK3X")
+	if got := machineIDs(t, items); len(got) != 1 || got[0] != machineA {
+		t.Fatalf("serial prefix VMK3X found %v, want %s", got, machineA)
+	}
+	if got, _ := sensorString(t, items[0], "SerialNum"); got != "VMk3xQ9pLr2a" {
+		t.Errorf("the serial index projects SerialNum %q, want it as reported", got)
+	}
+
+	h.SerialNumber = "   "
+	h.MustSync(t)
+	if v, ok := getItem(t, "Machine#"+machineA, "Current")["SerialKey"]; ok {
+		t.Errorf("SerialKey is stored for a blank serial: %#v", v)
 	}
 }
