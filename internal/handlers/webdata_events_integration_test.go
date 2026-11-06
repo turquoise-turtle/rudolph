@@ -508,3 +508,38 @@ func TestR7_OneUploadStoresAtMostAThousandEvents(t *testing.T) {
 		t.Errorf("%d events stored from one upload of 1100, want between 1 and 1000", stored)
 	}
 }
+
+// From the second review: a crash-looping blocked binary fills a whole upload (batch_size may be up to 500) with
+// events of one binary on one day, which all count on one day counter. Writing them one transaction after another
+// does not fit a 10 s Lambda, and a Santa that retries the batch would never get past it. The writes of one binary
+// are combined (a transaction holds up to 100 items), so an upload of 300 such events, and its retry, take a few dozen
+// calls, and every event is still stored and counted once.
+func TestR7_ManyEventsOfOneBinaryTakeFewCalls(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	var events []string
+	for i := 0; i < 300; i++ {
+		events = append(events, execEvent(sha1, "BLOCK_BINARY", 1000+i, at.Add(time.Duration(i)*time.Millisecond), ""))
+	}
+
+	eventsTableCalls := func() int {
+		c := ddblocal.Counts()
+		return c["TransactWriteItems"] + c["PutItem"] + c["UpdateItem"] + c["BatchWriteItem"]
+	}
+	for round := 1; round <= 2; round++ {
+		host.PendingEvents = append([]string(nil), events...)
+		ddblocal.ResetCounts()
+		host.MustSync(t)
+		// The sync's own writes (sync state, tracking) are a handful; the rest are the event writes.
+		if n := eventsTableCalls(); n > 40 {
+			t.Errorf("upload %d of 300 events of one binary took %d write calls, want at most about 40", round, n)
+		}
+	}
+	if got := len(eventsOf(t, machineA)); got != 300 {
+		t.Errorf("%d events stored, want 300", got)
+	}
+	if n, _ := numAttr(t, eventsItem(t, "BinaryDay#"+at.UTC().Format("2006-01-02"), sha1), "Blocked"); n != 300 {
+		t.Errorf("Blocked = %v after the upload and its retry, want 300", n)
+	}
+}
