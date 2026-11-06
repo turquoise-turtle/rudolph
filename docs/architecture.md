@@ -28,7 +28,7 @@ return response structures. These structures are translated into HTTP responses 
 ## DynamoDB
 All rules, machine configurations, and uploaded sensor data are housed in DynamoDB.
 
-Besides its primary key (`PK`, `SK`), the table has four global secondary indexes: `SerialNum_DataType_MachineID` (`rudolph lookup serial-number`), `DataType_MachineID` (machine ID prefix lookups), and `DataType_SerialKey` and `DataType_HostnameKey`, which the web view uses to list Macs by serial number and hostname (see [Sensor data row](sync.md#sensor-data-row)).
+Besides its primary key (`PK`, `SK`), the table has five global secondary indexes: `SerialNum_DataType_MachineID` (`rudolph lookup serial-number`), `DataType_MachineID` (machine ID prefix lookups), `DataType_SerialKey` and `DataType_HostnameKey`, which the web view uses to list Macs by serial number and hostname (see [Sensor data row](sync.md#sensor-data-row)), and `GlobalRulePolicy_SK`, which the web view uses to list global rules by policy (see [Global rules and the policy index](rules.md#global-rules-and-the-policy-index)).
 
 To modify sensor configurations or to edit rules, you would [use the Rudolph cli tool](https://github.com/airbnb/rudolph/blob/master/docs/rules.md#importing-or-exporting-rules) to make edits to this DynamoDB.
 You **_would not_** go through Rudolph's public API, as that API does not have any endpoints that would implement this

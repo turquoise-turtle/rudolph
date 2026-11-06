@@ -47,6 +47,11 @@ resource "aws_dynamodb_table" "store" {
     type = "S"
   }
 
+  attribute {
+    name = "GlobalRulePolicy"
+    type = "N"
+  }
+
   ttl {
     attribute_name = "ExpiresAfter"
     enabled        = true
@@ -91,6 +96,17 @@ resource "aws_dynamodb_table" "store" {
     range_key          = "HostnameKey"
     projection_type    = "INCLUDE"
     non_key_attributes = ["SerialNum", "SerialKey", "MachineID", "Hostname", "ModelIdentifier", "OSVersion", "SantaVersion", "ClientMode", "PrimaryUser", "LastSeenDay"]
+  }
+
+  # The web view's rules page, filtered by policy. GlobalRulePolicy mirrors Policy on global rule rows only (machine
+  # rules and the rules feed carry Policy but not GlobalRulePolicy, so they stay out). The page shows every rule
+  # attribute, so the index projects them all; global rules change only when an administrator edits them, never per
+  # sync, so the extra index writes cost next to nothing. Rudolph itself does not query this index.
+  global_secondary_index {
+    name            = "GlobalRulePolicy_SK"
+    hash_key        = "GlobalRulePolicy"
+    range_key       = "SK"
+    projection_type = "ALL"
   }
 
   server_side_encryption {

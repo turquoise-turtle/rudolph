@@ -65,8 +65,9 @@ func UpdateGlobalRule(
 
 	// Updated rulePolicy request
 	updateItem := updateRulePolicyRequest{
-		Policy:  rulePolicy,
-		CELExpr: updatedRule.CELExpr,
+		Policy:           rulePolicy,
+		CELExpr:          updatedRule.CELExpr,
+		GlobalRulePolicy: rulePolicy,
 	}
 
 	// Update the rule only if it still exists: a rule removed since it was read above must not be recreated as a
