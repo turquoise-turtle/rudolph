@@ -11,6 +11,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/model/syncstate"
@@ -75,6 +76,8 @@ type machineRulePage struct {
 	updater     dynamodb.UpdateItemIfAPI
 	deleter     dynamodb.DeleteItemIfAPI
 	timer       clock.TimeProvider
+	// groups caches the group registry and group rules for this server instance; nil serves no group rules
+	groups *groups.Cache
 }
 
 // rules returns the machine-specific rules to send at the end of the sync's last page, and records which rules the
@@ -121,6 +124,17 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		applying[row.SortKey] = machinerules.Delivery{}
 	}
 
+	// The rules of the Mac's groups join the machine rules: delivery tracking treats them alike, so a group rule that
+	// stops applying (the Mac left the group, or the rule was removed) is replaced by the global rule or removed
+	groupRules, err := p.groupRules(machineID, applying)
+	if err != nil {
+		return nil, err
+	}
+	for _, rule := range groupRules {
+		page = append(page, rule.SantaRule)
+		applying[rule.SortKey] = machinerules.Delivery{}
+	}
+
 	stopped := 0
 	removalsFirstSentUpTo := 0
 	refresh := trackingNeedsRefresh(syncState, now)
@@ -137,7 +151,7 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 	}
 
 	// Never log the rules themselves: they identify the binaries a machine is allowed or blocked from running.
-	log.Printf("  Ruledownload machine rules: %d in force, %d no longer applying", len(applying), stopped)
+	log.Printf("  Ruledownload machine rules: %d in force (%d from groups), %d no longer applying", len(applying), len(groupRules), stopped)
 
 	// Rows marked for deletion are no longer needed once delivery is tracked: whether the Mac still has to be told is
 	// decided by the tracked deliveries, not by the row. Without tracking (rows written by older versions of Rudolph,
@@ -173,6 +187,45 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		}
 	}
 	return page, nil
+}
+
+// groupRules returns the rules of the Mac's groups to send, one per rule type and identifier, sorted by rule sort key
+// so that pages are stable. Keys covered by a machine rule that applies (in machineKeys) are left out: the machine rule
+// wins. Without registered groups nothing is read.
+func (p machineRulePage) groupRules(machineID string, machineKeys map[string]machinerules.Delivery) ([]groups.RuleRow, error) {
+	if p.groups == nil {
+		return nil, nil
+	}
+	registry, err := p.groups.Registry(p.getter)
+	if err != nil {
+		return nil, err
+	}
+	if len(registry.Groups) == 0 {
+		return nil, nil
+	}
+	// Strongly consistent: preflight may have changed the Mac's reported groups moments ago
+	membership, err := groups.GetMachineGroups(p.getter, machineID, true)
+	if err != nil {
+		return nil, err
+	}
+	var all []groups.GroupRules
+	for _, group := range groups.Effective(registry, membership) {
+		rows, err := p.groups.Rules(p.queryer, registry, group)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, groups.GroupRules{Group: group, Rules: rows})
+	}
+	winners := groups.Resolve(all, func(sortKey string) bool {
+		_, ok := machineKeys[sortKey]
+		return ok
+	})
+	out := make([]groups.RuleRow, 0, len(winners))
+	for _, rule := range winners {
+		out = append(out, rule)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SortKey < out[j].SortKey })
+	return out, nil
 }
 
 // trackingNeedsRefresh reports whether the machine's tracking items must be rewritten to extend their expiry (see

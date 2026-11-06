@@ -9,6 +9,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/groups"
 	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
@@ -53,6 +54,7 @@ func (h *PostRuledownloadHandler) Boot() (err error) {
 		updater:     client,
 		deleter:     client,
 		timer:       clock.ConcreteTimeProvider{},
+		groups:      groups.NewCache(clock.ConcreteTimeProvider{}),
 	}
 	h.ghandler = concreteGlobalRuleDownloader{
 		queryer:      client,

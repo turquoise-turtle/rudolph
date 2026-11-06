@@ -116,3 +116,33 @@ func updateItem(tableName string, api dynamodbUpdateItemAPI, updateKey PrimaryKe
 
 	return api.UpdateItem(ctx, input)
 }
+
+// UpdateExpressionAPI updates an item with a raw update expression, for updates the field-by-field SET of UpdateItem
+// cannot express (nested map paths, ADD and DELETE on sets, if_not_exists). Unlike UpdateItem it does not require the
+// item to exist: an update without a condition creates it.
+type UpdateExpressionAPI interface {
+	// UpdateItemExpression updates the item at key. condition may be empty; names and values may be nil. When the
+	// condition does not hold, the returned error satisfies IsConditionalCheckFailed.
+	UpdateItemExpression(key PrimaryKey, update string, condition string, names map[string]string, values map[string]types.AttributeValue) (*dynamodb.UpdateItemOutput, error)
+}
+
+func (dbc concreteDynamoDBClient) UpdateItemExpression(key PrimaryKey, update string, condition string, names map[string]string, values map[string]types.AttributeValue) (*dynamodb.UpdateItemOutput, error) {
+	ctx, cancel := context.WithTimeout(context.TODO(), dbc.timeout)
+	defer cancel()
+
+	keyInput, err := attributevalue.MarshalMap(key)
+	if err != nil {
+		return nil, err
+	}
+	input := &dynamodb.UpdateItemInput{
+		Key:                       keyInput,
+		TableName:                 aws.String(dbc.tableName),
+		UpdateExpression:          aws.String(update),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+	}
+	if condition != "" {
+		input.ConditionExpression = aws.String(condition)
+	}
+	return dbc.awsclient.UpdateItem(ctx, input)
+}

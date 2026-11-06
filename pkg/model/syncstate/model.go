@@ -109,6 +109,9 @@ type SyncState struct {
 	// or the item is due a refresh, without reading it. Both empty while the Mac reports no groups.
 	ReportedGroupsHash      string         `dynamodbav:"ReportedGroupsHash,omitempty"`
 	ReportedGroupsWrittenAt string         `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
+	// The digest of the reported group membership preflight last stored on the machine's groups item
+	// (groups.ReportedBasis), so that it only rewrites the item when that changes. Empty while it stores none.
+	GroupsBasis string `dynamodbav:"GroupsBasis,omitempty"`
 	ExpiresAfter            int64          `dynamodbav:"ExpiresAfter,omitempty"`
 	DataType                types.DataType `dynamodbav:"DataType"`
 
