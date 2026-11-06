@@ -12,10 +12,13 @@ package ranker_test
 //
 // Output, for kind Blocked and Allowed and window 1, 7, 30 and 90 days (the window's last day is today, UTC):
 //   - snapshot rows `TopSnapshot#<kind>#<window>#<snapshot id>` / `<rank, 6 digits from 000001>` with FileSHA256,
-//     Count (sum of that kind over the window's days), Machines (markers with LastSeenDay inside the window),
-//     FileName, SigningID, TeamID (from the newest day that has them), and ExpiresAfter (now + 2 days);
-//   - then the pointer `Top#<kind>#<window>` / `Current` with Snapshot (the id) and GeneratedAt (RFC 3339), written
-//     last so a reader never sees a half-written snapshot.
+//     Count (sum of that kind over the window's days), Machines (markers with LastSeenDay inside the window; only
+//     on the first 100 rows, because counting a popular binary's machines reads one marker per Mac), FileName,
+//     SigningID, TeamID (from the newest day that has them), and ExpiresAfter (now + 8 days, so a ranker that stops
+//     for a while never leaves the pointer naming deleted rows; readers show GeneratedAt);
+//   - then the pointer `Top#<kind>#<window>` / `Current` with Snapshot (the id, sorting by time) and GeneratedAt
+//     (RFC 3339), written last so a reader never sees a half-written snapshot, and only if it names an older
+//     snapshot, so an overlapping slower run cannot move it back.
 // Rows are ordered by Count (highest first), then FileSHA256; binaries with a count of 0 are left out; at most 500
 // rows per list. The job never Scans.
 
@@ -123,8 +126,8 @@ func list(t *testing.T, kind string, window int) []row {
 			if want := fmt.Sprintf("%06d", len(rows)+1); r.SK != want {
 				t.Errorf("%s %d row %d has SK %q, want %q", kind, window, len(rows)+1, r.SK, want)
 			}
-			if exp := time.Unix(r.ExpiresAfter, 0); exp.Before(now.Add(24*time.Hour)) || exp.After(now.Add(3*24*time.Hour)) {
-				t.Errorf("%s %d row ExpiresAfter %v, want about now + 2 days", kind, window, exp)
+			if exp := time.Unix(r.ExpiresAfter, 0); exp.Before(now.Add(7*24*time.Hour)) || exp.After(now.Add(9*24*time.Hour)) {
+				t.Errorf("%s %d row ExpiresAfter %v, want about now + 8 days", kind, window, exp)
 			}
 			rows = append(rows, row{r.FileSHA256, r.Count, r.Machines, r.FileName, r.SigningID, r.TeamID})
 		}
@@ -238,5 +241,50 @@ func TestRanker_NeverScans(t *testing.T) {
 	run(t, now)
 	if n := ddblocal.Counts()["Scan"]; n != 0 {
 		t.Errorf("%d Scan calls", n)
+	}
+}
+
+// Machines is counted for the first 100 rows only; the others leave it out.
+func TestRanker_MachinesOnlyForTheFirstHundredRows(t *testing.T) {
+	ddblocal.Reset(t)
+	for i := 1; i <= 150; i++ {
+		counter(t, 0, i, 1000-i, 0, "bin")
+		marker(t, i, "MAC-A", 0)
+	}
+	run(t, now)
+	out, err := ddblocal.Raw(t).GetItem(ctx, &awsdynamodb.GetItemInput{
+		TableName: aws.String(ddblocal.EventsTableName),
+		Key:       map[string]awstypes.AttributeValue{"PK": &awstypes.AttributeValueMemberS{Value: "Top#Blocked#1"}, "SK": &awstypes.AttributeValueMemberS{Value: "Current"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := out.Item["Snapshot"].(*awstypes.AttributeValueMemberS).Value
+	q, err := ddblocal.Raw(t).Query(ctx, &awsdynamodb.QueryInput{
+		TableName:                 aws.String(ddblocal.EventsTableName),
+		KeyConditionExpression:    aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]awstypes.AttributeValue{":pk": &awstypes.AttributeValueMemberS{Value: "TopSnapshot#Blocked#1#" + snap}},
+	})
+	if err != nil || len(q.Items) != 150 {
+		t.Fatalf("%v, %d rows", err, len(q.Items))
+	}
+	for i, it := range q.Items {
+		_, has := it["Machines"]
+		if (i < 100) != has {
+			t.Errorf("row %d: Machines present %v, want %v", i+1, has, i < 100)
+		}
+	}
+}
+
+// Runs can overlap (EventBridge may deliver twice; an operator may invoke the Lambda by hand). A run that started
+// earlier must not move the pointer back to its older snapshot.
+func TestRanker_AnOlderRunDoesNotMoveThePointerBack(t *testing.T) {
+	ddblocal.Reset(t)
+	counter(t, 0, 1, 1, 0, "one")
+	run(t, now.Add(time.Hour))
+	counter(t, 0, 2, 9, 0, "two")
+	run(t, now) // started earlier, finished later
+	if got := summary(list(t, "Blocked", 1)); got != "1:1/0" {
+		t.Errorf("after an older run finished last: %s, want the newer run's 1:1/0", got)
 	}
 }
