@@ -136,3 +136,24 @@ func sentMode(t *testing.T, preflight *dynamicpb.Message) string {
 	}
 	return "none in " + canonical
 }
+
+// From the review: the 30-day limit also holds when the row is read, so an expiry written by other tooling (or in
+// milliseconds, as JavaScript's Date.now() gives) does not make a "temporary" mode permanent.
+func TestTemporaryMode_ExpiryBeyondThirtyDaysIsIgnored(t *testing.T) {
+	for name, expires := range map[string]int64{
+		"a year ahead":    time.Now().Add(365 * 24 * time.Hour).Unix(),
+		"in milliseconds": time.Now().Add(time.Hour).UnixMilli(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := freshServer(t)
+			setGlobalClientMode(t, types.Lockdown)
+			putItem(t, map[string]any{
+				"PK": "Machine#" + machineA, "SK": "Config", "DataType": "MachineConfiguration",
+				"TemporaryClientMode": int(types.Monitor), "TemporaryClientModeExpiresAt": expires,
+			})
+			if got := sentMode(t, newHost(t, machineA, transport).MustSync(t).Preflight); got != "LOCKDOWN" {
+				t.Errorf("%s, want the global LOCKDOWN", got)
+			}
+		})
+	}
+}

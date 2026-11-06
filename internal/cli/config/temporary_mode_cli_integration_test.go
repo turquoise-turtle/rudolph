@@ -108,6 +108,7 @@ func TestTemporaryMode_RefusedArguments(t *testing.T) {
 		"zero duration":            {"update", "--machine", machine, "-c", "monitor", "--for", "0s"},
 		"negative duration":        {"update", "--machine", machine, "-c", "monitor", "--for", "-1h"},
 		"more than 30 days":        {"update", "--machine", machine, "-c", "monitor", "--for", "721h"},
+		"under a minute":           {"update", "--machine", machine, "-c", "monitor", "--for", "500ms"},
 		"until in the past":        {"update", "--machine", machine, "-c", "monitor", "--until", time.Now().Add(-time.Hour).Format(time.RFC3339)},
 		"until not a time":         {"update", "--machine", machine, "-c", "monitor", "--until", "tomorrow"},
 	} {
@@ -134,5 +135,26 @@ func TestTemporaryMode_LockdownNeedsConfirmation(t *testing.T) {
 	}
 	if _, ok := configRow(t, "Machine#"+machine)["TemporaryClientMode"]; ok {
 		t.Error("a declined temporary lockdown was stored")
+	}
+}
+
+// From the review: while a temporary mode runs, changing the machine's own mode does not take effect until it ends.
+// config update says so instead of looking as if the new mode applies at the next sync.
+func TestTemporaryMode_UpdateOfTheOwnModeWarnsWhileOneRuns(t *testing.T) {
+	ddblocal.Reset(t)
+	if out, err := clitest.Run(t, env, ConfigCmd, "", "update", "--machine", machine, "-c", "monitor", "--for", "2h"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, args := range [][]string{
+		{"update", "--machine", machine, "-c", "lockdown"},
+		{"update", "--machine", machine, "--inherit", "client-mode"},
+	} {
+		out, err := clitest.Run(t, env, ConfigCmd, "yes\n", args...)
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		if !strings.Contains(strings.ToLower(out), "temporary") {
+			t.Errorf("%v gave no warning about the running temporary mode:\n%s", args, out)
+		}
 	}
 }
