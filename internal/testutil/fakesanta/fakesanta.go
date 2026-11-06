@@ -117,12 +117,12 @@ type Host struct {
 	// batch_size (DefaultEventBatchSize when absent), stopping at the first batch that fails. Batches that were
 	// uploaded are deleted from PendingEvents / PendingFileAccessEvents; the failed batch and every later event stay
 	// for the next sync. A failed upload does not abort the sync. During a CLEAN or CLEAN_ALL sync, events are deleted
-	// without being uploaded unless EnableCleanSyncEventUpload is set (as in Santa). Execution events are uploaded
+	// without being uploaded unless SyncEnableCleanSyncEventUpload is set (as in Santa). Execution events are uploaded
 	// before file access events.
 	//
 	// Without it, all pending events are uploaded in one request, and a failure fails the sync.
 	SantaExactEventUpload bool
-	// EnableCleanSyncEventUpload is Santa's EnableCleanSyncEventUpload setting (only with SantaExactEventUpload).
+	// EnableCleanSyncEventUpload is Santa's SyncEnableCleanSyncEventUpload profile key (only with SantaExactEventUpload).
 	EnableCleanSyncEventUpload bool
 
 	// IgnorePostflightFailure makes a failed postflight not fail the sync, as in Santa 2026.8 (SNTSyncPostflight.mm

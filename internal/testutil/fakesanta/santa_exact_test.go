@@ -72,7 +72,7 @@ func TestSync_SantaExactEventUploadDefaultBatchSizeAndFileAccessEvents(t *testin
 	}
 }
 
-// PerformRequest in SNTSyncEventUpload.mm skips the upload during clean syncs (unless EnableCleanSyncEventUpload), and
+// PerformRequest in SNTSyncEventUpload.mm skips the upload during clean syncs (unless SyncEnableCleanSyncEventUpload), and
 // the events are deleted anyway.
 func TestSync_SantaExactEventUploadDropsEventsDuringCleanSyncs(t *testing.T) {
 	srv := &scriptedServer{preflight: `{"sync_type":"CLEAN"}`, pages: []string{`{"rules":[{"identifier":"aa","rule_type":"BINARY","policy":"BLOCKLIST"}]}`}}

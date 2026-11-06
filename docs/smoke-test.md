@@ -446,7 +446,7 @@ Write this outside both repositories (it holds the token), fill in the values, a
 - `MachineOwnerGroups` reports the group `smoke`, used in step 6.4. Rudolph ignores it until the group is registered.
 - `ClientMode` `1` starts the Mac in monitor mode.
 - Leave out `SyncClientContentEncoding` (deflate, checked in 3.5) and `SyncEnableProtoTransfer`.
-- **`SyncEnableCleanSyncEventUpload`** (the exact key Santa reads; some Rudolph docs call it `EnableCleanSyncEventUpload`) is left out. Santa uploads no events during a clean sync unless it is true, and a Mac that holds no rules is clean synced on every sync. Set it to `<true/>` only for a fleet that will run without any rules; this test adds rules in step 6, after which syncs become incremental and events are uploaded.
+- **`SyncEnableCleanSyncEventUpload`** (the exact key Santa reads) is left out. Santa uploads no events during a clean sync unless it is true, and a Mac that holds no rules is clean synced on every sync. Set it to `<true/>` only for a fleet that will run without any rules; this test adds rules in step 6, after which syncs become incremental and events are uploaded.
 
 The payload above uses the `com.northpolesec.santa` domain that Santa 2026.8 and newer read; `configs/santa-configuration.mobileconfig` in this repository still uses `com.google.santa` and has no `SyncExtraHeaders`, so do not start from it.
 
@@ -869,7 +869,7 @@ parse @message /(?<method>[A-Z]+) (?<route>\S+) machine=(?<machine>\S+) status=(
 
 Found while writing this runbook, by comparing the docs with the code and with the vendored Santa sources in `testdata/`. Not fixed here.
 
-1. **`EnableCleanSyncEventUpload` is not Santa's key.** [sync.md](sync.md) (and comments in `internal/testutil/fakesanta`) tell admins to set `EnableCleanSyncEventUpload` in the profile. Santa 2025.12, 2026.8 and 2026.9 read `SyncEnableCleanSyncEventUpload` (`kSyncEnableCleanSyncEventUpload` in `SNTConfigurator.mm`); the documented key does nothing.
+1. **`EnableCleanSyncEventUpload` is not Santa's key.** [sync.md](sync.md) (and comments in `internal/testutil/fakesanta`) tell admins to set `EnableCleanSyncEventUpload` in the profile. Santa 2025.12, 2026.8 and 2026.9 read `SyncEnableCleanSyncEventUpload` (`kSyncEnableCleanSyncEventUpload` in `SNTConfigurator.mm`); the documented key does nothing. Fixed 2026-11-07.
 2. **The example Santa profile is out of date.** `configs/santa-configuration.mobileconfig`, which [configuring Santa](configuring-santa.md) points to as the example, sets its preferences under `com.google.santa`, while the same page says Santa 2026.8 reads `com.northpolesec.santa` (confirmed in `SNTConfigurator.mm`), and it has no `SyncExtraHeaders`, without which every sync is refused with 401.
 3. **"Received 0 rules" on the first sync.** [configuring Santa](configuring-santa.md) says a working first sync receives 0 rules; on a deployment with no rules, the clean sync sends one rule, the `REMOVE` of the placeholder identifier (`internal/handlers/ruledownload/clean_sync.go`). Verify what Santa prints in 5.3 and correct the doc.
 4. **No event count in the eventupload log.** rudolph-web's `docs/data-layer-design.md` says to measure events per Mac per day by counting `events` per upload in the Lambda logs. eventupload logs only the router line (route, machine, status, duration) and `dropped` lines; step 12.1 counts uploads in the logs and stored events in the table instead. Measuring uploaded events with `EnableAllEventUpload` on would need a log line or metric that does not exist.

@@ -127,7 +127,7 @@ placeholder identifier (see [rule-pagination](./rule-pagination.md#tracking-stor
 A Mac that reports holding no rules at all is also clean synced, so a Mac whose rule database was lost gets its rules
 back. If Rudolph has no rules for it either (a new deployment in monitor mode, before any rule is written), every sync
 of that Mac is therefore a clean sync, and Santa 2026.8 uploads no events during a clean sync: it deletes them unless
-the Mac's Santa configuration profile sets `EnableCleanSyncEventUpload` to true. Set it in the MDM profile, or add any
+the Mac's Santa configuration profile sets `SyncEnableCleanSyncEventUpload` to true. Set it in the MDM profile, or add any
 rule, before relying on events from such Macs.
 
 #### Request - JSON
