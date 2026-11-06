@@ -14,4 +14,9 @@ module "rule_store" {
     module.preflight_function.lambda_role_name,
     module.postflight_function.lambda_role_name,
   ]
+
+  # Only eventupload writes execution events
+  events_write_lambda_role_names = [
+    module.eventupload_function.lambda_role_name,
+  ]
 }

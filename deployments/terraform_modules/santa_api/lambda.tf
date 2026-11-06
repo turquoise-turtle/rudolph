@@ -115,6 +115,8 @@ module "eventupload_function" {
     FIREHOSE_NAME = local.firehose_name
     KINESIS_NAME  = var.eventupload_kinesis_name
     LAMBDA_NAME   = var.eventupload_output_lambda_name
+
+    EVENTS_DYNAMODB_NAME = module.rule_store.events_dynamodb_table_name
   }
 }
 

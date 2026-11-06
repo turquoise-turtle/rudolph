@@ -42,6 +42,9 @@ The alarms are kept few and cheap: seven alarms, or six when no event sink is co
 
 At us-east-1 prices that is about US$2.40 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
+## Execution Events Table
+Blocked and unknown executions are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, a few US dollars a month for 1,000 Macs in monitor mode); see [Execution events table](./events-table.md#costs).
+
 ## Costs of Rules
 Due to Rudolph's sync logic, we have not observed noticable cost nor performance degradatation with very large numbers of
 rules.
