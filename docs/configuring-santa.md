@@ -8,7 +8,7 @@ Rudolph requires **Santa 2026.8 or newer**, and is tested with Santa 2026.8 and 
 - CEL rules are evaluated by Santa 2025.12's older CEL support, which may not parse an expression written for Santa 2026.x; such a rule may then not apply on those Macs.
 - When a Mac is upgraded from Santa 2025.12 to 2026.6 or newer, its next sync is a clean sync, so that it gets the real policies of the rules that were sent as `SILENT_BLOCKLIST`.
 
-Santa 2025.12 supports `SyncExtraHeaders`, so it authenticates with the settings described below. Releases older than 2025.12 are not supported: Rudolph sends them the same responses as a current release. Rudolph reads the release from the `santa_version` each Mac reports at preflight; a missing or unreadable version is treated as the current release.
+Santa 2025.12 supports `SyncExtraHeaders`, so it authenticates with the settings described below. Releases older than 2025.12 are not supported; they compile path regexes as received and skip unknown policies too, so Rudolph sends them the same adjusted responses as 2025.12. Rudolph reads the release from the `santa_version` each Mac reports at preflight; a missing or unreadable version is treated as the current release.
 
 Provided here are some accelerated instructions.
 

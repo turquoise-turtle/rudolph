@@ -17,9 +17,6 @@ type SantaVersion struct {
 
 // Releases whose behaviour Rudolph adapts to.
 var (
-	// SantaVersionOldestSupported is the oldest release Rudolph adapts its responses to: 2025.12, the last release for
-	// macOS 13. Rudolph knows nothing of how older releases behave, so they get the current protocol unchanged.
-	SantaVersionOldestSupported = SantaVersion{Year: 2025, Month: 12}
 	// SantaVersionSilentGUITTYPolicies is the first release that knows SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST;
 	// older ones skip a rule with an unknown policy.
 	SantaVersionSilentGUITTYPolicies = SantaVersion{Year: 2026, Month: 6}
@@ -80,21 +77,16 @@ func (v SantaVersion) AtLeast(other SantaVersion) bool {
 	return !v.Before(other)
 }
 
-// Unsupported reports whether v is a release older than SantaVersionOldestSupported, which Rudolph does not adapt to.
-func (v SantaVersion) Unsupported() bool {
-	return v.Before(SantaVersionOldestSupported)
-}
-
-// KnowsSilentGUITTYPolicies reports whether the client is sent SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST rules as
-// they are: it applies them, or it is an unsupported release.
+// KnowsSilentGUITTYPolicies reports whether the client applies SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST rules.
+// Releases older than 2025.12 are not supported, but skip unknown policies like it, so they are treated the same.
 func (v SantaVersion) KnowsSilentGUITTYPolicies() bool {
-	return v.Unsupported() || v.AtLeast(SantaVersionSilentGUITTYPolicies)
+	return v.AtLeast(SantaVersionSilentGUITTYPolicies)
 }
 
-// ClearsRegexWhenEmpty reports whether the client is sent an empty path regex to clear it: it clears a regex it
-// receives as an empty string, or it is an unsupported release.
+// ClearsRegexWhenEmpty reports whether the client clears a path regex it receives as an empty string. Releases older
+// than 2025.12 are not supported, but compile a regex as received like it, so they are treated the same.
 func (v SantaVersion) ClearsRegexWhenEmpty() bool {
-	return v.Unsupported() || v.AtLeast(SantaVersionEmptyRegexClears)
+	return v.AtLeast(SantaVersionEmptyRegexClears)
 }
 
 // WithoutSilentGUITTY returns the policy to send a client that predates SILENT_GUI_BLOCKLIST and
