@@ -297,3 +297,15 @@ The deployment also adds the `DataType_MachineID` index to the DynamoDB table an
 settings to separate `aws_s3_bucket_*` resources; neither needs manual steps. Creating the index backfills it from every
 existing item that has `DataType` and `MachineID`: this takes a while on large tables, and on the on-demand
 (`PAY_PER_REQUEST`) table the backfill is billed as write requests to the index, roughly one per indexed item.
+
+### 5. Machine list indexes
+This applies to every existing deployment, including one already upgraded for Santa 2026.8. The release adds two global secondary indexes on the sensor data rows for the web view's machine list, `DataType_SerialNum` and `DataType_HostnameKey` (see [Sensor data row](sync.md#sensor-data-row)), and preflight starts writing `LastSeenDay`. No manual steps are needed; `make deploy` creates both indexes.
+
+What to expect when you apply:
+
+- **Online backfill.** DynamoDB fills each new index from the existing sensor data rows while the table stays fully available: syncs keep working throughout. How long it takes depends on the size of the whole table, not just the sensor data rows (DynamoDB scans every item); it can take a while on a large table. On the on-demand (`PAY_PER_REQUEST`) table the backfill is billed as writes to the index, roughly one per sensor data row per index.
+- **One index at a time.** DynamoDB builds only one new index per table at a time, so the hashicorp/aws provider creates them one after the other within the same `apply`: it requests `DataType_SerialNum` (or whichever comes first), waits until it is `ACTIVE`, then requests the next. `apply` therefore stays on the table for both backfills; this is normal, do not interrupt it. If your deployment is also gaining `DataType_MachineID` in this upgrade (step 4), that index is built in the same sequence.
+- **If `apply` times out.** The provider waits up to 60 minutes for each index (its default `update` timeout). If a backfill takes longer, `apply` fails with a timeout but DynamoDB keeps building the index. Wait until `aws dynamodb describe-table --table-name PREFIX_rudolph_store` (or your `dynamodb_table_name`) shows every index as `ACTIVE`, then run `make deploy` again: it creates any index that is still missing and changes nothing else on the table.
+- **Rows filled in over a sync interval.** An existing row appears in `DataType_SerialNum` if it has a serial number and in `DataType_HostnameKey` if it has `HostnameKey`; rows written before this release have no `LastSeenDay` (nor `HostnameKey`, if they predate it) until the Mac's next preflight, so the machine list is complete within one sync interval of the deploy.
+
+Rudolph does not query these indexes itself, so its IAM policies do not change; whatever reads them for the web view needs `dynamodb:Query` on the two index ARNs (`<table ARN>/index/DataType_SerialNum` and `<table ARN>/index/DataType_HostnameKey`).

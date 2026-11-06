@@ -3,6 +3,7 @@ package sensordata
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -14,6 +15,8 @@ const (
 	sensorDataDefaultSK = "Current"
 
 	sensorDataExpiresAfterInDays int = 90
+
+	lastSeenDayLayout = "2006-01-02"
 )
 
 // SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
@@ -46,8 +49,11 @@ type SensorData struct {
 	CompilerRuleCount    int              `dynamodbav:"CompilerRuleCount"`
 	TransitiveRuleCount  int              `dynamodbav:"TransitiveRuleCount"`
 	Time                 string           `dynamodbav:"Time"`
-	ExpiresAfter         int64            `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType             types.DataType   `dynamodbav:"DataType,omitempty"`
+	// LastSeenDay is the UTC date of the last preflight. Unlike Time it changes at most once a day, so the web
+	// view's machine list indexes can project it without an index write on every sync.
+	LastSeenDay  string         `dynamodbav:"LastSeenDay,omitempty"`
+	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType     types.DataType `dynamodbav:"DataType,omitempty"`
 }
 
 // HostnameKey is the form of a hostname the web view searches by prefix: trimmed and lower case, so the search is
@@ -67,6 +73,11 @@ func SensorDataPK(machineID string) string {
 
 func GetSensorDataExpiresAfter(timeProvider clock.TimeProvider) int64 {
 	return clock.Unixtimestamp(timeProvider.Now().UTC().AddDate(0, 0, sensorDataExpiresAfterInDays))
+}
+
+// LastSeenDay returns the UTC calendar date of t in the form stored in SensorData.LastSeenDay.
+func LastSeenDay(t time.Time) string {
+	return t.UTC().Format(lastSeenDayLayout)
 }
 
 func GetDataType() types.DataType {

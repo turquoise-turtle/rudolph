@@ -134,15 +134,29 @@ Postflight applies the same kind of check to what it stores: `sync_type` must be
 `CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
 limited to 6 MiB after decompression (HTTP 413 above that).
 
+Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
+and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
+charset=UTF-8` is accepted.
+
+#### Sensor data row
+Every preflight replaces the machine's sensor data row (`PK = Machine#<machine id>`, `SK = Current`, `DataType = SensorData`) with what the host reported, plus `Time` (the time of the preflight) and `ExpiresAfter` (the row expires 90 days after the last preflight).
+
 A Mac that reports no serial number (virtual machines and some repaired logic boards) syncs normally; its sensor data
 row is stored without `SerialNum`, so it is simply absent from the serial number index (`rudolph lookup serial-number` cannot
 find it). Rudolph never stores an empty string in an attribute that is a secondary index key, which DynamoDB rejects.
 
 The sensor data row also stores `HostnameKey`, the reported hostname trimmed of surrounding whitespace and in lower case, so the web view can search Macs by hostname prefix without regard to case. `Hostname` itself is stored as reported. A Mac that reports no hostname has neither attribute, and one whose hostname is only whitespace has `Hostname` but no `HostnameKey`.
 
-Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
-and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
-charset=UTF-8` is accepted.
+`LastSeenDay` is the UTC date of the last preflight (`2006-01-02` form, from the same clock as `Time`). It gives the machine list a last-seen column that, unlike `Time`, changes at most once a day.
+
+The web view lists Macs from two global secondary indexes on these rows; Rudolph itself does not query them:
+
+| Index | Partition key | Sort key | Used for |
+|---|---|---|---|
+| `DataType_SerialNum` | `DataType` | `SerialNum` | the machine list ordered by serial number, and serial number prefix search |
+| `DataType_HostnameKey` | `DataType` | `HostnameKey` | case-insensitive hostname prefix search |
+
+A row is in an index only if it has that index's sort key, so a Mac without a serial number or hostname is missing from that index alone. Both indexes project the same small set of attributes besides the keys: `SerialNum` or `HostnameKey` (whichever is not the sort key), `MachineID`, `Hostname`, `ModelIdentifier`, `OSVersion`, `SantaVersion`, `ClientMode`, `PrimaryUser` and `LastSeenDay`. DynamoDB writes to an index only when a write changes the item's key or projected attributes in it, so a steady-state preflight, which rewrites the row with a new `Time` and `ExpiresAfter`, writes nothing to either index; a Mac costs each index about one write a day (when `LastSeenDay` changes) plus one whenever its inventory changes (an OS or Santa upgrade, a new hostname or primary user). Projecting `Time`, `ExpiresAfter`, `RulesHash` or the rule counts would instead cost two index writes on every sync.
 
 ### Response - JSON
 
