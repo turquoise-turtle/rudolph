@@ -105,6 +105,11 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		prevSyncState.SettleCompletion(preflightRequest.RulesHash)
 	}
 
+	reportedGroups, err := h.stateTrackingService.saveReportedGroups(machineID, preflightRequest.PrimaryUserGroups, prevSyncState)
+	if err != nil {
+		return response.InternalServerError(fmt.Errorf("saving the reported groups: %w", err), response.ErrInternalServerErrorResponse)
+	}
+
 	// The clean sync flag of a machine-specific config asks for one clean sync of that machine, until one is confirmed
 	configCleanSync, configCleanSyncConfirmed := configCleanSyncDue(machineID, machineConfiguration, prevSyncState)
 
@@ -156,6 +161,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 		preflightRequest.RulesHash,
 		prevSyncState,
 		configCleanSync,
+		reportedGroups,
 	)
 
 	if err != nil {
