@@ -2,6 +2,7 @@ package rule
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -55,6 +56,9 @@ func init() {
 				return err
 			}
 			printRule("Rule "+current.key.SortKey+":", machineID, suffix, current.rule, current.description, tf.IsGlobal, current.expires, current.collecting)
+			if current.removing {
+				fmt.Println("  Being removed: the Mac drops it, or gets the global rule back, at its next sync; it cannot be updated")
+			}
 			return nil
 		},
 	}

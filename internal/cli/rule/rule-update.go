@@ -104,6 +104,11 @@ type existingRule struct {
 	// expires is when a machine rule expires; the zero time for one that never expires and for global rules
 	expires    time.Time
 	collecting bool
+	// removing is a machine rule that is being removed (marked DeleteOnNextSync, or the REMOVE policy)
+	removing bool
+	// The row as stored, written again with its new fields by a rewrite
+	globalRow  *globalrules.GlobalRuleRow
+	machineRow *machinerules.MachineRuleRow
 }
 
 func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleType types.RuleType) (*existingRule, error) {
@@ -116,7 +121,7 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 		if row == nil {
 			return nil, fmt.Errorf("there is no global rule %s", sortKey)
 		}
-		return &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents}, nil
+		return &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents, globalRow: row}, nil
 	}
 	row, err := machinerules.GetMachineRuleByShaType(rh.dynamodbClient, machineID, identifier, ruleType)
 	if err != nil {
@@ -130,7 +135,8 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 	if row.ExpiresAfter != 0 && row.ExpiresAfter <= rh.timeProvider.Now().Unix() {
 		return nil, fmt.Errorf("the rule %s of machine %s expired at %s; create it again with --expires or --permanent", sortKey, machineID, time.Unix(row.ExpiresAfter, 0).UTC().Format(time.RFC3339))
 	}
-	existing := &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents}
+	existing := &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents, machineRow: row,
+		removing: row.DeleteOnNextSync || row.Policy == types.RulePolicyRemove}
 	if row.ExpiresAfter != 0 {
 		existing.expires = time.Unix(row.ExpiresAfter, 0).UTC()
 	}
@@ -184,6 +190,10 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 	if err != nil {
 		return err
 	}
+	if current.removing {
+		// Updating it would bring back a rule the Mac is told to drop
+		return fmt.Errorf("the rule %s of machine %s is being removed; create it again with rudolph rule <policy> instead of updating it", current.key.SortKey, machineID)
+	}
 
 	updated := current.rule
 	if ru.PolicyChanged() {
@@ -228,20 +238,25 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 
 	switch {
 	case rewrite:
-		options := []rules.RuleOption{
-			rules.WithCustomMessage(updated.CustomMessage),
-			rules.WithCustomURL(updated.CustomURL),
-			rules.WithEventDetailButtonLabel(updated.EventDetailButtonLabel),
-			rules.WithNotificationAppName(updated.NotificationAppName),
-			rules.WithCELExpr(updated.CELExpr),
-		}
+		// One conditional write keeps the row's other attributes (CollectAllowedEvents among them) and does not
+		// bring back a rule removed since it was read
 		if tf.IsGlobal {
-			err = globalrules.AddNewGlobalRule(rh.timeProvider, rh.dynamodbClient, identifier, ruleType, updated.Policy, current.description, options...)
+			row := *current.globalRow
+			row.SantaRule = updated
+			err = globalrules.ReplaceGlobalRule(rh.timeProvider, rh.dynamodbClient, row)
 		} else {
-			err = machinerules.AddNewMachineRule(rh.dynamodbClient, machineID, identifier, ruleType, updated.Policy, current.description, expires, options...)
+			writer, ok := rh.dynamodbClient.(dynamodb.PutItemIfAPI)
+			if !ok {
+				return errors.New("this DynamoDB client cannot write rules conditionally")
+			}
+			row := *current.machineRow
+			row.SantaRule = updated
+			row.ExpiresAfter = 0
+			if !expires.IsZero() {
+				row.ExpiresAfter = expires.Unix()
+			}
+			err = machinerules.ReplaceMachineRule(writer, row)
 		}
-		// The new row has no CollectAllowedEvents flag: set it again below
-		collectionChanged = collectionChanged || current.collecting
 	case policyChanged:
 		if tf.IsGlobal {
 			err = rh.globalRuleUpdater.UpdateGlobalRule(identifier, ruleType, updated.Policy)
