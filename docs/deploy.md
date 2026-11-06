@@ -1,6 +1,8 @@
 # Deployment
 Ready to build Rudolph? Let's go at it!
 
+For the first deployment to a real AWS account, follow the [smoke test runbook](smoke-test.md): it goes from an empty dev account to a verified deployment of Rudolph and rudolph-web, with what to check and record at each step.
+
 ---
 
 ## Getting Ready
