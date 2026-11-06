@@ -112,6 +112,8 @@ logs are tied to this `MachineID`.
 We **_highly recommend_** the integer value `1`. This will initialize all Santa sensors in `MONITOR` mode. The mode can be
 later remotely changed by Rudolph once everything is set up, but an initial default setting of `MONITOR` will reduce the chances for problems.
 
+Once Santa syncs, Rudolph sends the client mode and the other settings it manages from its own configuration, which is changed with `rudolph config set` / `rudolph config update` and shown with `rudolph config get`, globally (`--global`) or per Mac (`--machine <machine-id>`). See the [CLI reference](cli.md#configuration) for the commands and [sync.md](sync.md) for what each setting does.
+
 
 ## Plist File
 Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or otherwise. We've included an example file,
