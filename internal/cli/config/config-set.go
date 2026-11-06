@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -131,6 +132,7 @@ func applyConfig(
 
 	// Get machineID from flags
 	var machineID string
+	var temporaryModeSnapshot *machineconfiguration.TemporaryClientModeSnapshot
 	if tf.IsGlobal {
 		// Fail before asking for confirmation; the service enforces this as well
 		if machineconfiguration.RequiresGlobalLockdownConfirmation(clientMode) && !confirmGlobalLockdown {
@@ -142,6 +144,12 @@ func applyConfig(
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
 		}
+		// Read before the configuration, so a temporary mode set or ended after either read fails the write below
+		snapshot, eerr := service.ReadTemporaryClientModeSnapshot(machineID)
+		if eerr != nil {
+			return eerr
+		}
+		temporaryModeSnapshot = &snapshot
 		current, eerr := service.GetIntendedConfig(machineID)
 		if eerr != nil {
 			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
@@ -210,7 +218,12 @@ func applyConfig(
 	if tf.IsGlobal {
 		err = service.SetGlobalConfig(newConfig, globalConfigOptions(confirmGlobalLockdown)...)
 	} else {
-		err = service.SetMachineConfig(machineID, newConfig)
+		// The prompt may have waited a long time: the row is only replaced while its temporary client mode is still the
+		// one read above, so one ended or set meanwhile is neither brought back nor lost
+		err = service.SetMachineConfigIfTemporaryClientMode(machineID, newConfig, *temporaryModeSnapshot)
+		if errors.Is(err, machineconfiguration.ErrTemporaryClientModeChanged) {
+			return fmt.Errorf("%w; run the command again", err)
+		}
 	}
 
 	if err != nil {

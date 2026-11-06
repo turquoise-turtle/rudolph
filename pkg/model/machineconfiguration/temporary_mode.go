@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 // A temporary client mode is stored on a machine's config row as TemporaryClientMode (a number, like ClientMode) and
@@ -21,6 +22,12 @@ const (
 	// MaxTemporaryClientModeDuration bounds how far ahead a temporary mode may end, so a forgotten exception (e.g. a
 	// Mac left in monitor mode on a lockdown fleet) does not last indefinitely
 	MaxTemporaryClientModeDuration = 30 * 24 * time.Hour
+	// MinTemporaryClientModeDuration refuses durations that end before the Mac could even sync (e.g. --for 500ms,
+	// meant as 500m)
+	MinTemporaryClientModeDuration = time.Minute
+	// temporaryClientModeClockSlack allows for a writer whose clock runs ahead of the Lambda's when the 30-day limit is
+	// checked again on reading
+	temporaryClientModeClockSlack = 10 * time.Minute
 )
 
 // ErrNoTemporaryClientMode is returned when a temporary client mode is to be ended on a machine that has none stored
@@ -41,7 +48,9 @@ type updateTemporaryClientMode struct {
 }
 
 // TemporaryClientModeAt returns the temporary client mode stored on the config and whether it applies at now. One
-// that has expired, has no expiry, or is not a known mode does not apply.
+// that has expired, has no expiry, or is not a known mode does not apply. Nor does one ending more than 30 days
+// (plus some clock slack) after now: written by other tooling, or in milliseconds (JavaScript's Date.now()), it would
+// otherwise make a "temporary" mode practically permanent.
 func (c MachineConfiguration) TemporaryClientModeAt(now time.Time) (types.ClientMode, bool) {
 	if c.TemporaryClientMode == 0 || c.TemporaryClientModeExpiresAt <= 0 {
 		return 0, false
@@ -49,10 +58,14 @@ func (c MachineConfiguration) TemporaryClientModeAt(now time.Time) (types.Client
 	if validateClientMode(c.TemporaryClientMode) != nil {
 		return 0, false
 	}
-	if !now.Before(c.TemporaryClientModeEnd()) {
+	if !now.Before(c.TemporaryClientModeEnd()) || temporaryClientModeTooFarAhead(c.TemporaryClientModeExpiresAt, now) {
 		return 0, false
 	}
 	return c.TemporaryClientMode, true
+}
+
+func temporaryClientModeTooFarAhead(expiresAt int64, now time.Time) bool {
+	return expiresAt > now.Add(MaxTemporaryClientModeDuration+temporaryClientModeClockSlack).Unix()
 }
 
 // TemporaryClientModeEnd returns the end of the stored temporary client mode as a time
@@ -71,19 +84,24 @@ func ApplyTemporaryClientMode(config MachineConfiguration, now time.Time) Machin
 			log.Printf("ignoring stored temporary client mode: %v", err)
 		} else if config.TemporaryClientModeExpiresAt <= 0 {
 			log.Printf("ignoring stored temporary client mode %d without an expiry", config.TemporaryClientMode)
+		} else if temporaryClientModeTooFarAhead(config.TemporaryClientModeExpiresAt, now) {
+			log.Printf("ignoring stored temporary client mode %d ending at %d, more than 30 days ahead (an expiry in milliseconds?)", config.TemporaryClientMode, config.TemporaryClientModeExpiresAt)
 		}
 	}
 	return config
 }
 
 // ValidateTemporaryClientMode checks a temporary client mode that is to end at expires, requested at now: a known
-// mode, ending in the future and at most MaxTemporaryClientModeDuration ahead.
+// mode, ending between MinTemporaryClientModeDuration and MaxTemporaryClientModeDuration ahead.
 func ValidateTemporaryClientMode(mode types.ClientMode, expires time.Time, now time.Time) error {
 	if err := validateClientMode(mode); err != nil {
 		return err
 	}
 	if !expires.After(now) {
 		return fmt.Errorf("a temporary client mode must end in the future, not at %s", expires.Format(time.RFC3339))
+	}
+	if expires.Sub(now) < MinTemporaryClientModeDuration {
+		return errors.New("a temporary client mode must last at least a minute")
 	}
 	if expires.Sub(now) > MaxTemporaryClientModeDuration {
 		return fmt.Errorf("a temporary client mode can last at most %d days", int(MaxTemporaryClientModeDuration/(24*time.Hour)))
@@ -152,3 +170,47 @@ func withoutTemporaryClientMode(config MachineConfiguration) MachineConfiguratio
 	config.TemporaryClientModeExpiresAt = 0
 	return config
 }
+
+// TemporaryClientModeSnapshot is the temporary client mode of a machine's config row as it was read, attribute by
+// attribute and undecoded, so a later write can require the row to still hold exactly that
+type TemporaryClientModeSnapshot struct {
+	mode    awstypes.AttributeValue
+	expires awstypes.AttributeValue
+}
+
+// ReadTemporaryClientModeSnapshot reads the temporary client mode attributes of the machine's config row
+func ReadTemporaryClientModeSnapshot(client dynamodb.GetItemAPI, machineID string) (TemporaryClientModeSnapshot, error) {
+	output, err := client.GetItem(dynamodb.PrimaryKey{PartitionKey: machineConfigurationPK(machineID), SortKey: machineConfigurationSK()}, true)
+	if err != nil {
+		return TemporaryClientModeSnapshot{}, fmt.Errorf("failed to read the machine configuration: %w", err)
+	}
+	return TemporaryClientModeSnapshot{
+		mode:    output.Item[temporaryClientModeAttribute],
+		expires: output.Item[temporaryClientModeExpiresAtAttribute],
+	}, nil
+}
+
+// condition holds while both attributes are as in the snapshot (absent where they were absent)
+func (s TemporaryClientModeSnapshot) condition() expression.ConditionBuilder {
+	return unchangedAttribute(temporaryClientModeAttribute, s.mode).And(unchangedAttribute(temporaryClientModeExpiresAtAttribute, s.expires))
+}
+
+func unchangedAttribute(name string, value awstypes.AttributeValue) expression.ConditionBuilder {
+	if value == nil {
+		return expression.AttributeNotExists(expression.Name(name))
+	}
+	return expression.Equal(expression.Name(name), expression.Value(rawAttributeValue{value}))
+}
+
+// rawAttributeValue passes an attribute value read from DynamoDB into an expression unchanged
+type rawAttributeValue struct {
+	value awstypes.AttributeValue
+}
+
+func (r rawAttributeValue) MarshalDynamoDBAttributeValue() (awstypes.AttributeValue, error) {
+	return r.value, nil
+}
+
+// ErrTemporaryClientModeChanged is returned when a machine config is to be replaced, but its temporary client mode
+// changed since it was read
+var ErrTemporaryClientModeChanged = errors.New("the temporary client mode of the machine changed (it was set or ended) while the configuration was being replaced; nothing was written")

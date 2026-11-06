@@ -1,6 +1,7 @@
 package machineconfiguration
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -213,6 +214,7 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 // MachineConfigurationSetter
 type MachineConfigurationSetter interface {
 	setMachineConfig(machineID string, config MachineConfiguration) error
+	setMachineConfigIf(machineID string, config MachineConfiguration, snapshot *TemporaryClientModeSnapshot) error
 }
 
 type ConcreteMachineConfigurationSetter struct {
@@ -222,6 +224,12 @@ type ConcreteMachineConfigurationSetter struct {
 }
 
 func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, config MachineConfiguration) error {
+	return c.setMachineConfigIf(machineID, config, nil)
+}
+
+// setMachineConfigIf is setMachineConfig that, with a snapshot, writes only while the row still holds the temporary
+// client mode of the snapshot; otherwise it returns ErrTemporaryClientModeChanged.
+func (c ConcreteMachineConfigurationSetter) setMachineConfigIf(machineID string, config MachineConfiguration, snapshot *TemporaryClientModeSnapshot) error {
 	err := ValidateConfig(config, false)
 	if err != nil {
 		return err
@@ -260,7 +268,16 @@ func (c ConcreteMachineConfigurationSetter) setMachineConfig(machineID string, c
 	// Construct a MachineConfigRow to represent a MachineConfig
 	machineConfigRow := buildConfigRow(machinePK, config)
 
-	_, err = c.setter.PutItem(machineConfigRow)
+	if snapshot == nil {
+		_, err = c.setter.PutItem(machineConfigRow)
+	} else if conditional, ok := c.setter.(dynamodb.PutItemIfAPI); ok {
+		_, err = conditional.PutItemIf(machineConfigRow, snapshot.condition())
+		if dynamodb.IsConditionalCheckFailed(err) {
+			return ErrTemporaryClientModeChanged
+		}
+	} else {
+		return errors.New("this DynamoDB client cannot replace a machine config conditionally")
+	}
 	if err != nil {
 		return fmt.Errorf("setting machine config failed: %w", err)
 	}

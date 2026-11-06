@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -163,6 +164,18 @@ func updateConfig(
 		}
 	}
 
+	// While a temporary client mode runs, a change of the machine's own mode only shows once it ends
+	var runningTemporaryMode string
+	if !tf.IsGlobal && (updateRequest.ClientMode != nil || slices.Contains(updateRequest.Inherit, "ClientMode")) {
+		current, eerr := service.GetIntendedConfig(machineID)
+		if eerr != nil {
+			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
+		}
+		if mode, active := current.TemporaryClientModeAt(time.Now()); active {
+			runningTemporaryMode = fmt.Sprintf("\nWarning: the machine is in temporary %s mode until %s. Its new client mode applies only after that; end the temporary mode now with --%s.\n", clientModeName(mode), formatTemporaryModeEnd(current.TemporaryClientModeEnd()), flagEndTemporaryMode)
+		}
+	}
+
 	// What the machine inherits is shown as it is set directly, so a global lockdown is as visible as when it is set
 	var global machineconfiguration.MachineConfiguration
 	if len(updateRequest.Inherit) > 0 {
@@ -232,6 +245,7 @@ func updateConfig(
 			fmt.Printf("\nWarning: the global client mode is %s, which blocks unknown executions; the machine follows it from its next sync.\n", clientModeText)
 		}
 	}
+	fmt.Print(runningTemporaryMode)
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")

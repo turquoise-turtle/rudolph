@@ -5,14 +5,17 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 )
 
-//
 // This service exposes all machineconfiguration access methods
-//
 type MachineConfigurationService interface {
 	GetIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error)
 	GetIntendedGlobalConfig() (intendedConfig MachineConfiguration, isDefaultConfig bool, err error)
 	SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 	SetMachineConfig(machineID string, config MachineConfiguration) error
+	// ReadTemporaryClientModeSnapshot reads the temporary client mode attributes of the machine's config row
+	ReadTemporaryClientModeSnapshot(machineID string) (TemporaryClientModeSnapshot, error)
+	// SetMachineConfigIfTemporaryClientMode is SetMachineConfig, but writes only while the row still holds the
+	// temporary client mode of the snapshot; otherwise it returns ErrTemporaryClientModeChanged
+	SetMachineConfigIfTemporaryClientMode(machineID string, config MachineConfiguration, snapshot TemporaryClientModeSnapshot) error
 	UpdateGlobalConfig(configRequest MachineConfigurationUpdateRequest, opts ...GlobalConfigOption) (*MachineConfiguration, error)
 	UpdateMachineConfig(machineID string, configRequest MachineConfigurationUpdateRequest) (*MachineConfiguration, error)
 	DeleteGlobalConfig() error
@@ -76,6 +79,14 @@ func (s ConcreteMachineConfigurationService) SetGlobalConfig(config MachineConfi
 // Machine
 func (s ConcreteMachineConfigurationService) SetMachineConfig(machineID string, config MachineConfiguration) error {
 	return s.setter.machine.setMachineConfig(machineID, config)
+}
+
+func (s ConcreteMachineConfigurationService) ReadTemporaryClientModeSnapshot(machineID string) (TemporaryClientModeSnapshot, error) {
+	return ReadTemporaryClientModeSnapshot(s.dynamodb, machineID)
+}
+
+func (s ConcreteMachineConfigurationService) SetMachineConfigIfTemporaryClientMode(machineID string, config MachineConfiguration, snapshot TemporaryClientModeSnapshot) error {
+	return s.setter.machine.setMachineConfigIf(machineID, config, &snapshot)
 }
 
 // Updater //
