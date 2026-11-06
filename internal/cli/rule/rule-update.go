@@ -45,6 +45,9 @@ func init() {
 			if err := tf.RequireExplicitTarget(); err != nil {
 				return err
 			}
+			if tf.IsGroup() {
+				return errors.New(`a group rule is changed by writing it again (e.g. "rule deny ... --group <group>"), which replaces it`)
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
