@@ -90,14 +90,15 @@ func (f *temporaryModeFlags) request(cmd *cobra.Command, tf flags.TargetFlags, c
 
 // applyTemporaryMode sets or ends the temporary client mode of a machine. A temporary mode that blocks unknown
 // executions asks for the same confirmation as setting that mode on the machine; declining it is an error, so a
-// script does not take it for done. A temporary monitor mode and ending one are applied without asking.
-func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time, yes bool) error {
+// script does not take it for done. A temporary monitor mode and ending one are applied without asking. A dry run
+// writes neither.
+func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time, approval flags.Approval) error {
 	machineID, err := tf.GetMachineID()
 	if err != nil {
 		return fmt.Errorf("failed to get MachineID: %w", err)
 	}
 	if request.end {
-		return endTemporaryMode(store, service, machineID)
+		return endTemporaryMode(store, service, machineID, approval)
 	}
 
 	modeText := clientModeName(request.mode)
@@ -106,9 +107,15 @@ func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, ser
 	if machineconfiguration.RequiresGlobalLockdownConfirmation(request.mode) {
 		fmt.Printf("Warning: in %s mode Santa blocks unknown binaries on this Mac.\n", modeText)
 		fmt.Println()
-		if err := flags.Confirm(yes); err != nil {
+		apply, err := approval.Confirm()
+		if err != nil {
 			return fmt.Errorf("temporary %s mode %w", modeText, err)
 		}
+		if !apply {
+			return nil
+		}
+	} else if !approval.Write() {
+		return nil
 	}
 	if err := machineconfiguration.SetTemporaryClientMode(store, machineID, request.mode, request.expires, now); err != nil {
 		return wrapWriteError(err)
@@ -117,7 +124,20 @@ func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, ser
 	return nil
 }
 
-func endTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, machineID string) error {
+func endTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, machineID string, approval flags.Approval) error {
+	if approval.DryRun {
+		snapshot, err := machineconfiguration.ReadTemporaryClientModeSnapshot(store, machineID)
+		if err != nil {
+			return err
+		}
+		if snapshot.Empty() {
+			fmt.Printf("Machine %s has no temporary client mode; nothing would change.\n", machineID)
+			return nil
+		}
+		fmt.Printf("Ending the temporary client mode of machine %s.\n", machineID)
+		approval.Write()
+		return nil
+	}
 	err := machineconfiguration.EndTemporaryClientMode(store, machineID)
 	if errors.Is(err, machineconfiguration.ErrNoTemporaryClientMode) {
 		fmt.Printf("Machine %s has no temporary client mode; nothing was changed.\n", machineID)

@@ -15,4 +15,5 @@ func init() {
 		Short: "Show and change the Santa configuration Rudolph sends, globally or for one machine",
 	}
 	flags.AddYesFlag(ConfigCmd)
+	flags.AddDryRunFlag(ConfigCmd)
 }
