@@ -35,3 +35,17 @@ func setupRemovingMachineRule(t *testing.T) {
 		t.Skip("the removal deleted the row at once; nothing is being removed")
 	}
 }
+
+// From the --dry-run review: a dry run fails where the real run would, so a script checking a pasted command learns
+// that the rule it wants to remove is not there.
+func TestReviewQOL_DryRunOfRemovingAMissingRuleFails(t *testing.T) {
+	ddblocal.Reset(t)
+	for name, args := range map[string][]string{
+		"global":  {"remove", "-t", "binary", "-i", sha, "--global", "--dry-run"},
+		"machine": {"remove", "-t", "binary", "-i", sha, "--machine", machine, "--dry-run"},
+	} {
+		if out, err := run(t, args...); err == nil {
+			t.Errorf("%s: a dry run of removing a missing rule succeeded:\n%s", name, out)
+		}
+	}
+}
