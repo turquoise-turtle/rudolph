@@ -35,6 +35,7 @@ func NewSensorData(
 		},
 		MachineID:            machineID,
 		SerialNum:            serialNumber,
+		SerialKey:            SerialKey(serialNumber),
 		OSVersion:            osVersion,
 		OSBuild:              osBuild,
 		SantaVersion:         santaVersion,
