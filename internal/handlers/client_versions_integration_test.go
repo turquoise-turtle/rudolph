@@ -198,7 +198,6 @@ func TestClientVersions_IdentityUnverifiedReachesSinksAndTheEventsTable(t *testi
 	}
 }
 
-
 // From the review: a Mac going back to an older Santa (or an old client's first sync after Rudolph starts adapting
 // to it) holds rules that release does not apply, so its next sync is a clean sync too, with the adapted policies.
 func TestClientVersions_DowngradeToAnOldClientCleanSyncs(t *testing.T) {
