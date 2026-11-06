@@ -393,3 +393,118 @@ func TestR6_IndexesFindEventsByFleetDecisionAndTeam(t *testing.T) {
 		t.Errorf("fleet in a window: %s, want b2,c3", got)
 	}
 }
+
+// From the review of the first implementation: a write DynamoDB applied but whose response the Lambda never saw (a
+// lost response, a call cancelled in flight, the deadline) must not leave the event stored but uncounted. Whatever
+// retries follow (the SDK's own, then Santa's), every event ends up stored once and counted once.
+func TestR7_LostWriteResponsesStillCountEachEventOnce(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	host.SantaExactEventUpload = true
+	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	shas := []string{sha1, strings.Repeat("d4", 32), sha2, sha3}
+	for i, sha := range shas {
+		host.PendingEvents = append(host.PendingEvents, execEvent(sha, "BLOCK_BINARY", 10+i, at, ""))
+	}
+
+	lost := map[string]bool{}
+	ddblocal.AddHook(t, ddblocal.Hook{LoseResponse: func(c *ddblocal.Call) *ddblocal.Fault {
+		// The first write to the events table that carries each event: applied, but the client gets a server error.
+		in := fmt.Sprint(c.Input)
+		if !strings.Contains(in, ddblocal.EventsTableName) {
+			return nil
+		}
+		for _, sha := range shas {
+			if strings.Contains(in, "Exec#") && strings.Contains(in, sha) && !lost[sha] {
+				lost[sha] = true
+				return &ddblocal.Fault{Status: 500, Type: "InternalServerError", Message: "response lost"}
+			}
+		}
+		return nil
+	}})
+	for i := 0; i < 3 && len(host.PendingEvents) > 0; i++ {
+		if _, err := host.Sync(t); err != nil {
+			t.Fatalf("sync: %v", err)
+		}
+	}
+	if len(lost) == 0 {
+		t.Fatal("precondition: no event write passed through the hook")
+	}
+	if len(host.PendingEvents) != 0 {
+		t.Fatalf("%d events still pending after 3 syncs", len(host.PendingEvents))
+	}
+
+	if got := len(eventsOf(t, machineA)); got != 4 {
+		t.Errorf("%d events stored, want 4", got)
+	}
+	day := at.UTC().Format("2006-01-02")
+	for _, sha := range shas {
+		if n, _ := numAttr(t, eventsItem(t, "BinaryDay#"+day, sha), "Blocked"); n != 1 {
+			t.Errorf("%s… Blocked = %v, want 1", sha[:4], n)
+		}
+	}
+}
+
+// Events dated more than a day ahead (a wrong clock, or a forged upload) would stay at the top of every newest-first
+// list for 90 days, and events older than the 90 days kept would expire at once: neither is stored. The upload
+// still succeeds.
+func TestR7_EventsOutsideTheKeptWindowAreDropped(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	now := time.Now().Truncate(time.Millisecond)
+	host.PendingEvents = []string{
+		execEvent(sha1, "BLOCK_UNKNOWN", 1, now.Add(48*time.Hour), ""),
+		execEvent(sha2, "BLOCK_UNKNOWN", 2, now.Add(-91*24*time.Hour), ""),
+		`{"file_sha256":"` + strings.Repeat("d4", 32) + `","file_name":"x","decision":"BLOCK_UNKNOWN","pid":3,"execution_time":1e300}`,
+		execEvent(sha3, "BLOCK_UNKNOWN", 4, now.Add(-time.Minute), ""),
+	}
+	host.MustSync(t)
+	if len(host.PendingEvents) != 0 {
+		t.Errorf("%d events still pending", len(host.PendingEvents))
+	}
+	items := eventsOf(t, machineA)
+	if len(items) != 1 {
+		t.Fatalf("%d events stored, want only the one inside the window", len(items))
+	}
+	if got, _ := sensorString(t, items[0], "FileSHA256"); got != sha3 {
+		t.Errorf("stored %s, want %s", got, sha3)
+	}
+}
+
+// A single upload may be up to 6 MB, enough for tens of thousands of tiny events. Santa uploads in batches of the
+// preflight's batch_size (50 by default), so at most 1,000 events of one upload are stored; the rest are dropped and
+// logged, and the upload still succeeds.
+func TestR7_OneUploadStoresAtMostAThousandEvents(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	for i := 0; i < 1100; i++ {
+		host.PendingEvents = append(host.PendingEvents, execEvent(fmt.Sprintf("%064x", i+1), "BLOCK_UNKNOWN", i, at, ""))
+	}
+	host.MustSync(t)
+	if len(host.PendingEvents) != 0 {
+		t.Errorf("%d events still pending: an oversized upload must not fail", len(host.PendingEvents))
+	}
+	var stored int
+	var start map[string]awstypes.AttributeValue
+	for {
+		out, err := ddblocal.Raw(t).Query(context.Background(), &awsdynamodb.QueryInput{
+			TableName:                 aws.String(ddblocal.EventsTableName),
+			KeyConditionExpression:    aws.String("PK = :pk"),
+			ExpressionAttributeValues: map[string]awstypes.AttributeValue{":pk": &awstypes.AttributeValueMemberS{Value: "Exec#" + machineA}},
+			Select:                    awstypes.SelectCount,
+			ExclusiveStartKey:         start,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored += int(out.Count)
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		start = out.LastEvaluatedKey
+	}
+	if stored == 0 || stored > 1000 {
+		t.Errorf("%d events stored from one upload of 1100, want between 1 and 1000", stored)
+	}
+}
