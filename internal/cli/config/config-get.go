@@ -10,6 +10,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
+	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/spf13/cobra"
 )
@@ -19,9 +20,15 @@ func init() {
 
 	var configGetCmd = &cobra.Command{
 		Use:   "get [-m <machine-id>|--global]",
-		Short: "Get the current global or specific machine UUID specific configuration from the sync server",
-		Args:  cobra.NoArgs,
+		Short: "Show the global configuration, or the configuration a machine gets (this Mac without --machine)",
+		Long: `Show the global configuration, or the configuration a machine gets: its own settings, marked (machine), and
+the global value of every other setting, marked (inherited). Without --global or --machine, this Mac's configuration
+is shown.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tf.RequireAtMostOneTarget(); err != nil {
+				return err
+			}
 
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
@@ -34,7 +41,7 @@ func init() {
 
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)
 
-			return getConfig(service, tf)
+			return getConfig(service, dynamodbClient, tf)
 		},
 	}
 
@@ -43,12 +50,26 @@ func init() {
 	ConfigCmd.AddCommand(configGetCmd)
 }
 
-func getConfig(service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags) (err error) {
-	// Get machineID from flags
+// settingOrigin returns " (machine)" for a setting (named by its attribute) that a machine's own configuration
+// stores, " (inherited)" for one that follows the global configuration, and "" for the global configuration
+type settingOrigin func(attribute string) string
+
+func noOrigin(string) string { return "" }
+
+func machineOrigin(stored map[string]awstypes.AttributeValue) settingOrigin {
+	return func(attribute string) string {
+		if _, ok := stored[attribute]; ok {
+			return " (machine)"
+		}
+		return " (inherited)"
+	}
+}
+
+func getConfig(service machineconfiguration.MachineConfigurationService, client dynamodb.GetItemAPI, tf flags.TargetFlags) (err error) {
 	var subject string
 	var config machineconfiguration.MachineConfiguration
+	origin := settingOrigin(noOrigin)
 
-	// Prompt the user if the global configuration is being retrieved or the machine UUID specific configuration from the get go...
 	if tf.IsGlobal {
 		fmt.Println("Retrieving the global configuration...")
 		subject = "All Machines"
@@ -66,10 +87,10 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 			return
 		}
 		if tf.IsTargetSelf() {
-			fmt.Printf("Retreiving the machine configuration for (%s) (Current Machine)\n", machineID)
+			fmt.Printf("Retrieving the configuration of this Mac (%s)\n", machineID)
 			subject = fmt.Sprintf("Machine (%s) (This Machine)", machineID)
 		} else {
-			fmt.Printf("Retreiving the machine specific configuration for machine UUID: %s\n", machineID)
+			fmt.Printf("Retrieving the configuration of machine %s\n", machineID)
 			subject = fmt.Sprintf("Machine (%s)", machineID)
 		}
 		tmpconfig, eerr := service.GetIntendedConfig(machineID)
@@ -78,42 +99,44 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 			return
 		}
 		config = tmpconfig
+		stored, eerr := client.GetItem(machineconfiguration.MachineConfigurationKey(machineID), false)
+		if eerr != nil {
+			err = fmt.Errorf("failed to read the machine's own configuration: %w", eerr)
+			return
+		}
+		origin = machineOrigin(stored.Item)
 	}
 
-	// Marshal the ClientMode out of the config to easily display the config clientmode content
 	// A stored client mode Santa does not know is shown, not fatal (preflight leaves it out)
 	clientModeText, eerr := config.ClientMode.MarshalText()
 	if eerr != nil {
 		clientModeText = []byte("INVALID, not sent to Santa")
 	}
 
-	// Alert the user if this configuration is for the same machine requesting the call
-
-	// Print the output for visual confirmation via a nicely tab corrected output
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 0, '\t', tabwriter.AlignRight)
 
 	fmt.Println("Sync server returned the following configuration")
 	fmt.Println()
 	fmt.Fprintln(writer, "Config\t Setting")
 	fmt.Fprintln(writer, "Target:\t", subject)
-	fmt.Fprintln(writer, "ClientMode:\t", config.ClientMode, "--> (", string(clientModeText), ")")
+	fmt.Fprintf(writer, "ClientMode:\t %d --> ( %s )%s\n", config.ClientMode, clientModeText, origin("ClientMode"))
 	if !tf.IsGlobal {
 		printTemporaryMode(writer, config, time.Now())
 	}
-	fmt.Fprintln(writer, "BlockedPathRegex:\t \"", config.BlockedPathRegex, "\"")
-	fmt.Fprintln(writer, "AllowedPathRegex:\t \"", config.AllowedPathRegex, "\"")
-	fmt.Fprintln(writer, "BatchSize:\t", config.BatchSize)
-	fmt.Fprintln(writer, "BundlesEnabled:\t", config.EnableBundles)
-	fmt.Fprintln(writer, "EnabledTransitiveRules:\t", config.EnabledTransitiveRules)
+	fmt.Fprintf(writer, "BlockedPathRegex:\t %q%s\n", config.BlockedPathRegex, origin("BlockedPathRegex"))
+	fmt.Fprintf(writer, "AllowedPathRegex:\t %q%s\n", config.AllowedPathRegex, origin("AllowedPathRegex"))
+	fmt.Fprintf(writer, "BatchSize:\t %d%s\n", config.BatchSize, origin("BatchSize"))
+	fmt.Fprintf(writer, "BundlesEnabled:\t %t%s\n", config.EnableBundles, origin("EnableBundles"))
+	fmt.Fprintf(writer, "EnabledTransitiveRules:\t %t%s\n", config.EnabledTransitiveRules, origin("EnableTransitiveRules"))
 	if tf.IsGlobal && config.CleanSync {
 		// Stored by an earlier version, which accepted --global --clean-sync
 		fmt.Fprintln(writer, "CleanSync:\t", "true (ignored: a clean sync is requested per machine; remove it with config update --global --clean-sync=false)")
 	} else {
 		fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
 	}
-	fmt.Fprintln(writer, "FullSyncInterval:\t", config.FullSyncInterval)
-	fmt.Fprintln(writer, "UploadLogUrl:\t \"", config.UploadLogsURL, "\"")
-	printSantaSettings(writer, config)
+	fmt.Fprintf(writer, "FullSyncInterval:\t %d%s\n", config.FullSyncInterval, origin("FullSyncInterval"))
+	fmt.Fprintf(writer, "UploadLogUrl:\t %q%s\n", config.UploadLogsURL, origin("UploadLogsUrl"))
+	printSantaSettings(writer, config, origin)
 	writer.Flush()
 
 	return

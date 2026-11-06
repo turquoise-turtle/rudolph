@@ -1,12 +1,9 @@
 package config
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -94,7 +91,7 @@ func (f *temporaryModeFlags) request(cmd *cobra.Command, tf flags.TargetFlags, c
 // applyTemporaryMode sets or ends the temporary client mode of a machine. A temporary mode that blocks unknown
 // executions asks for the same confirmation as setting that mode on the machine; declining it is an error, so a
 // script does not take it for done. A temporary monitor mode and ending one are applied without asking.
-func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time) error {
+func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time, yes bool) error {
 	machineID, err := tf.GetMachineID()
 	if err != nil {
 		return fmt.Errorf("failed to get MachineID: %w", err)
@@ -109,13 +106,8 @@ func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, ser
 	if machineconfiguration.RequiresGlobalLockdownConfirmation(request.mode) {
 		fmt.Printf("Warning: in %s mode Santa blocks unknown binaries on this Mac.\n", modeText)
 		fmt.Println()
-		fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-		fmt.Print("> ")
-		text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		text = strings.TrimSpace(text)
-		if text != "ok" && text != "yes" {
-			fmt.Println("Confirmation not successful...")
-			return fmt.Errorf("temporary %s mode not confirmed; nothing was changed", modeText)
+		if err := flags.Confirm(yes); err != nil {
+			return fmt.Errorf("temporary %s mode %w", modeText, err)
 		}
 	}
 	if err := machineconfiguration.SetTemporaryClientMode(store, machineID, request.mode, request.expires, now); err != nil {

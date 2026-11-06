@@ -1,11 +1,9 @@
 package config
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -33,8 +31,8 @@ func init() {
 	tf := flags.TargetFlags{}
 
 	var configSetCmd = &cobra.Command{
-		Use:   "set [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode]",
-		Short: "Create a configuration and set globally or a specific machine UUID",
+		Use:   "set [-m <machine-id>|--global] -c <client-mode> [<setting flags>]",
+		Short: "Replace the global configuration, or a machine's own configuration, with the settings given",
 		Long: `Create a configuration and set globally or a specific machine UUID.
 
 The configuration replaces the whole stored configuration. For a machine, this also cancels a clean sync requested
@@ -44,6 +42,9 @@ A temporary client mode of the machine that has not ended is kept (see config up
 config update --end-temporary-mode.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tf.RequireAtMostOneTarget(); err != nil {
+				return err
+			}
 			// Validate the flags before connecting to the sync server
 			blockedPathRegex, err := pathRegexArgs.blockedPathRegex()
 			if err != nil {
@@ -86,6 +87,7 @@ config update --end-temporary-mode.`,
 				tf,
 				newConfig,
 				confirmGlobalLockdown,
+				flags.AssumeYes(cmd),
 			)
 		},
 	}
@@ -102,15 +104,15 @@ config update --end-temporary-mode.`,
 	pathRegexArgs.addFlags(configSetCmd)
 
 	// Flags defining batchSize and events to sync back to the server
-	configSetCmd.Flags().IntVarP(&batchSizeArg, "batch-size", "s", machineconfiguration.DefaultBatchSize, "Number of events Santa uploads per request, between 1 and 500. Defaults to '50'")
+	configSetCmd.Flags().IntVar(&batchSizeArg, "batch-size", machineconfiguration.DefaultBatchSize, "Number of events Santa uploads per request, between 1 and 500")
 	configSetCmd.Flags().BoolVar(&isEnableBundles, "bundles", false, "Enables bundle events to be uploaded back to the sync server")
 	configSetCmd.Flags().BoolVar(&isEnabledTransitiveRules, "transitive-rules", false, "Enables the usage of transitive rules")
 
 	// Flags define sync behavior and upload logs url
 	configSetCmd.Flags().BoolVar(&isCleanSync, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global. Without it, a clean sync requested earlier and not yet performed is cancelled")
-	configSetCmd.Flags().StringVarP(&uploadLogsUrlArgs, "upload-logs", "u", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
+	configSetCmd.Flags().StringVar(&uploadLogsUrlArgs, "upload-logs", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
 
-	configSetCmd.Flags().IntVarP(&fullSyncIntervalArg, "full-sync-interval", "f", machineconfiguration.DefaultFullSyncInterval, "Set full sync interval in seconds, at least 60 (default 600)")
+	configSetCmd.Flags().IntVar(&fullSyncIntervalArg, "full-sync-interval", machineconfiguration.DefaultFullSyncInterval, "Full sync interval in seconds, at least 60")
 
 	// Flags for optional Santa settings; settings without a flag are not configured
 	santaSettingsArgs.addFlags(configSetCmd)
@@ -122,7 +124,8 @@ func applyConfig(
 	service machineconfiguration.MachineConfigurationService,
 	tf flags.TargetFlags,
 	newConfig machineconfiguration.MachineConfiguration,
-	confirmGlobalLockdown bool) (err error) {
+	confirmGlobalLockdown bool,
+	yes bool) (err error) {
 	clientMode := newConfig.ClientMode
 
 	// Refuse invalid values before asking for confirmation; the service enforces this as well
@@ -192,7 +195,7 @@ func applyConfig(
 	fmt.Fprintln(writer, "CleanSync:\t", newConfig.CleanSync)
 	fmt.Fprintln(writer, "FullSyncInterval:\t", newConfig.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", newConfig.UploadLogsURL, "\"")
-	printSantaSettings(writer, newConfig)
+	printSantaSettings(writer, newConfig, noOrigin)
 	if !tf.IsGlobal {
 		printTemporaryMode(writer, newConfig, time.Now())
 	}
@@ -201,18 +204,8 @@ func applyConfig(
 		fmt.Printf("\nThe temporary client mode is kept: ClientMode %s applies once it ends. End it now with config update --machine %s --end-temporary-mode.\n", clientModeName(clientMode), machineID)
 	}
 	fmt.Println()
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-
-	// Read confirmation
-	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	text = strings.Replace(text, "\n", "", -1)
-	if text == "ok" || text == "yes" {
-		fmt.Println("Sending the configuration to DynamoDB...")
-	} else {
-		fmt.Println("Confirmation not successful...")
-		return
+	if err := flags.Confirm(yes); err != nil {
+		return err
 	}
 
 	if tf.IsGlobal {
@@ -229,7 +222,7 @@ func applyConfig(
 	if err != nil {
 		return wrapWriteError(err)
 	} else {
-		fmt.Println("Success! Configuration was sent properly to DynamoDB...")
+		fmt.Printf("Replaced the configuration of %s\n", configTarget(tf, machineID))
 	}
 	return
 
