@@ -16,7 +16,7 @@ WEBCONTRACT_UPDATE=1 DYNAMODB_LOCAL_DIR=$PWD/.dynamodb-local go test -tags integ
 and tell the rudolph-web maintainers what changed.
 
 Values that differ on every run are normalized: RFC 3339 times (also as the prefix of feed sort keys) become
-`<timestamp>`; `ExpiresAfter` (Unix seconds, also the table's TTL attribute), `SyncSeq`, `CompletedSyncs[].Seq` and
+`<timestamp>`; `LastSeenDay` (the UTC date of the last preflight, `2006-01-02`) becomes `<day>`; `ExpiresAfter` (Unix seconds, also the table's TTL attribute), `SyncSeq`, `CompletedSyncs[].Seq` and
 `RemovalFirstSentInSync` (sync numbers, at least the sync's preflight time in Unix milliseconds) become `<number>`; the
 `MachineRulesTracked` digest becomes `<digest>` (the literal `dirty` is kept).
 

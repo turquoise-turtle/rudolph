@@ -110,6 +110,7 @@ func generateWebContractRows(t *testing.T) {
 
 var (
 	rfc3339Prefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`)
+	utcDay        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	volatileN     = map[string]bool{"ExpiresAfter": true, "SyncSeq": true, "Seq": true, "RemovalFirstSentInSync": true}
 	volatileS     = map[string]bool{"MachineRulesTracked": true}
 )
@@ -123,6 +124,9 @@ func toDynamoJSON(name string, v awstypes.AttributeValue) any {
 			s = "<digest>"
 		}
 		s = rfc3339Prefix.ReplaceAllString(s, "<timestamp>")
+		if name == "LastSeenDay" && utcDay.MatchString(s) {
+			s = "<day>"
+		}
 		return map[string]any{"S": s}
 	case *awstypes.AttributeValueMemberN:
 		if volatileN[name] {

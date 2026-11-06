@@ -287,7 +287,7 @@
       "S": "mac-aaaaaaaa.example.com"
     },
     "LastSeenDay": {
-      "S": "2026-11-06"
+      "S": "<day>"
     },
     "MachineID": {
       "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
