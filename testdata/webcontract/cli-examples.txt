@@ -1,0 +1,22 @@
+# Commands rudolph-web shows for copying (plan section F1), one per line, exactly as rendered for the example values
+# below. Rudolph's internal/cli/webcommands test runs each with --dry-run against the real command tree; rudolph-web's
+# tests render the same strings from the same values. Every argument that comes from a Mac is single-quoted.
+#
+# Values: environment prod; machine AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA; group eng.
+ENV=prod rudolph rule deny -t binary -i '000000000000000000000000000000000000000000000000000000000000000e' --global --yes
+ENV=prod rudolph rule allow -t binary -i '000000000000000000000000000000000000000000000000000000000000000e' --global --yes
+ENV=prod rudolph rule allow -t binary -i '000000000000000000000000000000000000000000000000000000000000000e' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --expires 24h --yes
+ENV=prod rudolph rule deny -t signingid -i 'EQHXZ8M8AV:com.google.GeminiMacOS' --global --yes
+ENV=prod rudolph rule deny -t signingid -i 'EQHXZ8M8AV:com.google.GeminiMacOS' --group 'eng' --yes
+ENV=prod rudolph rule allow -t teamid -i 'ABCDE12345' --global --yes
+ENV=prod rudolph rule deny -t certificate -i '000000000000000000000000000000000000000000000000000000000000000f' --global --yes
+ENV=prod rudolph rule deny -t cdhash -i 'ffeeddccbbaa99887766554433221100ffeeddcc' --global --yes
+ENV=prod rudolph rule update -t teamid -i 'EQHXZ8M8AV' --global --collect-allowed-events=true --yes
+ENV=prod rudolph rule update -t teamid -i 'EQHXZ8M8AV' --global --collect-allowed-events=false --yes
+ENV=prod rudolph rule remove -t binary -i '0000000000000000000000000000000000000000000000000000000000000001' --global --yes
+ENV=prod rudolph rule remove -t binary -i '000000000000000000000000000000000000000000000000000000000000000b' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --yes
+ENV=prod rudolph rules --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA'
+ENV=prod rudolph config get --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA'
+ENV=prod rudolph config update --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' -c monitor --for 2h --yes
+ENV=prod rudolph config update --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --end-temporary-mode --yes
+ENV=prod rudolph group add --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' 'eng' --yes
