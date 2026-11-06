@@ -85,7 +85,7 @@ func init() {
 				TimeProvider: timeProvider,
 			}
 
-			return ruleHandler.updateRule(tf, rf, ru, newExpiry, flags.AssumeYes(cmd))
+			return ruleHandler.updateRule(tf, rf, ru, newExpiry, flags.ApprovalOf(cmd))
 		},
 	}
 
@@ -166,8 +166,8 @@ func printRule(heading, machineID, suffix string, rule rules.SantaRule, descript
 }
 
 // updateRule changes what the flags give of an existing global or machine rule, after a confirmation (none with
-// yes). newExpiry is when a machine rule expires after the update, or nil to keep its expiry.
-func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags, newExpiry *time.Time, yes bool) error {
+// --yes, nothing written with --dry-run). newExpiry is when a machine rule expires after the update, or nil to keep its expiry.
+func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags, newExpiry *time.Time, approval flags.Approval) error {
 	ruleType := rf.RuleType.AsRuleType()
 	identifier, _, err := identifyRule(rf, ruleType)
 	if err != nil {
@@ -222,7 +222,9 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 	rewrite := updated != policyUpdated || !expires.Equal(current.expires)
 	collectionChanged := collecting != current.collecting
 	if !policyChanged && !rewrite && !collectionChanged {
-		return errors.New("the rule already is as given; nothing to change")
+		// Not an error: a command copied from rudolph-web (e.g. collection off) may already have been applied
+		fmt.Printf("The rule %s already is as given; nothing was changed.\n", current.key.SortKey)
+		return nil
 	}
 
 	printRule("The current rule:", machineID, suffix, current.rule, current.description, tf.IsGlobal, current.expires, current.collecting)
@@ -232,7 +234,7 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 		warnIfAllEventUploadOff(rh.dynamodbClient)
 	}
 	fmt.Println("")
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 

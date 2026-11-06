@@ -53,9 +53,9 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 			if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
 				return err
 			}
-			yes := flags.AssumeYes(cmd)
+			approval := flags.ApprovalOf(cmd)
 			if tf.IsGroup() {
-				return removeGroupRule(dynamodbClient, tf.Group, ruleName, yes)
+				return removeGroupRule(dynamodbClient, tf.Group, ruleName, approval)
 			}
 
 			globalRemover := globalrules.ConcreteRuleRemovalService{
@@ -68,8 +68,11 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 				Updater: dynamodbClient,
 			}
 
-			if err := removeRule(globalRemover, machineRuleRemover, ruleName, tf, yes); err != nil {
+			if err := removeRule(globalRemover, machineRuleRemover, ruleName, tf, approval); err != nil {
 				return err
+			}
+			if approval.DryRun {
+				return nil
 			}
 			// A removed rule's allowed executions are no longer collected. Nothing is written unless it was flagged.
 			indexMachineID := ""
@@ -108,8 +111,8 @@ func removalRuleName(args []string, ruleTypeGiven bool, ruleType types.RuleType,
 	return sortKey, nil
 }
 
-// removeGroupRule removes a device group's rule after a confirmation (none with yes)
-func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, yes bool) error {
+// removeGroupRule removes a device group's rule after a confirmation (none with --yes, nothing written with --dry-run)
+func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, approval flags.Approval) error {
 	writer, ok := client.(groups.RegistryWriter)
 	if !ok {
 		return errors.New("this DynamoDB client cannot write group rules")
@@ -118,7 +121,7 @@ func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, yes
 	fmt.Println("  Group:       ", group)
 	fmt.Println("  Identifier/SHA256:      ", ruleName)
 	fmt.Println("")
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 	if err := groups.RemoveRule(writer, group, ruleName); err != nil {
@@ -128,7 +131,7 @@ func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, yes
 	return nil
 }
 
-func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover machinerules.RuleRemovalService, ruleName string, tf flags.TargetFlags, yes bool) error {
+func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover machinerules.RuleRemovalService, ruleName string, tf flags.TargetFlags, approval flags.Approval) error {
 	if err := tf.RequireExplicitTarget(); err != nil {
 		return err
 	}
@@ -141,7 +144,7 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 	}
 	fmt.Println("  Rule:        ", ruleName)
 	fmt.Println("")
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 

@@ -190,6 +190,11 @@ func ReadTemporaryClientModeSnapshot(client dynamodb.GetItemAPI, machineID strin
 	}, nil
 }
 
+// Empty reports whether the row had no temporary client mode attributes (or no row), so ending one changes nothing
+func (s TemporaryClientModeSnapshot) Empty() bool {
+	return s.mode == nil && s.expires == nil
+}
+
 // condition holds while both attributes are as in the snapshot (absent where they were absent)
 func (s TemporaryClientModeSnapshot) condition() expression.ConditionBuilder {
 	return unchangedAttribute(temporaryClientModeAttribute, s.mode).And(unchangedAttribute(temporaryClientModeExpiresAtAttribute, s.expires))

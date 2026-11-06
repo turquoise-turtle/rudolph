@@ -65,7 +65,7 @@ global rule. The import asks for confirmation first (none with --yes).`,
 				workers = defaultWorkers
 			}
 
-			return runImportFormat(dynamodbClient, clock.ConcreteTimeProvider{}, filename, fileFormat, workers, confirmImport(filename, flags.AssumeYes(cmd)))
+			return runImportFormat(dynamodbClient, clock.ConcreteTimeProvider{}, filename, fileFormat, workers, confirmImport(dynamodbClient, filename, flags.ApprovalOf(cmd)))
 		},
 	}
 
@@ -111,14 +111,15 @@ func runImport(
 }
 
 // runImportFormat imports a file in the given format. confirm, unless nil, is asked with the rules read from the file
-// before anything is written; an error from it stops the import.
+// before anything is written; unless it returns true, nothing is written. A dry run (false without an error) still
+// fails on records of the file that are not rules.
 func runImportFormat(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
 	filename string,
 	format string,
 	numWorkers int,
-	confirm func([]fileRule) error,
+	confirm func([]fileRule) (bool, error),
 ) error {
 	var rules []fileRule
 	var parseErrors []error
@@ -132,8 +133,18 @@ func runImportFormat(
 		return fmt.Errorf("%s: %w", filename, err)
 	}
 	if confirm != nil {
-		if err := confirm(rules); err != nil {
+		apply, err := confirm(rules)
+		if err != nil {
 			return err
+		}
+		if !apply {
+			if len(parseErrors) == 0 {
+				return nil
+			}
+			for _, parseErr := range parseErrors {
+				fmt.Println("[ERROR]", parseErr)
+			}
+			return fmt.Errorf("%d record(s) of %s are not rules: %w", len(parseErrors), filename, errors.Join(parseErrors...))
 		}
 	}
 
@@ -152,9 +163,10 @@ func runImportFormat(
 	return result.report()
 }
 
-// confirmImport shows how many rules the file creates or replaces and removes, and asks before they are written
-func confirmImport(filename string, yes bool) func([]fileRule) error {
-	return func(rules []fileRule) error {
+// confirmImport shows how many rules the file creates or replaces and removes, and asks before they are written. A dry
+// run also lists each rule and what the import would do with it.
+func confirmImport(client dynamodb.BatchGetItemAPI, filename string, approval flags.Approval) func([]fileRule) (bool, error) {
+	return func(rules []fileRule) (bool, error) {
 		removals := 0
 		for _, rule := range rules {
 			if rule.Policy == types.RulePolicyRemove {
@@ -164,8 +176,42 @@ func confirmImport(filename string, yes bool) func([]fileRule) error {
 		fmt.Printf("Importing %d global rules from %s: %d to create or replace, %d to remove.\n", len(rules), filename, len(rules)-removals, removals)
 		fmt.Println("Rules already stored as in the file are not written again.")
 		fmt.Println()
-		return flags.Confirm(yes)
+		if approval.DryRun {
+			if err := printImportPlan(client, rules); err != nil {
+				return false, err
+			}
+		}
+		return approval.Confirm()
 	}
+}
+
+// printImportPlan lists what an import would do with each rule of the file, reading the stored rules as the import does
+func printImportPlan(client dynamodb.BatchGetItemAPI, rules []fileRule) error {
+	for _, rule := range rules {
+		ruleName := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
+		switch rule.Policy {
+		case types.RulePolicyAllowlistTransitive:
+			fmt.Printf("  Skip (ALLOWLIST_TRANSITIVE): %s\n", ruleName)
+		case types.RulePolicyRemove:
+			fmt.Printf("  Remove: %s\n", ruleName)
+		default:
+			current, unchanged, err := storedRule(client, rule)
+			if err != nil {
+				return fmt.Errorf("rule %s: %w", ruleName, err)
+			}
+			action := "Create"
+			switch {
+			case unchanged:
+				action = "Unchanged (not written)"
+			case current != nil:
+				action = "Replace"
+			}
+			policy, _ := rule.Policy.MarshalText()
+			fmt.Printf("  %s: %s %s\n", action, ruleName, policy)
+		}
+	}
+	fmt.Println()
+	return nil
 }
 
 func readJsonRules(filename string) ([]fileRule, error) {

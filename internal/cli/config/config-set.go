@@ -87,7 +87,7 @@ config update --end-temporary-mode.`,
 				tf,
 				newConfig,
 				confirmGlobalLockdown,
-				flags.AssumeYes(cmd),
+				flags.ApprovalOf(cmd),
 			)
 		},
 	}
@@ -129,7 +129,7 @@ func applyConfig(
 	tf flags.TargetFlags,
 	newConfig machineconfiguration.MachineConfiguration,
 	confirmGlobalLockdown bool,
-	yes bool) (err error) {
+	approval flags.Approval) (err error) {
 	clientMode := newConfig.ClientMode
 
 	// Refuse invalid values before asking for confirmation; the service enforces this as well
@@ -208,7 +208,7 @@ func applyConfig(
 		fmt.Printf("\nThe temporary client mode is kept: ClientMode %s applies once it ends. End it now with config update --machine %s --end-temporary-mode.\n", clientModeName(clientMode), machineID)
 	}
 	fmt.Println()
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 

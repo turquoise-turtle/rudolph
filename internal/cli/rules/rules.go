@@ -50,6 +50,7 @@ func init() {
 	}
 
 	tf.AddTargetFlagsRules(RulesCmd)
+	flags.AddDryRunFlag(RulesCmd)
 	RulesCmd.Flags().Var(&filter.ruleType, "type", `List only rules of this type: "binary", "certificate", "teamid", "signingid" or "cdhash"`)
 	RulesCmd.Flags().Var(&filter.policy, "policy", `List only rules with this policy: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist", "cel" or "remove"`)
 	RulesCmd.Flags().IntVar(&filter.limit, "limit", 0, "List at most this many rules; 0 lists every rule")

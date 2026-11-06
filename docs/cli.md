@@ -17,6 +17,7 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 ## Conventions
 
 - **Confirmation.** The commands that write rules or configurations (`rule`, `rules import`, `config set|update`), `group delete` and `repair --delete` show what they are about to write and ask `Apply changes?`. The other `group` commands and `rules backfill-policy-index` write without asking. `yes` or `ok`, in any case, applies it. Any other answer, or no answer (empty stdin), changes nothing and exits non-zero, so scripts can tell a declined change from an applied one. `--yes` (`-y`, on `rule`, `rules import`, `config`, `group` and `repair`) applies without asking.
+- **Dry run.** `--dry-run` (on `rule`, `rules`, `config`, `group` and `repair`) makes a command that writes do all its reading and checking as usual, then print what it would write (the rule, target, policy and expiry; the configuration changes; the group or membership change; each rule an import would create, replace, remove or leave unchanged), followed by `Dry run: the changes shown are not written.`, and exit 0 without asking or writing. It wins over `--yes`, so a pasted command (such as one copied from rudolph-web) can be checked by adding `--dry-run`. Commands that only read accept it and ignore it.
 - **Targets.** Commands that write rules (`rule allow|deny|silent|silent-gui|silent-tty|compiler|cel|update|remove`) need exactly one of `--global` (`-g`, every Mac), `--machine <machine-id>` (`-m`, one Mac), `--group <group>` or `--ungrouped` (a [device group](groups.md); not for `rule update`). `rules` and `config get|set|update` take at most one of `--global` and `--machine`; without either they apply to the Mac running the command, whose machine ID is read from `/Library/Preferences/com.google.santa.machine-mapping.plist`.
 - **Machine IDs** are UUIDs in the 8-4-4-4-12 form, typed in any case; see [rules.md](rules.md#global-and-machine-specific-rules) for how the stored spelling is found.
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
@@ -50,7 +51,7 @@ rudolph rule <verb> (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine
 rudolph rule update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--expires <when>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]
 ```
 
-Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is is refused. A machine rule that is being removed (after `rule remove`, until the Mac's sync deletes it) cannot be updated: create it again instead. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be. Group rules are changed by writing them again.
+Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is changes nothing and says so (exit 0, so a command copied twice is harmless). A machine rule that is being removed (after `rule remove`, until the Mac's sync deletes it) cannot be updated: create it again instead. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be. Group rules are changed by writing them again.
 
 ### `rule remove`
 
@@ -135,7 +136,7 @@ rudolph info
 ## Maintenance
 
 ```sh
-rudolph repair [--delete [--yes]]
+rudolph repair [--delete [--yes|--dry-run]]
 ```
 
-Scans the whole table for items written by early versions under `MachineInfo#` and `MachineConfig#`, which nothing reads any more. Without `--delete` it only lists them; with it, it deletes them after a confirmation. A full scan reads every item, so it costs as much as the table is large.
+Scans the whole table for items written by early versions under `MachineInfo#` and `MachineConfig#`, which nothing reads any more. Without `--delete` it only lists them; with it, it deletes them after a confirmation (with `--dry-run` as well, it only lists them). A full scan reads every item, so it costs as much as the table is large.

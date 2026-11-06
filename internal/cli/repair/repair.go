@@ -22,18 +22,22 @@ var (
 func init() {
 	var deleteItems bool
 	RepairCmd = &cobra.Command{
-		Use:   "repair [--delete [--yes]]",
+		Use:   "repair [--delete [--yes|--dry-run]]",
 		Short: "Scan the whole table for legacy items (MachineInfo#, MachineConfig#); with --delete, delete them",
 		Long: `Scan the whole table for items written by early versions of Rudolph under the MachineInfo# and MachineConfig#
 partition keys, which nothing reads any more, and list them. Without --delete this is a dry run that changes
 nothing. With --delete the items found are deleted, after a confirmation (none with --yes).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			deleteFound := deleteItems
 			if deleteItems {
 				fmt.Println("Legacy items found are deleted as they are found.")
-				if err := flags.Confirm(flags.AssumeYes(cmd)); err != nil {
+				apply, err := flags.ApprovalOf(cmd).Confirm()
+				if err != nil {
 					return err
 				}
+				// A dry run lists them
+				deleteFound = apply
 			} else {
 				fmt.Println("Dry run: legacy items are listed, not deleted (pass --delete to delete them).")
 			}
@@ -43,11 +47,12 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 			dynamodbClient := dynamodb.GetClient(table, region)
 			scanService := scan.GetScanService(dynamodbClient)
 
-			return repair(scanService, dynamodbClient, deleteItems)
+			return repair(scanService, dynamodbClient, deleteFound)
 		},
 	}
 	RepairCmd.Flags().BoolVar(&deleteItems, "delete", false, "Delete the legacy items found")
 	flags.AddYesFlag(RepairCmd)
+	flags.AddDryRunFlag(RepairCmd)
 }
 
 func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete bool) error {

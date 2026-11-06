@@ -112,7 +112,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)
 
 			if temporaryMode != nil {
-				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now(), flags.AssumeYes(cmd))
+				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now(), flags.ApprovalOf(cmd))
 			}
 
 			return updateConfig(
@@ -120,7 +120,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 				tf,
 				updateRequest,
 				confirmGlobalLockdown,
-				flags.AssumeYes(cmd),
+				flags.ApprovalOf(cmd),
 			)
 		},
 	}
@@ -150,7 +150,7 @@ func updateConfig(
 	tf flags.TargetFlags,
 	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
 	confirmGlobalLockdown bool,
-	yes bool) (err error) {
+	approval flags.Approval) (err error) {
 	// Refuse invalid values before asking for confirmation; the service enforces this as well
 	if err = machineconfiguration.ValidateUpdateRequest(updateRequest, tf.IsGlobal); err != nil {
 		return err
@@ -269,7 +269,7 @@ func updateConfig(
 	}
 	fmt.Print(runningTemporaryMode)
 	fmt.Println()
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 

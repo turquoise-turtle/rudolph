@@ -34,6 +34,7 @@ func init() {
 	// Every rule subcommand that writes checks the local clock first (see clockcheck)
 	clockcheck.AddFlag(RuleCmd)
 	flags.AddYesFlag(RuleCmd)
+	flags.AddDryRunFlag(RuleCmd)
 }
 
 // ruleUse is the usage line of a command that creates a rule; extra is inserted after the target
@@ -77,7 +78,7 @@ func createRule(cmd *cobra.Command, policy types.Policy, tf flags.TargetFlags, r
 		return err
 	}
 
-	return applyPolicyForPath(timeProvider, dynamodbClient, policy, tf, rf, expires, flags.AssumeYes(cmd), options...)
+	return applyPolicyForPath(timeProvider, dynamodbClient, policy, tf, rf, expires, flags.ApprovalOf(cmd), options...)
 }
 
 // identifyRule returns the identifier of the rule given with --identifier, or read with santactl from the file given
@@ -126,9 +127,9 @@ func identifyRule(rf flags.RuleInfoFlags, ruleType types.RuleType) (identifier s
 	return identifier, description, nil
 }
 
-// applyPolicyForPath creates a rule after a confirmation (none with yes). A machine rule expires at expires, or never
-// when it is the zero time.
-func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, expires time.Time, yes bool, options ...rules.RuleOption) (err error) {
+// applyPolicyForPath creates a rule after a confirmation (none with --yes, nothing written with --dry-run). A machine
+// rule expires at expires, or never when it is the zero time.
+func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, expires time.Time, approval flags.Approval, options ...rules.RuleOption) (err error) {
 	ruleType := (*rf.RuleType).AsRuleType()
 	identifier, description, err := identifyRule(rf, ruleType)
 	if err != nil {
@@ -145,7 +146,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	}
 
 	if tf.IsGroup() {
-		return applyGroupRule(client, policy, tf.Group, ruleType, identifier, description, yes, options...)
+		return applyGroupRule(client, policy, tf.Group, ruleType, identifier, description, approval, options...)
 	}
 
 	machineID := "(Global)"
@@ -172,7 +173,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	}
 	printRuleOptions(options)
 	fmt.Println("")
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 
@@ -215,8 +216,9 @@ func ruleTypeName(ruleType types.RuleType) string {
 	return string(name)
 }
 
-// applyGroupRule creates or replaces a device group's rule after a confirmation (none with yes)
-func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group string, ruleType types.RuleType, identifier, description string, yes bool, options ...rules.RuleOption) error {
+// applyGroupRule creates or replaces a device group's rule after a confirmation (none with --yes, nothing written
+// with --dry-run)
+func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group string, ruleType types.RuleType, identifier, description string, approval flags.Approval, options ...rules.RuleOption) error {
 	writer, ok := client.(groups.RegistryWriter)
 	if !ok {
 		return errors.New("this DynamoDB client cannot write group rules")
@@ -250,7 +252,7 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 	fmt.Println("  Description: ", description)
 	printRuleOptions(options)
 	fmt.Println("")
-	if err := flags.Confirm(yes); err != nil {
+	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
 	if _, ok := registry.Groups[group]; !ok {
