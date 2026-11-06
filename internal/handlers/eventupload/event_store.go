@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -56,6 +57,13 @@ const (
 	// crash-looping binary fills a whole upload (batch_size may be up to 500) with events of one counter; written one
 	// transaction each, one after another, they would not fit in the Lambda's deadline.
 	maxEventsPerTransaction = 99
+
+	// maxTransactionBytes keeps a transaction clear of DynamoDB's 4 MB limit, with room for the counter update and
+	// the request's own overhead.
+	maxTransactionBytes = 3 << 20
+
+	maxStoredStringBytes = 4096
+	maxIndexKeyBytes     = 1024
 )
 
 type eventStoreAPI interface {
@@ -93,6 +101,42 @@ type storableEvent struct {
 	blocked bool
 	sk      string
 	counter counterKey
+
+	// rejected is set when DynamoDB refused the event as invalid; it was dropped.
+	rejected bool
+}
+
+// size estimates the bytes the event's item adds to a transaction.
+func (c storableEvent) size() int {
+	e := c.event
+	return 512 + 2*len(c.sk) + len(e.FilePath) + len(e.FileName) + len(e.ExecutingUser) + len(e.TeamID) +
+		len(e.SigningIDs) + len(e.CDHash) + len(e.Decision) + len(e.FileSHA256)
+}
+
+// cut shortens s to at most max bytes without splitting a UTF-8 character.
+func cut(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	i := max
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i]
+}
+
+// cutFields bounds the strings stored from an event. Santa's fields have no length limit in the request, and an item
+// over DynamoDB's 400 KB limit, or a transaction over 4 MB, would be refused on every retry. Decision and TeamID are
+// index partition keys, which DynamoDB limits to 2048 bytes; real values are a few dozen.
+func cutFields(e EventUploadEvent) EventUploadEvent {
+	e.FilePath = cut(e.FilePath, maxStoredStringBytes)
+	e.FileName = cut(e.FileName, maxStoredStringBytes)
+	e.ExecutingUser = cut(e.ExecutingUser, maxStoredStringBytes)
+	e.SigningIDs = cut(e.SigningIDs, maxStoredStringBytes)
+	e.CDHash = cut(e.CDHash, maxStoredStringBytes)
+	e.TeamID = cut(e.TeamID, maxIndexKeyBytes)
+	e.Decision = cut(e.Decision, maxIndexKeyBytes)
+	return e
 }
 
 type counterKey struct{ day, sha string }
@@ -134,7 +178,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 		}
 		seen[sk] = true
 		candidates = append(candidates, storableEvent{
-			event: e, micros: micros, blocked: blocked, sk: sk,
+			event: cutFields(e), micros: micros, blocked: blocked, sk: sk,
 			counter: counterKey{day: time.UnixMicro(micros).UTC().Format("2006-01-02"), sha: e.FileSHA256},
 		})
 	}
@@ -165,8 +209,8 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	var mu sync.Mutex
 	writeErr := parallel(ctx, len(groupOrder), func(ctx context.Context, g int) error {
 		group := groups[groupOrder[g]]
-		for start := 0; start < len(group); start += maxEventsPerTransaction {
-			batches := [][]int{group[start:min(start+maxEventsPerTransaction, len(group))]}
+		for _, chunk := range transactionChunks(candidates, group) {
+			batches := [][]int{chunk}
 			for len(batches) > 0 {
 				batch := batches[0]
 				batches = batches[1:]
@@ -174,12 +218,17 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 				for k, i := range batch {
 					events[k] = candidates[i]
 				}
-				err := s.storeBatch(ctx, machineID, events, eventExpiry, counterExpiry)
+				invalid, err := s.storeBatch(ctx, machineID, events, eventExpiry, counterExpiry)
+				if invalid > 0 {
+					mu.Lock()
+					rejected += invalid
+					mu.Unlock()
+				}
 				var apiErr smithy.APIError
 				switch {
 				case err == nil:
-					for _, i := range batch {
-						stored[i] = true
+					for k, i := range batch {
+						stored[i] = !events[k].rejected
 					}
 				case errors.As(err, &apiErr) && apiErr.ErrorCode() == "ValidationException" && len(batch) > 1:
 					// One event DynamoDB refuses rejects the whole transaction: write the events one by one to find it.
@@ -249,62 +298,96 @@ func logDropped(machineID string, n int, reason string) {
 // own retries of one attempt reuse its token, so DynamoDB answers them with the first outcome instead of applying the
 // transaction twice; a new attempt after a cancellation gets a new token, as DynamoDB would otherwise answer it with
 // the cancellation again.
-func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []storableEvent, eventExpiry, counterExpiry string) error {
-	pending := events
+func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []storableEvent, eventExpiry, counterExpiry string) (invalid int, err error) {
+	pending := make([]*storableEvent, len(events))
+	for k := range events {
+		pending[k] = &events[k]
+	}
 	retries := 0
 	for attempt := 1; len(pending) > 0; attempt++ {
 		input := s.batchInput(machineID, pending, eventExpiry, counterExpiry, attempt)
 		_, err := s.api.TransactWriteItems(ctx, input)
 		if err == nil {
-			return nil
+			return invalid, nil
 		}
 		var cancelled *types.TransactionCanceledException
 		if !errors.As(err, &cancelled) {
-			return err
+			return invalid, err
 		}
 		reasons := cancelled.CancellationReasons
-		var remaining []storableEvent
-		retryable := false
+		var remaining []*storableEvent
 		for k, e := range pending {
 			code := ""
 			if k < len(reasons) {
 				code = aws.ToString(reasons[k].Code)
 			}
-			if code == "ConditionalCheckFailed" {
+			switch code {
+			case "ConditionalCheckFailed":
 				// Already stored, and so counted, by an earlier upload.
+				continue
+			case "ValidationError":
+				// DynamoDB refuses this event (for example a key too long) and would on every retry; failing the
+				// upload would block every later event of the Mac (Santa re-sends the failed batch first).
+				e.rejected = true
+				invalid++
 				continue
 			}
 			remaining = append(remaining, e)
 		}
+		retryable := false
 		for _, r := range reasons {
 			switch aws.ToString(r.Code) {
-			case "", "None", "ConditionalCheckFailed":
+			case "", "None", "ConditionalCheckFailed", "ValidationError":
 			case "TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded", "RequestLimitExceeded":
 				retryable = true
 			default:
-				return err
+				return invalid, err
 			}
+		}
+		if len(remaining) == 0 {
+			return invalid, nil
 		}
 		if len(remaining) == len(pending) && !retryable {
 			// Cancelled for no reason this code knows how to resolve.
-			return err
+			return invalid, err
 		}
 		if retryable {
 			retries++
 			if retries >= transientAttempts {
-				return err
+				return invalid, err
 			}
 			if waitErr := eventsink.Wait(ctx, retries+1, false); waitErr != nil {
-				return errors.Join(err, waitErr)
+				return invalid, errors.Join(err, waitErr)
 			}
 		}
 		pending = remaining
 	}
-	return nil
+	return invalid, nil
+}
+
+// transactionChunks splits the events of one day counter (indexes into candidates) into transactions within
+// DynamoDB's limits of 100 items and 4 MB.
+func transactionChunks(candidates []storableEvent, group []int) [][]int {
+	var chunks [][]int
+	var cur []int
+	size := 0
+	for _, i := range group {
+		n := candidates[i].size()
+		if len(cur) > 0 && (len(cur) >= maxEventsPerTransaction || size+n > maxTransactionBytes) {
+			chunks = append(chunks, cur)
+			cur, size = nil, 0
+		}
+		cur = append(cur, i)
+		size += n
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
 }
 
 // batchInput builds the transaction writing these events and adding them to their day counter.
-func (s *eventStore) batchInput(machineID string, events []storableEvent, eventExpiry, counterExpiry string, attempt int) *dynamodb.TransactWriteItemsInput {
+func (s *eventStore) batchInput(machineID string, events []*storableEvent, eventExpiry, counterExpiry string, attempt int) *dynamodb.TransactWriteItemsInput {
 	token := sha256.New()
 	fmt.Fprintf(token, "%s\x00%s\x00%s\x00%s\x00%d", s.table, machineID, eventExpiry, counterExpiry, attempt)
 	items := make([]types.TransactWriteItem, 0, len(events)+1)
@@ -312,7 +395,7 @@ func (s *eventStore) batchInput(machineID string, events []storableEvent, eventE
 		fmt.Fprintf(token, "\x00%s", e.sk)
 		items = append(items, types.TransactWriteItem{Put: &types.Put{
 			TableName:           aws.String(s.table),
-			Item:                eventItem(machineID, e, eventExpiry),
+			Item:                eventItem(machineID, *e, eventExpiry),
 			ConditionExpression: aws.String("attribute_not_exists(PK)"),
 		}})
 	}
@@ -370,7 +453,7 @@ type counterChange struct {
 // counterUpdate adds events of one binary on one day to its day counter. The display attributes and the expiry are
 // set only if absent, so concurrent uploads never overwrite each other and the counter expires 100 days after its
 // first event.
-func counterUpdate(events []storableEvent, expiry string) counterChange {
+func counterUpdate(events []*storableEvent, expiry string) counterChange {
 	var blocked, allowed int
 	var fileName, signingID, teamID string
 	for _, e := range events {
