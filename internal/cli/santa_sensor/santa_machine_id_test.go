@@ -1,6 +1,7 @@
 package santa_sensor
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,5 +80,24 @@ func TestMachineUUIDFrom_FileWithoutUUIDIsAnError(t *testing.T) {
 	_, err := machineUUIDFrom([]string{empty, google})
 	if err == nil || !strings.Contains(err.Error(), empty) {
 		t.Errorf("error %v, want one naming %s", err, empty)
+	}
+}
+
+// `sudo defaults write /Library/Preferences/com.northpolesec.santa.machine-mapping MachineUUID -string …`, the usual
+// way to create the file by hand, writes a binary plist. Santa reads either form; so must the CLI.
+func TestMachineUUIDFrom_BinaryPlist(t *testing.T) {
+	// Written by `defaults write <dir>/m MachineUUID -string CCCCCCCC-3333-4333-8333-CCCCCCCCCCCC`.
+	const binary = "YnBsaXN0MDDRAQJbTWFjaGluZVVVSURfECRDQ0NDQ0NDQy0zMzMzLTQzMzMtODMzMy1DQ0NDQ0NDQ0NDQ0MICxcAAAAAAAABAQAAAAAAAAADAAAAAAAAAAAAAAAAAAAAPg=="
+	raw, err := base64.StdEncoding.DecodeString(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "m.plist")
+	if err := os.WriteFile(p, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := machineUUIDFrom([]string{p})
+	if err != nil || got != "CCCCCCCC-3333-4333-8333-CCCCCCCCCCCC" {
+		t.Errorf("binary plist: %q, %v; want its MachineUUID", got, err)
 	}
 }
