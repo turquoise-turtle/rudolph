@@ -120,12 +120,16 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	policies := clientPolicies{silentBlocklistOnly: !clientVersion.KnowsSilentGUITTYPolicies()}
 	mayHoldDowngraded := prevSyncState != nil && prevSyncState.MayHoldDowngradedPolicies()
 	policies.holdsDowngradedPolicies = policies.silentBlocklistOnly || mayHoldDowngraded
-	upgradeCleanSync := mayHoldDowngraded && !policies.silentBlocklistOnly
+	// A Mac whose Santa went back below 2026.6 (or an old client whose previous sync state predates the flag, which
+	// reads as current) may hold silent GUI or TTY rules it no longer applies; an incremental sync would not resend
+	// them, so the policies the client understands change only with a clean sync
+	policiesChanged := prevSyncState != nil && prevSyncState.SilentBlocklistOnly != policies.silentBlocklistOnly
+	clientPoliciesCleanSync := (mayHoldDowngraded && !policies.silentBlocklistOnly) || policiesChanged
 
 	// Determine if a Clean sync should be performed based on the preflight request
 	// if the machine needs a periodic refresh
 	// or if the machine is new
-	switch preflightRequest.RequestCleanSync || configCleanSync != nil || upgradeCleanSync {
+	switch preflightRequest.RequestCleanSync || configCleanSync != nil || clientPoliciesCleanSync {
 	case true:
 		performCleanSync = true
 	case false:

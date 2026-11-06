@@ -6,7 +6,7 @@ Rudolph requires **Santa 2026.8 or newer**, and is tested with Santa 2026.8 and 
 - Santa 2025.12 compiles a path regex as it receives it, so an empty one would match every path. Where no allowed or blocked path regex is configured, it gets a regex that never matches, `(?!x)x`, instead of the empty string that clears the regex on newer releases. A configured regex is sent unchanged.
 - Santa 2025.12 does not know the `SILENT_GUI_BLOCKLIST` and `SILENT_TTY_BLOCKLIST` policies (they arrived in 2026.6) and would skip such a rule, leaving the binary unblocked, so those rules are sent to it as `SILENT_BLOCKLIST`: the binary is blocked without any notification.
 - CEL rules are evaluated by Santa 2025.12's older CEL support, which may not parse an expression written for Santa 2026.x; such a rule may then not apply on those Macs.
-- When a Mac is upgraded from Santa 2025.12 to 2026.6 or newer, its next sync is a clean sync, so that it gets the real policies of the rules that were sent as `SILENT_BLOCKLIST`.
+- When a Mac is upgraded from Santa 2025.12 to 2026.6 or newer, its next sync is a clean sync, so that it gets the real policies of the rules that were sent as `SILENT_BLOCKLIST`. A Mac going back to Santa 2025.12 (or syncing with it for the first time since Rudolph adapted to it) also gets a clean sync.
 
 Santa 2025.12 supports `SyncExtraHeaders`, so it authenticates with the settings described below. Releases older than 2025.12 are not supported; they compile path regexes as received and skip unknown policies too, so Rudolph sends them the same adjusted responses as 2025.12. Rudolph reads the release from the `santa_version` each Mac reports at preflight; a missing or unreadable version is treated as the current release.
 
