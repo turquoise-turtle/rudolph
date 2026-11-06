@@ -17,11 +17,15 @@ package handlers
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/rule"
+	"github.com/airbnb/rudolph/internal/cli/rules"
 	"github.com/airbnb/rudolph/internal/testutil/clitest"
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 	"github.com/airbnb/rudolph/pkg/types"
@@ -161,5 +165,98 @@ func TestR7b_CLIWarnsWhenSantaDoesNotUploadAllowedEvents(t *testing.T) {
 	out := ruleCLI(t, "update", "-t", "teamid", "-i", teamGoogle, "--global", "--collect-allowed-events=true")
 	if !strings.Contains(strings.ToLower(out), "enable-all-event-upload") && !strings.Contains(out, "EnableAllEventUpload") {
 		t.Errorf("no warning that EnableAllEventUpload is off everywhere:\n%s", out)
+	}
+}
+
+func importRules(t *testing.T, contents string) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "rules.json")
+	if err := os.WriteFile(file, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := clitest.Run(t, clitest.Env{Table: ddblocal.TableName, Region: ddblocal.Region}, rules.RulesCmd, "yes\n", "import", "-f", file)
+	if err != nil {
+		t.Fatalf("rules import: %v\n%s", err, out)
+	}
+	handlers = newHandlers()
+}
+
+// From the review: `rules import` rewrites or removes rule rows. A rewrite (e.g. a new description) keeps the rule's
+// collection switch; a removal ends collection for good, so re-importing the rule later does not silently resume it.
+func TestR7b_ImportKeepsOrEndsCollectionConsistently(t *testing.T) {
+	transport := eventsServer(t)
+	addGlobalRule(t, teamGoogle, types.RuleTypeTeamID, types.RulePolicyAllowlist)
+	host := syncedHost(t, machineA, transport)
+	ruleCLI(t, "update", "-t", "teamid", "-i", teamGoogle, "--global", "--collect-allowed-events=true")
+	event := func(sha string, pid int) string {
+		return execEvent(sha, "ALLOW_TEAMID", pid, time.Now().Add(-time.Minute), fmt.Sprintf(`"team_id":%q`, teamGoogle))
+	}
+
+	importRules(t, `[{"type":"TEAMID","policy":"ALLOWLIST","identifier":"`+teamGoogle+`","description":"Google, imported"}]`)
+	host.PendingEvents = []string{event(sha1, 1)}
+	host.MustSync(t)
+	if !storedSHAs(t, machineA)[sha1] {
+		t.Error("collection stopped after an import rewrote the flagged rule")
+	}
+
+	importRules(t, `[{"type":"TEAMID","policy":"REMOVE","identifier":"`+teamGoogle+`"}]`)
+	importRules(t, `[{"type":"TEAMID","policy":"ALLOWLIST","identifier":"`+teamGoogle+`","description":"Google again"}]`)
+	host.PendingEvents = []string{event(sha2, 2)}
+	host.MustSync(t)
+	if storedSHAs(t, machineA)[sha2] {
+		t.Error("collection resumed for a rule that was removed and imported again without the flag")
+	}
+}
+
+// A flagged machine rule that has expired no longer allows anything on that Mac, so it collects nothing either, even
+// though its row may linger until DynamoDB's TTL removes it.
+func TestR7b_ExpiredMachineRuleCollectsNothing(t *testing.T) {
+	transport := eventsServer(t)
+	addMachineRule(t, machineA, chromeSigningID, types.RuleTypeSigningID, types.RulePolicyAllowlist, time.Now().Add(24*time.Hour))
+	addGlobalRule(t, chromeSigningID, types.RuleTypeSigningID, types.RulePolicyAllowlist)
+	host := syncedHost(t, machineA, transport)
+	ruleCLI(t, "update", "-t", "signingid", "-i", chromeSigningID, "--machine", machineA, "--collect-allowed-events=true")
+	updateItem(t, "MachineRules#"+machineA, "SigningID#"+chromeSigningID, map[string]any{"ExpiresAfter": time.Now().Add(-time.Hour).Unix()})
+	handlers = newHandlers()
+
+	host.PendingEvents = []string{execEvent(sha1, "ALLOW_SIGNINGID", 1, time.Now().Add(-time.Minute), fmt.Sprintf(`"team_id":%q,"signing_id":%q`, chromeTeamID, chromeSigningID))}
+	host.MustSync(t)
+	if storedSHAs(t, machineA)[sha1] {
+		t.Error("an expired flagged machine rule still collected allowed executions")
+	}
+}
+
+// Reading which rules collect must not be able to fail an upload: blocked events are still stored, and allowed ones
+// are skipped (and logged) when that read fails.
+func TestR7b_FailedCollectionLookupDoesNotFailTheUpload(t *testing.T) {
+	transport := eventsServer(t)
+	addGlobalRule(t, teamGoogle, types.RuleTypeTeamID, types.RulePolicyAllowlist)
+	host := syncedHost(t, machineA, transport)
+	ruleCLI(t, "update", "-t", "teamid", "-i", teamGoogle, "--global", "--collect-allowed-events=true")
+	handlers = newHandlers()
+
+	var failing atomic.Bool
+	failing.Store(true)
+	ddblocal.AddHook(t, ddblocal.Hook{Before: func(c *ddblocal.Call) *ddblocal.Fault {
+		// Reads of the store table during the upload (the sync's own reads are GetItem/Query too, so only fail reads
+		// that are not of a machine's own partition or the global rules feed).
+		if !failing.Load() || (c.Op != "GetItem" && c.Op != "BatchGetItem" && c.Op != "Query") {
+			return nil
+		}
+		in := fmt.Sprint(c.Input)
+		if strings.Contains(in, ddblocal.TableName) && strings.Contains(in, "EventCollection") {
+			return &ddblocal.Fault{Status: 500, Type: "InternalServerError", Message: "injected"}
+		}
+		return nil
+	}})
+	at := time.Now().Add(-time.Minute)
+	host.PendingEvents = []string{
+		execEvent(sha1, "BLOCK_UNKNOWN", 1, at, ""),
+		execEvent(sha2, "ALLOW_TEAMID", 2, at, fmt.Sprintf(`"team_id":%q`, teamGoogle)),
+	}
+	host.MustSync(t)
+	failing.Store(false)
+	if !storedSHAs(t, machineA)[sha1] {
+		t.Error("the blocked event was not stored when the collection lookup failed")
 	}
 }
