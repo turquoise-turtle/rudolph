@@ -180,6 +180,8 @@ The sensor data row also stores `HostnameKey`, the reported hostname trimmed of 
 
 Likewise `SerialKey` is the reported serial number trimmed of surrounding whitespace and in upper case. Apple serial numbers are upper case, but some virtual machines report mixed case, which an upper-case prefix search would never match against the serial as reported. `SerialNum` itself is stored as reported. A Mac that reports no serial number has neither attribute, and one whose serial number is only whitespace has `SerialNum` but no `SerialKey`.
 
+The primary user groups (`primary_user_groups`) are not on this row: a directory-bound Mac can report hundreds, and DynamoDB bills the row's rewrite on every preflight by its whole size. Preflight stores them on their own item, `PK = Machine#<machine id>`, `SK = ReportedGroups`, with `PrimaryUserGroups` (the list as reported, empty when the Mac stopped reporting groups), `Time` (when the item was written) and `ExpiresAfter` (90 days later). It writes the item only when the list differs from the one the previous sync recorded, which it tells from a short digest of the list on the sync state (`ReportedGroupsHash`, with `ReportedGroupsWrittenAt`), so an unchanged list costs neither a read nor a write. It also rewrites an unchanged list once it is 30 days old, so the item does not expire while the Mac keeps syncing. A Mac that has never reported groups has no item.
+
 `LastSeenDay` is the UTC date of the last preflight (`2006-01-02` form, from the same clock as `Time`). It gives the machine list a last-seen column that, unlike `Time`, changes at most once a day.
 
 The web view lists Macs from two global secondary indexes on these rows; Rudolph itself does not query them:

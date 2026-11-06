@@ -19,7 +19,8 @@ const (
 	lastSeenDayLayout = "2006-01-02"
 )
 
-// SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
+// SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight. Every preflight rewrites it,
+// so the primary user groups, which can be long, are stored in their own item instead (see ReportedGroups).
 type SensorData struct {
 	dynamodb.PrimaryKey
 	MachineID string `dynamodbav:"MachineID,omitempty"`
@@ -40,7 +41,6 @@ type SensorData struct {
 	ClientMode           types.ClientMode `dynamodbav:"ClientMode"`
 	RequestCleanSync     bool             `dynamodbav:"RequestCleanSync"`
 	PrimaryUser          string           `dynamodbav:"PrimaryUser"`
-	PrimaryUserGroups    []string         `dynamodbav:"PrimaryUserGroups,omitempty"`
 	RulesHash            string           `dynamodbav:"RulesHash,omitempty"`
 	RuleCount            int              `dynamodbav:"RuleCount"`
 	CertificateRuleCount int              `dynamodbav:"CertificateRuleCount"`

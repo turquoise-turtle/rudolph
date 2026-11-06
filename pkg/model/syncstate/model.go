@@ -103,9 +103,14 @@ type SyncState struct {
 	ConfigCleanSyncServed int `dynamodbav:"ConfigCleanSyncServed,omitempty"`
 	// Whether served last pages count towards giving the request up: decided at the request's first clean sync, set
 	// when the Mac was already missing postflights then (see ConfigCleanSyncOutcome).
-	ConfigCleanSyncCountsServings bool           `dynamodbav:"ConfigCleanSyncCountsServings,omitempty"`
-	ExpiresAfter                  int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType                      types.DataType `dynamodbav:"DataType"`
+	ConfigCleanSyncCountsServings bool `dynamodbav:"ConfigCleanSyncCountsServings,omitempty"`
+	// The digest of the primary user groups the Mac last reported (sensordata.ReportedGroupsHash) and when preflight
+	// last wrote them to the machine's reported groups item, so that it only rewrites that item when the list changed
+	// or the item is due a refresh, without reading it. Both empty while the Mac reports no groups.
+	ReportedGroupsHash      string         `dynamodbav:"ReportedGroupsHash,omitempty"`
+	ReportedGroupsWrittenAt string         `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
+	ExpiresAfter            int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType                types.DataType `dynamodbav:"DataType"`
 
 	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
 	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.

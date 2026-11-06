@@ -58,7 +58,7 @@ Tolerate, rather than require:
 - a `CleanSync` attribute on the global config, written by earlier versions: it is ignored, as only a machine can be
   asked for a clean sync;
 - new attributes and new row kinds;
-- `PrimaryUserGroups` on sensor data (it may move to its own item to keep syncs cheap) and the sync state's tracking
+- the reported primary user groups, which live on their own `Machine#<id>` / `ReportedGroups` item (`PrimaryUserGroups`, `Time`), written only when they change (they used to be on sensor data), and the sync state's tracking
   internals (`MachineRulesTracked`, `CompletedSyncs`, `SyncSeq`), which are not a stable interface.
 
 A machine rule is in force when it has no `DeleteOnNextSync`, its `Policy` is not REMOVE and `ExpiresAfter` is absent,

@@ -25,7 +25,8 @@ func getCleanSyncService(timeProvider clock.TimeProvider) cleanSyncService {
 type stateTrackingService interface {
 	saveSensorDataFromPreflightRequest(machineID string, request *PreflightRequest) error
 	getSyncState(machineID string) (syncState *syncstate.SyncStateRow, err error)
-	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress) error
+	saveReportedGroups(machineID string, groups []string, prevSyncState *syncstate.SyncStateRow) (reportedGroupsRecord, error)
+	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
 }
 
@@ -68,7 +69,6 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 	sensorData.HostnameKey = sensordata.HostnameKey(request.Hostname)
 	sensorData.ModelIdentifier = request.ModelIdentifier
 	sensorData.SIPStatus = request.SIPStatus
-	sensorData.PrimaryUserGroups = request.PrimaryUserGroups
 	// Every string stored here was bounded by PreflightRequest.validate.
 	sensorData.RulesHash = request.RulesHash
 
@@ -76,12 +76,48 @@ func (c concreteStateTrackingService) saveSensorDataFromPreflightRequest(machine
 	return err
 }
 
+// reportedGroupsRecord is what the sync state records about the reported groups item (see saveReportedGroups).
+type reportedGroupsRecord struct {
+	hash      string
+	writtenAt string
+}
+
+// saveReportedGroups writes the primary user groups the Mac reported to their own item when they differ from what the
+// previous sync recorded, or when the item is due a refresh before it expires. The sync state carries a digest of the
+// list, so an unchanged list costs no read and no write. If this sync's sync state is never saved, the next preflight
+// compares with the older record and at worst writes the same list again.
+func (c concreteStateTrackingService) saveReportedGroups(machineID string, groups []string, prevSyncState *syncstate.SyncStateRow) (reportedGroupsRecord, error) {
+	now := c.timeProvider.Now()
+	hash := sensordata.ReportedGroupsHash(groups)
+	prevHash := ""
+	if prevSyncState != nil {
+		prevHash = prevSyncState.ReportedGroupsHash
+	}
+	if hash == prevHash {
+		if hash == "" {
+			return reportedGroupsRecord{}, nil
+		}
+		writtenAt, err := clock.ParseRFC3339(prevSyncState.ReportedGroupsWrittenAt)
+		if err == nil && now.Sub(writtenAt) < sensordata.ReportedGroupsRefreshAfter {
+			return reportedGroupsRecord{hash: hash, writtenAt: prevSyncState.ReportedGroupsWrittenAt}, nil
+		}
+	}
+	if _, err := c.putter.PutItem(sensordata.NewReportedGroups(c.timeProvider, machineID, groups)); err != nil {
+		return reportedGroupsRecord{}, err
+	}
+	if hash == "" {
+		// The item now says the Mac reports no groups; nothing needs refreshing
+		return reportedGroupsRecord{}, nil
+	}
+	return reportedGroupsRecord{hash: hash, writtenAt: clock.RFC3339(now)}, nil
+}
+
 func (c concreteStateTrackingService) getSyncState(machineID string) (syncState *syncstate.SyncStateRow, err error) {
 	return syncstate.GetByMachineID(c.getter, machineID)
 }
 
 // configCleanSync is not nil when this sync is a clean sync performing the clean sync flag of the machine config.
-func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress) error {
+func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord) error {
 	syncState := syncstate.CreateNewSyncState(
 		c.timeProvider,
 		machineID,
@@ -93,6 +129,8 @@ func (c concreteStateTrackingService) saveSyncState(machineID string, requestCle
 	// Bounded by PreflightRequest.validate; the next preflight compares it with the hash it receives
 	syncState.PreflightRulesHash = rulesHash
 	syncState.ContinueFrom(prevSyncState, machinerules.DeliveryDigest(nil), c.timeProvider.Now())
+	syncState.ReportedGroupsHash = reportedGroups.hash
+	syncState.ReportedGroupsWrittenAt = reportedGroups.writtenAt
 	if configCleanSync != nil && requestCleanSync {
 		syncState.SetConfigCleanSync(*configCleanSync)
 	}
