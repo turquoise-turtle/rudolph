@@ -1,6 +1,6 @@
 # Device groups: design
 
-Status: proposed 2026-11-06, not built. Owner decisions: a Mac's groups are the union of the groups Santa reports and groups assigned in Rudolph; Macs in no group can be targeted ("ungrouped"); for the same rule type and identifier on one Mac, a machine rule beats a group rule, which beats a global rule, and between two groups of one Mac a block beats an allow.
+Status: built 2026-11-06 (user documentation: [groups.md](groups.md)), except `rudolph group members`, the `GroupMembers#` rows and `rudolph rules import|export --group`; see *As built* below. Owner decisions: a Mac's groups are the union of the groups Santa reports and groups assigned in Rudolph; Macs in no group can be targeted ("ungrouped"); for the same rule type and identifier on one Mac, a machine rule beats a group rule, which beats a global rule, and between two groups of one Mac a block beats an allow.
 
 ## Where groups come from
 
@@ -58,3 +58,13 @@ Apply Terraform (IAM for the new partitions) before the Lambda. Each Mac writes 
 ## Tests to write first
 
 End to end through fakesanta (`internal/handlers/groups_integration_test.go`): reported and assigned membership and their union; ungrouped rules and what happens when a Mac joins a group; leaving a group restores the global rule or removes; a key provided by two groups or a machine rule survives leaving one; the precedence table; group rule add, edit and remove reach Macs on incremental syncs; a global change does not clobber a group winner, nor does a clean sync; removals delivered without postflights; name normalisation and limits; `--no-reported`; COST2 with 3 groups and 500 group rules (steady state at most 4 write units and 8 read units); web contract rows; a group rule change visible within the cache lifetime.
+
+## As built
+
+Differences from the design above, and choices it left open:
+
+- **Reported membership.** Preflight normalises the reported list against the registry it caches (60 s per instance), keeps the registered groups that accept reported membership, and stores them as `Reported` on `Machine#<id>`/`Groups` (a string set, removed when empty). The sync state's `GroupsBasis` is a digest of that stored list only, not of `MembershipVersion`: assigned membership is read at every ruledownload anyway, so a change elsewhere in the fleet makes no Mac rewrite its item. A group created, deleted or switched to `--no-reported` changes a Mac's `Reported` at its first preflight after the cache expires; ruledownload also re-checks `AcceptReported` against its own registry. The raw list stays on `Machine#<id>`/`ReportedGroups`.
+- **Ruledownload** skips all group work while the registry is empty or missing. Otherwise it reads the Groups item strongly consistently (preflight may just have written it), and group rule partitions are read strongly consistently and cached per server instance by group and `RulesVersion`. Winners are appended after the machine rules, sorted by rule sort key, and added to the `applying` set, so delivery tracking is unchanged. Stored group rules with a policy a group rule cannot have, or whose sort key does not match their type, are skipped.
+- **Ungrouped** is registered by the CLI (with `AcceptReported` false) the first time an `--ungrouped` rule is written; it does not count towards the 64 groups.
+- **CLI writes.** `rule … --group` puts the rule row and increments the group's `RulesVersion` in one transaction (conditional on the group being registered); `rule remove … --group` deletes it the same way. `rule update` refuses group targets: writing the rule again replaces it. `group delete --force` deletes the group's rules first, then the registry entry; assigned membership is left on the Macs, inert while no group of that name exists. Registry and membership changes increment `MembershipVersion` for readers that cache them.
+- **IAM.** The Lambdas only read `GroupRegistry` and `GroupRules#…`, which the read statement already allows; they write only `Machine#<id>`/`Groups`, already covered by `Machine#*`. The group partitions are therefore not added to the write statement's `dynamodb:LeadingKeys`, as for global rules. No Terraform change is needed.

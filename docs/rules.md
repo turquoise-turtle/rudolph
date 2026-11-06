@@ -47,8 +47,10 @@ UTF-8, are well above what Santa's block dialog and notifications can show:
 
 ## Global and machine-specific rules
 Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `silent-gui`, `silent-tty`, `compiler`,
-`cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac).
+`cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac), or
+`--group <group>` / `--ungrouped` for a device group (all but `update`; see [Device groups](groups.md)).
 There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
+`rudolph rule remove` takes the rule as `<rule-name>` (e.g. `TeamID#EQHXZ8M8AV`) or as `-t <rule-type> -i <identifier>`.
 
 The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits); every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else, as the API does. It can be typed in any case. The server keeps a Mac's machine ID exactly as the Mac sends it, which is upper case for the hardware UUID but can be any case when Santa's `MachineID` setting is used, so the CLI looks the ID up in the case typed, in upper case and in lower case, and uses the first of these that a Mac has synced under; failing that, one with a machine configuration; failing that, one with machine rules (older CLIs stored the ID as typed); and otherwise upper case. The lookup is one DynamoDB BatchGetItem request, plus at most three one-item queries when nothing is known about the machine. The CLI warns when no Mac has ever synced under the ID it uses.
 
