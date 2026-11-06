@@ -56,7 +56,7 @@ Santa uploads allowed-by-rule executions only when `EnableAllEventUpload` is on 
 | Event | `Exec#<machine ID>` | `<TS>#<file SHA-256>#<pid>` | `MachineID`, `TS`, `Fleet` (always `Exec`), `Decision` (Santa's name, e.g. `BLOCK_BINARY`), `FileSHA256`, `FilePath`, `FileName`, `ExecutingUser`, `TeamID`, `SigningID`, `CDHash` | 90 days after upload |
 | Day counter | `BinaryDay#<UTC date of the execution>` (`YYYY-MM-DD`) | `<file SHA-256>` | `Blocked`, `Allowed` (numbers; absent until the first such event), `FileName`, `SigningID`, `TeamID` | 100 days after its first event |
 | Machine marker | `BinarySeen#<file SHA-256>` | `<machine ID>` | `LastSeenDay` (UTC date, `YYYY-MM-DD`, of the Mac's latest upload of an event of the binary) | 100 days after the Mac last ran the binary |
-| Top list snapshot row | `TopSnapshot#<kind>#<window>#<snapshot ID>` | `<rank>` (6 digits from `000001`) | `FileSHA256`, `Count`, `Machines` (numbers), `FileName`, `SigningID`, `TeamID` | 2 days after it was written |
+| Top list snapshot row | `TopSnapshot#<kind>#<window>#<snapshot ID>` | `<rank>` (6 digits from `000001`) | `FileSHA256`, `Count`, `Machines` (numbers; `Machines` on the first 100 rows only), `FileName`, `SigningID`, `TeamID` | 8 days after it was written |
 | Top list pointer | `Top#<kind>#<window>` | `Current` | `Snapshot` (the snapshot ID), `GeneratedAt` (RFC 3339) | never; replaced every hour |
 
 `TS` is the execution time in microseconds since the Unix epoch, rounded and zero-padded to 20 digits, so it sorts as a string. Empty attributes are left out (DynamoDB rejects an empty string in an index key such as `TeamID`). `ExpiresAfter` holds the expiry in Unix seconds; the table's TTL deletes expired items, free of charge, usually within a few days of expiry.
@@ -82,18 +82,30 @@ Day counters, machine markers and the top lists have no `TS`, so they are in no 
 The web view's lists of the binaries blocked or allowed most often are built every hour by the ranker, a Lambda of its own (`PREFIX_rudolph_ranker`, code in `cmd/ranker` and `internal/ranker`) run by an EventBridge schedule. A page view then reads one pointer (`GetItem`) and one snapshot (`Query`) instead of up to 90 days of day counters.
 
 - There are eight lists: kind `Blocked` or `Allowed`, each over windows of 1, 7, 30 and 90 days ending today (UTC; the 1-day list is today so far).
-- `Count` is the sum of that kind over the window's day counters. `Machines` is the number of the binary's machine markers whose `LastSeenDay` is inside the window. `FileName`, `SigningID` and `TeamID` come from the newest day counter that has them.
+- `Count` is the sum of that kind over the window's day counters, so it goes by the **execution** date. `FileName`, `SigningID` and `TeamID` come from the newest day counter that has them.
+- `Machines` is the number of the binary's machine markers whose `LastSeenDay` is inside the window, so it goes by the **upload** date: a Mac that was offline for days and then uploaded an old execution counts in the 1-day window. Markers do not record the decision, so `Machines` counts the Macs that uploaded any stored execution of the binary, whether it was blocked or allowed there (allowed executions are stored for `ALLOW_UNKNOWN` and for flagged rules). It is set on the first 100 rows of each list only, as counting a binary's Macs reads one marker per Mac; the other rows leave it out.
 - Rows are ordered by `Count`, highest first, then by `FileSHA256`; binaries with a count of 0 are left out, and each list holds at most 500 rows.
-- Each run writes every list under a new snapshot ID (it sorts by time), then moves each pointer to it. A reader therefore never sees a half-written snapshot, and one holding the previous ID can still read it until its rows expire two days later. A failed run leaves the pointers on the previous snapshot; the next hourly run starts again from scratch, so failed runs are not retried.
+- Each run writes every list under a new snapshot ID, which sorts by time, then moves each pointer to it, only if the pointer is absent or names an older snapshot: runs can overlap (EventBridge may deliver an event twice, an operator may invoke the Lambda by hand), and a run that started earlier must not move the pointer back. A reader therefore never sees a half-written snapshot. Snapshot rows expire 8 days after they were written, so a ranker that stops for a while never leaves a pointer naming deleted rows; the web view shows `GeneratedAt`. A failed run leaves the pointers on the previous snapshot; the next hourly run starts again from scratch, so failed runs are not retried.
 - Markers written before `LastSeenDay` existed have none and count in no window until the Mac uploads an event of that binary again.
 
-How a run reads and writes, and what it costs:
+How a run reads and writes:
 
-- It reads each of the 90 day partitions (`BinaryDay#<date>`) once, with a paginated `Query`, and uses them for every window and both kinds. It never scans.
-- It then reads the machine markers (`Query` on `BinarySeen#<file SHA-256>`) only of the binaries that made a list, once each even when a binary is in several lists: at most 2 × 4 × 500 = 4,000 queries, usually far fewer as the windows overlap.
-- It writes the snapshot rows with `BatchWriteItem` (25 rows a call, retrying unprocessed rows), then the eight pointers with `PutItem`. Calls run at most 16 at a time.
-- So a run costs about 90 day-partition queries (each half a read unit per 4 KB of counters), up to about 4,000 marker queries and up to about 4,000 row writes. With full lists every hour that is roughly 3 million write units and a few million read units a month, about US$2 a month at us-east-1 on-demand prices (US$0.625 per million write units), plus well under a dollar for the Lambda and the two days of snapshots kept. Smaller fleets with shorter lists pay proportionally less.
+- It reads each of the 90 day partitions (`BinaryDay#<date>`) once, with a paginated `Query`, and folds each page into one running total per binary for every window and both kinds; it never holds the counter rows, and it never scans.
+- It then reads the machine markers (`Query` on `BinarySeen#<file SHA-256>`, projecting only `LastSeenDay`) of the binaries in the first 100 rows of any list, once per binary even when it is in several lists: at most 2 × 4 × 100 = 800 binaries, usually a few hundred as the windows overlap. It counts the Macs per window while paging and keeps nothing else.
+- It writes the snapshot rows with `BatchWriteItem` (25 rows a call, retrying unprocessed rows), then the eight pointers with a conditional `PutItem`. Calls run at most 16 at a time.
 - Its role may only `Query` the `BinaryDay#*` and `BinarySeen#*` partitions and `PutItem`/`BatchWriteItem` the `TopSnapshot#*` and `Top#*` partitions of this table (`dynamodb:LeadingKeys`), nothing else.
+
+What a run costs, at us-east-1 on-demand prices (US$0.125 per million read units, US$0.625 per million write units; an eventually consistent `Query` costs half a read unit per 4 KB read), with 720 runs a month. The number of distinct binaries a day and how widely the listed binaries run are guesses; the shape of the estimate matters more than the figures.
+
+| | 1,000 Macs | 100,000 Macs |
+|---|---|---|
+| Day counters (~250 B each) | ~2,000 binaries a day: 90 × 0.5 MB ≈ 5,500 read units | ~50,000 binaries a day: 90 × 12 MB ≈ 140,000 read units |
+| Machine markers (~60 B each, one per Mac) | a few hundred binaries, at most 60 KB (~8 read units) each: ≈ 1,000 read units | ~300 binaries at ~20,000 Macs (1.2 MB, ~150 read units) each: ≈ 45,000 read units; at worst 800 binaries on all 100,000 Macs (6 MB, ~750 read units each): 600,000 |
+| Snapshot rows (≤ 1 KB each) | ~3,000 rows: 3,000 write units | 4,000 rows: 4,000 write units |
+| Per run | ≈ US$0.003 | ≈ US$0.026, at worst ≈ US$0.10 |
+| Per month | ≈ US$2 (reads ~US$0.60, writes ~US$1.40) | ≈ US$19 (reads ~US$17, writes ~US$1.80), at worst ≈ US$70 |
+
+Storage of 8 days of snapshots (up to ~250 MB) adds about US$0.06 a month and the Lambda (256 MB, arm64, seconds to a minute a run) under US$0.20. Reading the day counters dominates at scale and grows with the number of distinct binaries, not with how often they run.
 
 ## Costs
 

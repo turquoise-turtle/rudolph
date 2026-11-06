@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"sync"
@@ -33,9 +34,13 @@ const (
 	// MaxRows bounds each list.
 	MaxRows = 500
 
-	// A reader that fetched the pointer just before a run moved it can still read the old snapshot; two days covers
-	// that with a wide margin even if runs stop for a day. DynamoDB's TTL then deletes the rows for free.
-	snapshotTTL = 48 * time.Hour
+	// MachineRows bounds the rows of each list that get Machines: counting a binary's Macs reads one marker per Mac,
+	// about 6 MB for a binary on 100,000 Macs.
+	MachineRows = 100
+
+	// Kept well past the next run, so a ranker that stops for a while (failing, or the schedule disabled) never leaves
+	// a pointer naming deleted rows; readers show GeneratedAt. DynamoDB's TTL then deletes the rows for free.
+	snapshotTTL = 8 * 24 * time.Hour
 
 	dateLayout = "2006-01-02"
 
@@ -75,10 +80,23 @@ type counter struct {
 	FileName, SigningID, TeamID string
 }
 
+// field keeps a display attribute from the newest day that has it.
+type field struct {
+	value string
+	day   int // days before today
+}
+
+func (f *field) offer(value string, day int) {
+	if value != "" && (f.value == "" || day < f.day) {
+		f.value, f.day = value, day
+	}
+}
+
+// binary holds one binary's totals for every window, folded in as the day partitions are read, so a run never holds
+// 90 days of counter rows.
 type binary struct {
-	sha                         string
-	counts                      map[string]int64 // by kind
-	fileName, signingID, teamID string
+	counts                      [2][]int64 // by kind index, then window index
+	fileName, signingID, teamID field
 }
 
 type entry struct {
@@ -90,13 +108,14 @@ type entry struct {
 type list struct {
 	kind   string
 	window int
-	start  string // first day of the window
+	wi     int // index in Windows
 	rows   []entry
 }
 
 // Run builds every list and moves each pointer to it. Each day's counters are read once and serve every window and
-// kind; markers are read only for the binaries that make a list. Snapshot rows are written before any pointer, so a
-// reader never sees a half-written snapshot; a failed run leaves the pointers on the previous snapshot.
+// kind; markers are read only for the first MachineRows binaries of each list, once per binary. Snapshot rows are
+// written before any pointer, so a reader never sees a half-written snapshot; a failed run leaves the pointers on the
+// previous snapshot.
 func Run(ctx context.Context, opts Options) error {
 	if opts.Client == nil || opts.Table == "" {
 		return errors.New("ranker: Client and Table are required")
@@ -109,43 +128,78 @@ func Run(ctx context.Context, opts Options) error {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
 	maxWindow := 0
-	for _, w := range Windows {
+	starts := make([]string, len(Windows))
+	for wi, w := range Windows {
 		maxWindow = max(maxWindow, w)
+		starts[wi] = today.AddDate(0, 0, -(w - 1)).Format(dateLayout)
 	}
-	days := make([][]counter, maxWindow)
-	err := parallel(ctx, maxWindow, func(ctx context.Context, i int) error {
-		var err error
-		days[i], err = readDay(ctx, opts, today.AddDate(0, 0, -i).Format(dateLayout))
-		return err
+
+	binaries := map[string]*binary{}
+	var mu sync.Mutex
+	err := parallel(ctx, maxWindow, func(ctx context.Context, d int) error {
+		day := today.AddDate(0, 0, -d).Format(dateLayout)
+		err := query(ctx, opts, dayCounterPKPrefix+day, "SK, Blocked, Allowed, FileName, SigningID, TeamID", func(item map[string]types.AttributeValue) error {
+			var c counter
+			if err := attributevalue.UnmarshalMap(item, &c); err != nil {
+				return err
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			b := binaries[c.SK]
+			if b == nil {
+				b = &binary{counts: [2][]int64{make([]int64, len(Windows)), make([]int64, len(Windows))}}
+				binaries[c.SK] = b
+			}
+			for wi, w := range Windows {
+				if d < w {
+					b.counts[0][wi] += c.Blocked
+					b.counts[1][wi] += c.Allowed
+				}
+			}
+			b.fileName.offer(c.FileName, d)
+			b.signingID.offer(c.SigningID, d)
+			b.teamID.offer(c.TeamID, d)
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("ranker: day counters of %s: %w", day, err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	lists := buildLists(today, days)
+	var lists []list
+	for ki, kind := range Kinds {
+		for wi, w := range Windows {
+			lists = append(lists, list{kind: kind, window: w, wi: wi, rows: top(binaries, ki, wi)})
+		}
+	}
+	binaries = nil
 
 	var shas []string
 	seen := map[string]bool{}
 	for _, l := range lists {
-		for _, r := range l.rows {
+		for _, r := range l.rows[:min(MachineRows, len(l.rows))] {
 			if !seen[r.sha] {
 				seen[r.sha] = true
 				shas = append(shas, r.sha)
 			}
 		}
 	}
-	lastSeen := make([][]string, len(shas))
+	perSHA := make([][]int64, len(shas))
 	err = parallel(ctx, len(shas), func(ctx context.Context, i int) error {
 		var err error
-		lastSeen[i], err = readMarkers(ctx, opts, shas[i])
+		perSHA[i], err = countMachines(ctx, opts, shas[i], starts)
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	markers := make(map[string][]string, len(shas))
+	machines := make(map[string][]int64, len(shas))
 	for i, sha := range shas {
-		markers[sha] = lastSeen[i]
+		machines[sha] = perSHA[i]
 	}
 
 	snapshot, err := snapshotID(now)
@@ -157,19 +211,15 @@ func Run(ctx context.Context, opts Options) error {
 	for _, l := range lists {
 		pk := fmt.Sprintf("%s%s#%d#%s", snapshotPKPrefix, l.kind, l.window, snapshot)
 		for i, r := range l.rows {
-			machines := 0
-			for _, day := range markers[r.sha] {
-				if day >= l.start {
-					machines++
-				}
-			}
 			item := map[string]types.AttributeValue{
 				"PK":           str(pk),
 				"SK":           str(fmt.Sprintf("%06d", i+1)),
 				"FileSHA256":   str(r.sha),
 				"Count":        num(r.count),
-				"Machines":     num(int64(machines)),
 				"ExpiresAfter": &types.AttributeValueMemberN{Value: expires},
+			}
+			if i < MachineRows {
+				item["Machines"] = num(machines[r.sha][l.wi])
 			}
 			for name, value := range map[string]string{"FileName": r.fileName, "SigningID": r.signingID, "TeamID": r.teamID} {
 				if value != "" {
@@ -197,7 +247,17 @@ func Run(ctx context.Context, opts Options) error {
 				"Snapshot":    str(snapshot),
 				"GeneratedAt": str(generatedAt),
 			},
+			// Runs can overlap (EventBridge may deliver twice, an operator may invoke the Lambda by hand); one that
+			// started earlier must not move the pointer back to its older snapshot. IDs sort by time.
+			ConditionExpression:       aws.String("attribute_not_exists(PK) OR #snapshot < :snapshot"),
+			ExpressionAttributeNames:  map[string]string{"#snapshot": "Snapshot"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{":snapshot": str(snapshot)},
 		})
+		var failed *types.ConditionalCheckFailedException
+		if errors.As(err, &failed) {
+			log.Printf("ranker: pointer %s %d already names a newer snapshot; left as it is", l.kind, l.window)
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("ranker: pointer %s %d: %w", l.kind, l.window, err)
 		}
@@ -205,52 +265,13 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-// buildLists ranks the binaries of each window from days[i], the counters of the day i days before today.
-func buildLists(today time.Time, days [][]counter) []list {
-	binaries := map[string]*binary{}
-	var lists []list
-	for i, counters := range days {
-		// Days are walked newest first, so the display fields kept are those of the newest day that has them.
-		for _, c := range counters {
-			b := binaries[c.SK]
-			if b == nil {
-				b = &binary{sha: c.SK, counts: map[string]int64{}}
-				binaries[c.SK] = b
-			}
-			b.counts["Blocked"] += c.Blocked
-			b.counts["Allowed"] += c.Allowed
-			if b.fileName == "" {
-				b.fileName = c.FileName
-			}
-			if b.signingID == "" {
-				b.signingID = c.SigningID
-			}
-			if b.teamID == "" {
-				b.teamID = c.TeamID
-			}
-		}
-		for _, w := range Windows {
-			if w != i+1 {
-				continue
-			}
-			for _, kind := range Kinds {
-				lists = append(lists, list{
-					kind: kind, window: w,
-					start: today.AddDate(0, 0, -(w - 1)).Format(dateLayout),
-					rows:  top(binaries, kind),
-				})
-			}
-		}
-	}
-	return lists
-}
-
-// top returns the MaxRows binaries with the highest count of kind, ties ordered by SHA-256; zero counts are left out.
-func top(binaries map[string]*binary, kind string) []entry {
+// top returns the MaxRows binaries with the highest count of kind ki in window wi, ties ordered by SHA-256; zero
+// counts are left out.
+func top(binaries map[string]*binary, ki, wi int) []entry {
 	var rows []entry
-	for _, b := range binaries {
-		if n := b.counts[kind]; n > 0 {
-			rows = append(rows, entry{sha: b.sha, count: n, fileName: b.fileName, signingID: b.signingID, teamID: b.teamID})
+	for sha, b := range binaries {
+		if n := b.counts[ki][wi]; n > 0 {
+			rows = append(rows, entry{sha: sha, count: n, fileName: b.fileName.value, signingID: b.signingID.value, teamID: b.teamID.value})
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -265,36 +286,25 @@ func top(binaries map[string]*binary, kind string) []entry {
 	return rows
 }
 
-func readDay(ctx context.Context, opts Options, day string) ([]counter, error) {
-	var out []counter
-	err := query(ctx, opts, dayCounterPKPrefix+day, "SK, Blocked, Allowed, FileName, SigningID, TeamID", func(item map[string]types.AttributeValue) error {
-		var c counter
-		if err := attributevalue.UnmarshalMap(item, &c); err != nil {
-			return err
-		}
-		out = append(out, c)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ranker: day counters of %s: %w", day, err)
-	}
-	return out, nil
-}
-
-// readMarkers returns the LastSeenDay of each Mac that ran the binary. Markers written before the writer recorded
+// countMachines counts, for each window start, the binary's machine markers whose LastSeenDay is on or after it,
+// while paging: a binary run on 100,000 Macs has 100,000 markers. Markers written before the writer recorded
 // LastSeenDay have none and count in no window until the Mac uploads an event of the binary again.
-func readMarkers(ctx context.Context, opts Options, sha string) ([]string, error) {
-	var out []string
+func countMachines(ctx context.Context, opts Options, sha string, starts []string) ([]int64, error) {
+	counts := make([]int64, len(starts))
 	err := query(ctx, opts, machineMarkerPrefix+sha, "LastSeenDay", func(item map[string]types.AttributeValue) error {
 		if v, ok := item["LastSeenDay"].(*types.AttributeValueMemberS); ok {
-			out = append(out, v.Value)
+			for i, start := range starts {
+				if v.Value >= start {
+					counts[i]++
+				}
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ranker: machine markers of %s: %w", sha, err)
 	}
-	return out, nil
+	return counts, nil
 }
 
 func query(ctx context.Context, opts Options, pk, projection string, each func(map[string]types.AttributeValue) error) error {

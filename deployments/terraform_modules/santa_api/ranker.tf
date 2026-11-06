@@ -98,10 +98,13 @@ resource "aws_lambda_function" "ranker" {
   s3_bucket        = aws_s3_bucket_object.ranker_source.bucket
   s3_key           = aws_s3_bucket_object.ranker_source.key
   source_code_hash = local.lambda_ranker_hash
-  memory_size      = 256
+  # A run holds one small total per binary seen in 90 days (about 300 bytes each, so ~30 MB for 100,000 binaries),
+  # never the counter rows or the markers themselves.
+  memory_size = 256
 
-  # A run reads about 90 day partitions and up to ~4,000 marker partitions, 16 at a time: seconds normally. The
-  # margin covers throttling retries; a run that still times out leaves the previous lists in place.
+  # A run reads 90 day partitions and the markers of up to 800 binaries, 16 calls at a time: seconds for a small fleet,
+  # up to about a minute when popular binaries have markers on 100,000 Macs (~6 MB each). The margin covers throttling
+  # retries; a run that still times out leaves the previous lists in place.
   timeout = 300
 
   environment {
