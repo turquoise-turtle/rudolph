@@ -284,6 +284,9 @@ This endpoints accepts events logs from the Santa agent which records all binary
 #### RESPONSE - None
 
 #### Delivery to the event sink
+Blocked and unknown executions are also stored in the execution events table, whatever sink is configured, and a
+failed write answers 500 like a failing sink; see [Execution events table](events-table.md).
+
 Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
 split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
 PutRecords: 500 records / 1 MiB; asynchronous Lambda invocations: 256 KB payloads). Kinesis requests are capped at

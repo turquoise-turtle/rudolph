@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/airbnb/rudolph/pkg/eventsink"
 	"github.com/airbnb/rudolph/pkg/firehose"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
 type PostEventuploadHandler struct {
@@ -24,6 +27,10 @@ type PostEventuploadHandler struct {
 
 	lambdaClient lambda.LambdaClient
 	enableLambda bool
+
+	// eventStore writes execution events to the events table read by the web view, independently of the sinks.
+	// Nil when EVENTS_DYNAMODB_NAME is not set.
+	eventStore *eventStore
 }
 
 func (h *PostEventuploadHandler) Boot() (err error) {
@@ -55,6 +62,14 @@ func (h *PostEventuploadHandler) Boot() (err error) {
 		h.lambdaClient = lambda.GetClient(lambdaName, "$LATEST", region)
 	}
 
+	if eventsTable := os.Getenv("EVENTS_DYNAMODB_NAME"); eventsTable != "" {
+		cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
+		if err != nil {
+			return fmt.Errorf("events table client: %w", err)
+		}
+		h.eventStore = newEventStore(dynamodb.NewFromConfig(cfg), eventsTable)
+	}
+
 	h.booted = true
 	return
 }
@@ -77,36 +92,53 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 		return errorResponse, err
 	}
 
-	if !h.enableFirehose && !h.enableKinesis && !h.enableLambda {
-		// Shortcircuit if no handlers are enabled
-		return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
-	}
-
+	sinksEnabled := h.enableFirehose || h.enableKinesis || h.enableLambda
+	storeEvents := h.eventStore != nil && len(eventsRequest.Events) > 0
 	// Execution events, file access events and audit events are all forwarded, each record tagged with the
 	// machine that reported it.
-	forwardedEvents := convertRequestEventsToUploadEvents(machineID, eventsRequest)
-	if len(forwardedEvents) == 0 {
-		// Nothing to forward; sinks reject empty batches.
+	var forwardedEvents []interface{}
+	if sinksEnabled {
+		forwardedEvents = convertRequestEventsToUploadEvents(machineID, eventsRequest)
+	}
+	if len(forwardedEvents) == 0 && !storeEvents {
+		// Nothing to forward (sinks reject empty batches) and nothing to store.
 		return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})
 	}
 
 	ctx, cancel := eventsink.WithSendDeadline(ctx)
 	defer cancel()
 
-	if h.enableFirehose {
-		err = sendToFirehose(ctx, h.firehoseClient, machineID, forwardedEvents)
+	// The events table is written alongside the sinks, not after them, so both share the whole deadline.
+	var storeErr error
+	var stored sync.WaitGroup
+	if storeEvents {
+		stored.Add(1)
+		go func() {
+			defer stored.Done()
+			storeErr = h.eventStore.Store(ctx, machineID, eventsRequest.Events)
+		}()
 	}
 
-	if err == nil && h.enableKinesis {
-		err = sendToKinesis(ctx, h.kinesisClient, machineID, forwardedEvents)
-	}
+	if len(forwardedEvents) > 0 {
+		if h.enableFirehose {
+			err = sendToFirehose(ctx, h.firehoseClient, machineID, forwardedEvents)
+		}
 
-	if err == nil && h.enableLambda {
-		err = sendToLambda(ctx, h.lambdaClient, machineID, forwardedEvents)
+		if err == nil && h.enableKinesis {
+			err = sendToKinesis(ctx, h.kinesisClient, machineID, forwardedEvents)
+		}
+
+		if err == nil && h.enableLambda {
+			err = sendToLambda(ctx, h.lambdaClient, machineID, forwardedEvents)
+		}
 	}
+	stored.Wait()
 
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("forwarding events: %w", err), response.ErrInternalServerErrorResponse)
+	}
+	if storeErr != nil {
+		return response.InternalServerError(fmt.Errorf("storing events: %w", storeErr), response.ErrInternalServerErrorResponse)
 	}
 
 	return response.APIResponse(http.StatusOK, map[string]string{"status": "ok"})

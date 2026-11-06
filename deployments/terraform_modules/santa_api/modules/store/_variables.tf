@@ -29,3 +29,15 @@ variable "kms_key_administrators_arns" {
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
   default = []
 }
+
+variable "events_dynamodb_table_name" {
+  type        = string
+  description = "OPTIONAL: An events table name that overrides the default. Used to import a restored backup."
+  default     = ""
+}
+
+variable "events_write_lambda_role_names" {
+  type        = list(string)
+  description = "List of IAM Role names that should be allowed to write to the execution events table"
+  default     = []
+}

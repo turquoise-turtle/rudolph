@@ -8,3 +8,7 @@
 output "sync_base_url" {
   value = "https://${module.santa_api.api_domain_name}/"
 }
+
+output "events_dynamodb_table_arn" {
+  value = module.santa_api.events_dynamodb_table_arn
+}
