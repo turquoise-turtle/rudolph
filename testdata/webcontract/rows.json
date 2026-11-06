@@ -404,6 +404,9 @@
     "FeedSyncCursor": {
       "S": "<timestamp>"
     },
+    "GroupsBasis": {
+      "S": "none"
+    },
     "LastCleanSync": {
       "S": "<timestamp>"
     },
