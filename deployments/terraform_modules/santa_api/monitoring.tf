@@ -36,8 +36,13 @@ locals {
 
   # The functions lambda_errors watches. The authoriser is left out: it rejects a wrong token by returning the
   # "Unauthorized" error, which Lambda counts in Errors, so any scanner with a made-up token would fire the alarm.
-  # Rejected tokens show in api_4xx instead, and an authoriser that really fails makes API Gateway answer 500, which
-  # api_5xx covers.
+  # Rejected tokens show in api_4xx instead, and an authoriser that really fails (crashes or times out) makes API Gateway
+  # answer 500, which api_5xx covers.
+  #
+  # Gap: the authoriser also returns "Unauthorized" (HTTP 401, not 500) for configuration failures: no valid token
+  # digests configured, malformed digests in sync_token_sha256, or a MethodArn it cannot parse. Every sync is then
+  # refused, and only api_4xx sees it, which evaluates only periods with at least api_4xx_alarm_min_requests requests
+  # (default 100). Small fleets should lower api_4xx_alarm_min_requests so that this is noticed.
   error_alarm_function_names = {
     health       = module.health_function.lambda_function_name
     xsrf         = module.xsrf_function.lambda_function_name
