@@ -286,6 +286,9 @@
     "HostnameKey": {
       "S": "mac-aaaaaaaa.example.com"
     },
+    "LastSeenDay": {
+      "S": "2026-11-06"
+    },
     "MachineID": {
       "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
     },
@@ -321,6 +324,9 @@
     },
     "SantaVersion": {
       "S": "2026.8.0"
+    },
+    "SerialKey": {
+      "S": "C02AAAAAAAA1"
     },
     "SerialNum": {
       "S": "C02AAAAAAAA1"
