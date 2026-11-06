@@ -14,7 +14,9 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
@@ -35,7 +37,7 @@ func init() {
 	ruleHandler := ruleHandler{}
 
 	var ruleUpdateCmd = &cobra.Command{
-		Use:     "update <file-path>",
+		Use:     "update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--collect-allowed-events=true|false]",
 		Aliases: []string{"update"},
 		Short:   "Update an existing rule",
 		Args:    cobra.NoArgs,
@@ -78,11 +80,17 @@ func init() {
 }
 
 func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags) (err error) {
+	if err := ru.RequireChange(); err != nil {
+		return err
+	}
+	changePolicy := ru.PolicyChanged()
+	changeCollection := ru.CollectAllowedEventsChanged()
+
 	// Determine the ruleType and rulePolicy and return the following types from RuleInfoFlags
 	ruleType := rf.RuleType.AsRuleType()
 	rulePolicy := ru.RulePolicy.AsRulePolicy()
 	// Updating a rule only changes its policy, so it cannot supply the expression a CEL rule requires
-	if rulePolicy == types.RulePolicyCEL {
+	if changePolicy && rulePolicy == types.RulePolicyCEL {
 		return errors.New(`a rule cannot be updated to the CEL policy; remove it and create it with "rule cel"`)
 	}
 	var description string
@@ -129,19 +137,6 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		return errors.New("pass the rule's --identifier, or --filepath to read it from a file")
 	}
 
-	// TODO
-	// Query if there is an existing rule: and show the before/after
-	// partitionKey := fmt.Sprintf("%s%s", store.MachineRulesPKPrefix, machineID)
-	// ruleName :=
-	// if ruleType == types.RuleTypeTeamID {
-	//     ruleName = fmt.Sprintf("%s%s", store.TeamRulesPKPrefix, identifier)
-	// } else if *rf.SHA256 != "" {
-
-	rulePolicyDescription, err := rulePolicy.MarshalText()
-	if err != nil {
-		return
-	}
-
 	ruleTypeDescription, err := ruleType.MarshalText()
 	if err != nil {
 		return
@@ -152,6 +147,10 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	suffix := ""
 	// When the existing machine rule expires; empty for global rules, which never expire
 	expiry := ""
+	// The existing rule's key, policy and collection flag
+	var ruleKey dynamodb.PrimaryKey
+	var currentPolicy types.Policy
+	var collecting bool
 	if !tf.IsGlobal {
 		machineID, err = tf.GetMachineID()
 		if err != nil {
@@ -174,6 +173,7 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		if existingItem == nil {
 			return errors.New("no global rule exists")
 		}
+		ruleKey, currentPolicy, collecting = existingItem.PrimaryKey, existingItem.Policy, existingItem.CollectAllowedEvents
 
 		rulePolicyDescription, err := existingItem.Policy.MarshalText()
 		if err != nil {
@@ -191,6 +191,7 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		fmt.Println("  Policy:      ", existingItem.Policy, "  (", string(rulePolicyDescription), ")")
 		fmt.Println("  RuleType:    ", existingItem.RuleType, "  (", string(ruleTypeDescription), ")")
 		fmt.Println("  Description: ", description)
+		fmt.Println("  CollectAllowedEvents:", existingItem.CollectAllowedEvents)
 	} else {
 		existingItem, err := machinerules.GetMachineRuleByShaType(rh.dynamodbClient, machineID, identifier, ruleType)
 		if err != nil {
@@ -201,6 +202,7 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		if existingItem == nil {
 			return errors.New("no machine rule exists")
 		}
+		ruleKey, currentPolicy, collecting = existingItem.PrimaryKey, existingItem.Policy, existingItem.CollectAllowedEvents
 
 		rulePolicyDescription, err := existingItem.Policy.MarshalText()
 		if err != nil {
@@ -229,16 +231,34 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 		fmt.Println("  RuleType:    ", existingItem.RuleType, "  (", string(ruleTypeDescription), ")")
 		fmt.Println("  Description: ", description)
 		fmt.Println("  Expires:     ", expiry)
+		fmt.Println("  CollectAllowedEvents:", existingItem.CollectAllowedEvents)
+	}
+
+	newPolicy, policyNote := currentPolicy, "  (unchanged)"
+	if changePolicy {
+		newPolicy, policyNote = rulePolicy, ""
+	}
+	rulePolicyDescription, err := newPolicy.MarshalText()
+	if err != nil {
+		return
+	}
+	newCollecting, collectingNote := collecting, "  (unchanged)"
+	if changeCollection {
+		newCollecting, collectingNote = *ru.CollectAllowedEvents, ""
 	}
 
 	fmt.Println("Updating the rule to the following:")
 	fmt.Println("  MachineID:   ", machineID, suffix)
 	fmt.Println("  Identifier/SHA256:      ", identifier)
-	fmt.Println("  Policy:      ", rulePolicy, "  (", string(rulePolicyDescription), ")")
+	fmt.Println("  Policy:      ", newPolicy, "  (", string(rulePolicyDescription), ")"+policyNote)
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
 	if expiry != "" {
 		fmt.Println("  Expires:     ", expiry, "  (unchanged)")
+	}
+	fmt.Println("  CollectAllowedEvents:", newCollecting, collectingNote)
+	if changeCollection && newCollecting {
+		warnIfAllEventUploadOff(rh.dynamodbClient)
 	}
 	fmt.Println("")
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
@@ -250,13 +270,20 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	text = strings.Replace(text, "\n", "", -1)
 	if text == "ok" || text == "yes" {
 		// Do rule update
-		if tf.IsGlobal {
-			err = rh.globalRuleUpdater.UpdateGlobalRule(identifier, ruleType, rulePolicy)
-		} else {
-			err = rh.machineRuleUpdater.UpdateMachineRulePolicy(machineID, identifier, ruleType, rulePolicy)
+		if changePolicy {
+			if tf.IsGlobal {
+				err = rh.globalRuleUpdater.UpdateGlobalRule(identifier, ruleType, rulePolicy)
+			} else {
+				err = rh.machineRuleUpdater.UpdateMachineRulePolicy(machineID, identifier, ruleType, rulePolicy)
+			}
+			if err != nil {
+				return fmt.Errorf("could not upload rule to dynamodb: %w", err)
+			}
 		}
-		if err != nil {
-			return fmt.Errorf("could not upload rule to dynamodb: %w", err)
+		if changeCollection {
+			if err := rh.setCollectAllowedEvents(tf, machineID, ruleKey, newCollecting); err != nil {
+				return err
+			}
 		}
 		fmt.Println("Successfully updated the rule on dynamodb")
 	} else {
@@ -265,4 +292,36 @@ func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoF
 	fmt.Println("")
 
 	return
+}
+
+func (rh *ruleHandler) setCollectAllowedEvents(tf flags.TargetFlags, machineID string, ruleKey dynamodb.PrimaryKey, collect bool) error {
+	writer, ok := rh.dynamodbClient.(eventcollection.Writer)
+	if !ok {
+		return errors.New("this DynamoDB client cannot change whether allowed events are collected")
+	}
+	indexMachineID := ""
+	if !tf.IsGlobal {
+		indexMachineID = machineID
+	}
+	err := eventcollection.SetCollectAllowedEvents(writer, indexMachineID, ruleKey, collect)
+	if errors.Is(err, eventcollection.ErrRuleNotFound) {
+		return errors.New("the rule was removed while it was being updated")
+	}
+	return err
+}
+
+// warnIfAllEventUploadOff warns that flagging a rule collects nothing while Santa does not upload allowed executions.
+func warnIfAllEventUploadOff(client dynamodb.DynamoDBClient) {
+	enabled, err := machineconfiguration.AllEventUploadEnabledAnywhere(client)
+	if err != nil {
+		fmt.Printf("[WARNING] could not check whether EnableAllEventUpload is on: %v\n", err)
+		return
+	}
+	if enabled {
+		return
+	}
+	fmt.Println("[WARNING] EnableAllEventUpload is off in the global config and in every machine config. Santa uploads")
+	fmt.Println("          executions allowed by a rule only with it, so nothing will be collected until it is on:")
+	fmt.Println("          rudolph config update --global --enable-all-event-upload, or for a few Macs only with")
+	fmt.Println("          rudolph config update --machine <machine-id> --enable-all-event-upload.")
 }

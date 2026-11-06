@@ -86,9 +86,10 @@ resource "aws_dynamodb_table" "events" {
 }
 
 #
-# Writes from the eventupload Lambda: items only, on this table only. Kept apart from lambda_permissions, which is
-# scoped to the store table and its machine partitions. TransactWriteItems (an event with its day counter) has no IAM
-# action of its own: it needs PutItem and UpdateItem on the table.
+# Writes from the eventupload Lambda: items only, on this table only, plus reading the index of flagged rules in the
+# store table. Kept apart from lambda_permissions, which is scoped to the store table and its machine partitions.
+# TransactWriteItems (an event with its day counter) has no IAM action of its own: it needs PutItem and UpdateItem on
+# the table.
 #
 data "aws_iam_policy_document" "events_write" {
   statement {
@@ -100,6 +101,24 @@ data "aws_iam_policy_document" "events_write" {
     resources = [
       aws_dynamodb_table.events.arn,
     ]
+  }
+
+  # Which rules have their allowed executions stored is read from one item of the store table (PK "EventCollection",
+  # see pkg/model/eventcollection), and nothing else of that table.
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.store.arn,
+    ]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["EventCollection"]
+    }
   }
 }
 

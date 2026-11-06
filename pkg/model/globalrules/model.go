@@ -18,6 +18,9 @@ type GlobalRuleRow struct {
 	// GlobalRulePolicy_SK index. It lives here rather than on SantaRule because machine rules and rules feed rows
 	// carry Policy too and must stay out of that index.
 	GlobalRulePolicy types.Policy `dynamodbav:"GlobalRulePolicy,omitempty"`
+	// CollectAllowedEvents stores the executions this rule allows in the events table (see pkg/model/eventcollection).
+	// Never sent to Santa: it is not on SantaRule, so not in the rules feed or the rules hash.
+	CollectAllowedEvents bool `dynamodbav:"CollectAllowedEvents,omitempty"`
 }
 
 type updateRulePolicyRequest struct {

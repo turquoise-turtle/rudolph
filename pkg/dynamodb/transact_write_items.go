@@ -137,3 +137,31 @@ func (dbc concreteDynamoDBClient) CreateTransactDeleteItem(key PrimaryKey) (writ
 	}
 	return
 }
+
+// TransactUpdateExpressionAPI builds transaction updates from a raw update expression, for updates the
+// field-by-field SET of CreateTransactUpdateItem cannot express (REMOVE, or ADD and DELETE on sets).
+type TransactUpdateExpressionAPI interface {
+	CreateTransactUpdateExpression(key PrimaryKey, update string, condition string, names map[string]string, values map[string]types.AttributeValue) (*types.TransactWriteItem, error)
+}
+
+// CreateTransactUpdateExpression builds a transaction update of the item at key in this client's table. condition may
+// be empty; names and values may be nil.
+func (dbc concreteDynamoDBClient) CreateTransactUpdateExpression(key PrimaryKey, update string, condition string, names map[string]string, values map[string]types.AttributeValue) (*types.TransactWriteItem, error) {
+	keyInput, err := attributevalue.MarshalMap(key)
+	if err != nil {
+		return nil, err
+	}
+	writeItem := &types.TransactWriteItem{
+		Update: &types.Update{
+			Key:                       keyInput,
+			UpdateExpression:          aws.String(update),
+			ExpressionAttributeNames:  names,
+			ExpressionAttributeValues: values,
+			TableName:                 aws.String(dbc.tableName),
+		},
+	}
+	if condition != "" {
+		writeItem.Update.ConditionExpression = aws.String(condition)
+	}
+	return writeItem, nil
+}

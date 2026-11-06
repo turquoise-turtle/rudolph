@@ -90,6 +90,25 @@ A sample output is provided below:
 
 
 
+## Collecting the executions a rule allows
+
+By default the [execution events table](events-table.md) keeps blocked executions and `ALLOW_UNKNOWN`, not executions allowed by a rule. To see what one rule allows for a while, flag it:
+
+```sh
+rudolph rule update -t teamid -i EQHXZ8M8AV --global --collect-allowed-events=true
+# later
+rudolph rule update -t teamid -i EQHXZ8M8AV --global --collect-allowed-events=false
+```
+
+For example, Google's team ID (`EQHXZ8M8AV`) is allowed fleet-wide, and you want to block Gemini, which Google signs. Flag the team ID rule: every execution it allows is stored with its signing ID (`EQHXZ8M8AV:com.google.GeminiMacOS` among them), so the web view lists the signing IDs the team ID covers. Block Gemini with a signing ID rule (`rudolph rule deny -t signingid -i EQHXZ8M8AV:com.google.GeminiMacOS --global`), which takes precedence over the team ID rule, then switch collection off again.
+
+- Any binary, certificate, team ID, signing ID or CDHash rule can be flagged, global (`--global`) or machine-specific (`--machine <id>`, to watch one Mac only). An execution is stored when the global rule that allowed it is flagged, or the uploading Mac's own machine rule is.
+- `--collect-allowed-events` may be given without `-p`, which then leaves the policy as it is; a policy update keeps the flag. `rudolph rule update` shows it as `CollectAllowedEvents`, and `rudolph rules` marks flagged rules.
+- The flag (`CollectAllowedEvents` on the rule row) is never sent to Santa: setting it writes no rules feed row and changes neither what a sync downloads nor the Mac's rules hash.
+- Santa uploads executions allowed by a rule only when `EnableAllEventUpload` is on. Turn it on for a few Macs (`rudolph config update --machine <id> --enable-all-event-upload`) or for the fleet (`--global`). The CLI warns when you flag a rule while it is off in the global config and in every machine config. With it on, Santa uploads about ten times as many events; only those of flagged rules are stored, so the rest cost Lambda invocations (and the Firehose or Kinesis sink, if one is enabled), not DynamoDB: about US$0.30 a month for 1,000 Macs. See [Costs](events-table.md#costs).
+- A warm eventupload Lambda keeps the list of flagged rules for up to 60 seconds, so a change takes up to a minute to apply. Turning collection off leaves the events already stored until they expire (90 days).
+- Removing a rule, or creating it again, switches collection off for it.
+
 ## Global rules and the policy index
 Each global rule row (partition `GlobalRules`) also stores `GlobalRulePolicy`, a number equal to its `Policy`. Rudolph sets it when a global rule is created (`rudolph rule ... --global`, `rudolph rules import`) and keeps it in step when the policy is updated. Machine-specific rules and rules feed rows never carry it, so the `GlobalRulePolicy_SK` global secondary index (hash `GlobalRulePolicy`, range `SK`, every attribute projected) holds global rules only, in sort key order. The web view uses it to filter global rules by policy; Rudolph itself does not query it, and Santa never sees the attribute.
 

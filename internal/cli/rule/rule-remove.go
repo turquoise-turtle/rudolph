@@ -12,6 +12,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
+	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -52,7 +53,18 @@ func init() {
 				Updater: dynamodbClient,
 			}
 
-			return removeRule(globalRemover, machineRuleRemover, args[0], tf)
+			if err := removeRule(globalRemover, machineRuleRemover, args[0], tf); err != nil {
+				return err
+			}
+			// A removed rule's allowed executions are no longer collected. Nothing is written unless it was flagged.
+			indexMachineID := ""
+			if !tf.IsGlobal {
+				indexMachineID = tf.MachineID
+			}
+			if removed, err := ruleRemoved(dynamodbClient, indexMachineID, args[0]); err == nil && removed {
+				forgetCollectedRule(dynamodbClient, indexMachineID, args[0])
+			}
+			return nil
 		},
 	}
 
@@ -100,4 +112,22 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 	fmt.Println("")
 
 	return nil
+}
+
+// ruleRemoved reports whether the rule is gone (global) or marked for removal (machine), so that the operator did
+// not answer no to the confirmation.
+func ruleRemoved(client dynamodb.DynamoDBClient, machineID string, ruleSortKey string) (bool, error) {
+	if machineID == "" {
+		rule, err := globalrules.GetGlobalRuleBySortKey(client, ruleSortKey)
+		return rule == nil, err
+	}
+	ruleType, identifier, ok := rules.RuleTypeIdentifierFromSortKey(ruleSortKey)
+	if !ok {
+		return false, nil
+	}
+	rule, err := machinerules.GetMachineRuleByShaType(client, machineID, identifier, ruleType)
+	if err != nil {
+		return false, err
+	}
+	return rule == nil || rule.DeleteOnNextSync, nil
 }

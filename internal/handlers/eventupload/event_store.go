@@ -20,6 +20,9 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/airbnb/rudolph/pkg/eventsink"
+	"github.com/airbnb/rudolph/pkg/model/eventcollection"
+	"github.com/airbnb/rudolph/pkg/model/rules"
+	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 )
 
 // The execution events table (EVENTS_DYNAMODB_NAME) is read by the separate web view: it lists events by machine, by
@@ -75,14 +78,17 @@ type eventStore struct {
 	api   eventStoreAPI
 	table string
 	now   func() time.Time
+
+	// collected says which rules have their allowed executions stored; nil stores none.
+	collected *collectedRules
 }
 
-func newEventStore(api eventStoreAPI, table string) *eventStore {
-	return &eventStore{api: api, table: table, now: time.Now}
+func newEventStore(api eventStoreAPI, table string, collected *collectedRules) *eventStore {
+	return &eventStore{api: api, table: table, now: time.Now, collected: collected}
 }
 
-// storedDecision reports whether execution events with this decision go to the events table. Executions allowed by
-// a rule wait for per-rule collection (R7b in rudolph-web's design): Santa uploads them only with
+// storedDecision reports whether execution events with this decision always go to the events table. Executions
+// allowed by a rule are stored only when that rule is flagged (see allowingRule): Santa uploads them only with
 // EnableAllEventUpload, and storing all of them would multiply the table's cost about tenfold.
 func storedDecision(decision string) (store, blocked bool) {
 	switch {
@@ -93,6 +99,77 @@ func storedDecision(decision string) (store, blocked bool) {
 	default:
 		return false, false
 	}
+}
+
+// allowingRule returns the sort key of the rule that allowed an execution, found from its decision and its own
+// fields, or "" when the decision is not an allow by a rule that can be flagged. ALLOW_SCOPE, ALLOW_PLATFORM and
+// BUNDLE_BINARY have no such rule.
+func allowingRule(e EventUploadEvent) string {
+	var ruleType rudolphtypes.RuleType
+	var identifier string
+	switch e.Decision {
+	case "ALLOW_BINARY":
+		ruleType, identifier = rudolphtypes.RuleTypeBinary, e.FileSHA256
+	case "ALLOW_CERTIFICATE":
+		if len(e.SigningChain) > 0 {
+			ruleType, identifier = rudolphtypes.RuleTypeCertificate, e.SigningChain[0].SHA256
+		}
+	case "ALLOW_TEAMID":
+		ruleType, identifier = rudolphtypes.RuleTypeTeamID, e.TeamID
+	case "ALLOW_SIGNINGID":
+		ruleType, identifier = rudolphtypes.RuleTypeSigningID, e.SigningIDs
+	case "ALLOW_CDHASH":
+		ruleType, identifier = rudolphtypes.RuleTypeCDHash, e.CDHash
+	}
+	if identifier == "" {
+		return ""
+	}
+	return rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType)
+}
+
+// collectedRulesCacheFor is how long a warm Lambda keeps the flagged rules it read: a change made with the CLI
+// reaches the events table within this time.
+const collectedRulesCacheFor = 60 * time.Second
+
+type indexGetter interface {
+	GetItem(ctx context.Context, in *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+}
+
+// collectedRules reads the index of flagged rules (pkg/model/eventcollection) from the store table, at most once per
+// collectedRulesCacheFor.
+type collectedRules struct {
+	api   indexGetter
+	table string
+	now   func() time.Time
+
+	mu      sync.Mutex
+	index   eventcollection.Index
+	readAt  time.Time
+	hasRead bool
+}
+
+func newCollectedRules(api indexGetter, storeTable string) *collectedRules {
+	return &collectedRules{api: api, table: storeTable, now: time.Now}
+}
+
+func (c *collectedRules) get(ctx context.Context) (eventcollection.Index, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	if c.hasRead && now.Sub(c.readAt) < collectedRulesCacheFor && !now.Before(c.readAt) {
+		return c.index, nil
+	}
+	key := eventcollection.IndexKey()
+	out, err := c.api.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(c.table),
+		Key:            map[string]types.AttributeValue{"PK": str(key.PartitionKey), "SK": str(key.SortKey)},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return eventcollection.Index{}, fmt.Errorf("reading the rules whose allowed events are collected: %w", err)
+	}
+	c.index, c.readAt, c.hasRead = eventcollection.ParseIndex(out.Item), now, true
+	return c.index, nil
 }
 
 type storableEvent struct {
@@ -153,10 +230,25 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	var candidates []storableEvent
 	seen := map[string]bool{}
 	var incomplete, outside, overLimit int
+	// The flagged rules are read only for an upload holding an execution allowed by a rule.
+	var collected *eventcollection.Index
 	for _, e := range events {
 		store, blocked := storedDecision(e.Decision)
 		if !store {
-			continue
+			rule := allowingRule(e)
+			if rule == "" || s.collected == nil {
+				continue
+			}
+			if collected == nil {
+				index, err := s.collected.get(ctx)
+				if err != nil {
+					return fmt.Errorf("events table: %w", err)
+				}
+				collected = &index
+			}
+			if !collected.Collects(machineID, rule) {
+				continue
+			}
 		}
 		if e.FileSHA256 == "" || e.ExecutionTime == 0 {
 			incomplete++
