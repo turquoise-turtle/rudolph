@@ -32,17 +32,45 @@ var (
 	rulePolicyArg RulePolicy
 )
 
+const (
+	rulePolicyFlag           = "rule-policy"
+	collectAllowedEventsFlag = "collect-allowed-events"
+)
+
 type RuleUpdateFlags struct {
-	RulePolicy *RulePolicy
+	RulePolicy           *RulePolicy
+	CollectAllowedEvents *bool
+
+	cmd *cobra.Command
 }
 
 func (r *RuleUpdateFlags) AddRuleUpdateFlags(cmd *cobra.Command) {
 
 	// rule-policy is to specify the policy for edit commands
-	cmd.Flags().VarP(&rulePolicyArg, "rule-policy", "p", `type of rule being applied. valid options are: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist" or "remove"`)
-	_ = cmd.MarkFlagRequired("rule-policy")
+	cmd.Flags().VarP(&rulePolicyArg, rulePolicyFlag, "p", `type of rule being applied. valid options are: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist" or "remove"`)
+
+	r.CollectAllowedEvents = cmd.Flags().Bool(collectAllowedEventsFlag, false, "store the executions this rule allows in the events table read by the web view (true or false); Santa uploads them only with EnableAllEventUpload")
 
 	r.RulePolicy = &rulePolicyArg
+	r.cmd = cmd
+}
+
+// PolicyChanged reports whether --rule-policy was given.
+func (r *RuleUpdateFlags) PolicyChanged() bool {
+	return r.cmd != nil && r.cmd.Flags().Changed(rulePolicyFlag)
+}
+
+// CollectAllowedEventsChanged reports whether --collect-allowed-events was given.
+func (r *RuleUpdateFlags) CollectAllowedEventsChanged() bool {
+	return r.cmd != nil && r.cmd.Flags().Changed(collectAllowedEventsFlag)
+}
+
+// RequireChange returns an error unless the policy or the collection flag is given.
+func (r *RuleUpdateFlags) RequireChange() error {
+	if !r.PolicyChanged() && !r.CollectAllowedEventsChanged() {
+		return fmt.Errorf("pass the new policy with --%s (-p), --%s=true|false, or both", rulePolicyFlag, collectAllowedEventsFlag)
+	}
+	return nil
 }
 
 // rulePolicy is a custom type for use as a CLI flag representing the type of rule policy being applied

@@ -13,6 +13,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
@@ -174,6 +175,12 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 			return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
 		}
 		fmt.Println("Successfully sent a rule to dynamodb")
+		// The new row replaced any earlier one without its CollectAllowedEvents flag
+		indexMachineID := ""
+		if !tf.IsGlobal {
+			indexMachineID = machineID
+		}
+		forgetCollectedRule(client, indexMachineID, rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType))
 	} else {
 		fmt.Println("Well ok then")
 	}
@@ -215,5 +222,18 @@ func printRuleOptions(options []rules.RuleOption) {
 	}
 	if rule.CELExpr != "" {
 		fmt.Println("  CELExpr:     ", rule.CELExpr)
+	}
+}
+
+// forgetCollectedRule stops collecting the allowed executions of a rule whose row was replaced or removed (see
+// eventcollection.Forget). A failure only leaves the rule collected, so it is a warning.
+func forgetCollectedRule(client dynamodb.DynamoDBClient, machineID string, ruleSortKey string) {
+	writer, ok := client.(eventcollection.Writer)
+	if !ok || ruleSortKey == "" {
+		return
+	}
+	if err := eventcollection.Forget(writer, machineID, ruleSortKey); err != nil {
+		fmt.Printf("[WARNING] the rule's allowed executions may still be collected: %v\n", err)
+		fmt.Println("          switch collection off with rudolph rule update --collect-allowed-events=false")
 	}
 }

@@ -19,6 +19,9 @@ type MachineRuleRow struct {
 	DeleteOnNextSync bool   `dynamodbav:"DeleteOnNextSync,omitempty"`
 	ExpiresAfter     int64  `dynamodbav:"ExpiresAfter,omitempty"`
 	MachineID        string `dynamodbav:"MachineID,omitempty"` // Broken; don't use this for now
+	// CollectAllowedEvents stores the executions this rule allows on its Mac in the events table (see
+	// pkg/model/eventcollection). Never sent to Santa, and not part of delivery tracking.
+	CollectAllowedEvents bool `dynamodbav:"CollectAllowedEvents,omitempty"`
 }
 
 // Fragments

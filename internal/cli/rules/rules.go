@@ -70,6 +70,7 @@ func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, limit int) error {
 		for i, rule := range rules {
 			fmt.Println("----- [", i, "] (", rule.SortKey, ")")
 			fmt.Printf("%s: %s\n", renderRule(rule.SantaRule), rule.Description)
+			printCollecting(rule.CollectAllowedEvents)
 			fmt.Println("")
 		}
 
@@ -97,11 +98,18 @@ func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, limit int) error {
 		for i, rule := range *rules {
 			fmt.Println("----- [", i, "] (", rule.SortKey, ")")
 			fmt.Printf("%s: %s\n", renderRule(rule.SantaRule), rule.Description)
+			printCollecting(rule.CollectAllowedEvents)
 			fmt.Println("")
 		}
 	}
 
 	return nil
+}
+
+func printCollecting(collecting bool) {
+	if collecting {
+		fmt.Println("  (allowed executions are collected in the events table)")
+	}
 }
 
 // String returns the rule in human readable string format

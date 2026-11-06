@@ -67,7 +67,13 @@ func (h *PostEventuploadHandler) Boot() (err error) {
 		if err != nil {
 			return fmt.Errorf("events table client: %w", err)
 		}
-		h.eventStore = newEventStore(dynamodb.NewFromConfig(cfg), eventsTable)
+		client := dynamodb.NewFromConfig(cfg)
+		// The rules whose allowed executions are stored are listed in the store table; without it none are.
+		var collected *collectedRules
+		if storeTable := os.Getenv("DYNAMODB_NAME"); storeTable != "" {
+			collected = newCollectedRules(client, storeTable)
+		}
+		h.eventStore = newEventStore(client, eventsTable, collected)
 	}
 
 	h.booted = true

@@ -117,6 +117,8 @@ module "eventupload_function" {
     LAMBDA_NAME   = var.eventupload_output_lambda_name
 
     EVENTS_DYNAMODB_NAME = module.rule_store.events_dynamodb_table_name
+    # Only the item listing the rules whose allowed executions are stored is read from it
+    DYNAMODB_NAME = local.dynamodb_table_name
   }
 }
 

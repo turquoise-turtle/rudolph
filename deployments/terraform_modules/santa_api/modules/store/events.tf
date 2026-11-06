@@ -86,9 +86,11 @@ resource "aws_dynamodb_table" "events" {
 }
 
 #
-# Writes from the eventupload Lambda: items only, on this table only. Kept apart from lambda_permissions, which is
-# scoped to the store table and its machine partitions. TransactWriteItems (an event with its day counter) has no IAM
-# action of its own: it needs PutItem and UpdateItem on the table.
+# Writes from the eventupload Lambda: items only, on this table only, plus reading the index of flagged rules and the
+# rule rows it names in the store table, and taking stale entries out of that index. Kept apart from
+# lambda_permissions, which is scoped to the store table and its machine partitions.
+# TransactWriteItems (an event with its day counter) has no IAM action of its own: it needs PutItem and UpdateItem on
+# the table.
 #
 data "aws_iam_policy_document" "events_write" {
   statement {
@@ -100,6 +102,58 @@ data "aws_iam_policy_document" "events_write" {
     resources = [
       aws_dynamodb_table.events.arn,
     ]
+  }
+
+  # Which rules have their allowed executions stored is read from one item of the store table (PK "EventCollection",
+  # see pkg/model/eventcollection), and confirmed on the rule rows it names before anything is stored.
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.store.arn,
+    ]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["EventCollection", "GlobalRules", "MachineRules#*"]
+    }
+  }
+
+  # A rule that no longer collects is taken out of that item, in a transaction that checks its row has not been
+  # flagged again in the meantime. Nothing else of the store table can be written.
+  statement {
+    actions = [
+      "dynamodb:UpdateItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.store.arn,
+    ]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["EventCollection"]
+    }
+  }
+
+  statement {
+    actions = [
+      "dynamodb:ConditionCheckItem",
+    ]
+
+    resources = [
+      aws_dynamodb_table.store.arn,
+    ]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["GlobalRules", "MachineRules#*"]
+    }
   }
 }
 
