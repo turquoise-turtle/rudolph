@@ -56,6 +56,9 @@
     "EventDetailButtonLabel": {
       "S": "Get help"
     },
+    "GlobalRulePolicy": {
+      "N": "2"
+    },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000001"
     },
@@ -75,6 +78,9 @@
   {
     "Description": {
       "S": "web contract"
+    },
+    "GlobalRulePolicy": {
+      "N": "1"
     },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000002"
@@ -99,6 +105,9 @@
     "Description": {
       "S": "web contract"
     },
+    "GlobalRulePolicy": {
+      "N": "3"
+    },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000003"
     },
@@ -118,6 +127,9 @@
   {
     "Description": {
       "S": "web contract"
+    },
+    "GlobalRulePolicy": {
+      "N": "5"
     },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000004"
@@ -139,6 +151,9 @@
     "Description": {
       "S": "web contract"
     },
+    "GlobalRulePolicy": {
+      "N": "8"
+    },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000005"
     },
@@ -158,6 +173,9 @@
   {
     "Description": {
       "S": "web contract"
+    },
+    "GlobalRulePolicy": {
+      "N": "9"
     },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000006"
@@ -179,6 +197,9 @@
     "Description": {
       "S": "web contract"
     },
+    "GlobalRulePolicy": {
+      "N": "2"
+    },
     "Identifier": {
       "S": "a1b2c3d4e5f60718293a4b5c6d7e8f9001122334"
     },
@@ -198,6 +219,9 @@
   {
     "Description": {
       "S": "web contract"
+    },
+    "GlobalRulePolicy": {
+      "N": "1"
     },
     "Identifier": {
       "S": "0000000000000000000000000000000000000000000000000000000000000007"
@@ -222,6 +246,9 @@
     "Description": {
       "S": "web contract"
     },
+    "GlobalRulePolicy": {
+      "N": "7"
+    },
     "Identifier": {
       "S": "EQHXZ8M8AV:com.google.Chrome"
     },
@@ -241,6 +268,9 @@
   {
     "Description": {
       "S": "web contract"
+    },
+    "GlobalRulePolicy": {
+      "N": "1"
     },
     "Identifier": {
       "S": "EQHXZ8M8AV"
