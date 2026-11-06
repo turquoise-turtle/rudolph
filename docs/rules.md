@@ -119,7 +119,7 @@ Global rules written before this attribute existed do not have it, so they are m
 ## Importing or Exporting Rules
 Rudolph comes with a handy CLI tool. One of the useful commands is to import/export rules to/from a csv or json file.
 Files have the columns (or json keys) `identifier`, `type`, `policy`, `description` and, optionally, `custom_msg`,
-`custom_url`, `event_detail_button_label`, `notification_app_name` and `cel_expr`; `type` and `policy` use the names above. Export also writes `collect_allowed_events`, for information: import does not read it. Export writes the global rules only; machine and group rules are not exported. The format is CSV unless `--fileformat json` is given; import also takes it from the file's extension. See the [CLI reference](cli.md#rules-export-and-rules-import).
+`custom_url`, `event_detail_button_label`, `notification_app_name` and `cel_expr`; `type` and `policy` use the names above. Export also writes `collect_allowed_events`, for information: import does not read it. Export writes the global rules only; machine and group rules are not exported. The format is `--fileformat csv|json`, or else taken from the file's extension (export writes CSV unless the file is named `.json`). Import asks for confirmation before writing (none with `--yes`). See the [CLI reference](cli.md#rules-export-and-rules-import).
 
 You will first need to build the command line utility:
 

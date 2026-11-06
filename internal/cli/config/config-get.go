@@ -51,15 +51,20 @@ is shown.`,
 }
 
 // settingOrigin returns " (machine)" for a setting (named by its attribute) that a machine's own configuration
-// stores, " (inherited)" for one that follows the global configuration, and "" for the global configuration
+// stores and the machine gets, " (inherited)" for one that follows the global configuration, and "" for the global configuration
 type settingOrigin func(attribute string) string
 
 func noOrigin(string) string { return "" }
 
 func machineOrigin(stored map[string]awstypes.AttributeValue) settingOrigin {
+	inUse := machineconfiguration.MachineSettingsInUse(stored)
 	return func(attribute string) string {
-		if _, ok := stored[attribute]; ok {
+		decodable, ok := inUse[attribute]
+		switch {
+		case ok && decodable:
 			return " (machine)"
+		case ok:
+			return " (machine, but the stored value cannot be read, so none is sent)"
 		}
 		return " (inherited)"
 	}

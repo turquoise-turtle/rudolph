@@ -9,14 +9,14 @@ Build it with `make build`; the binary is `./rudolph`.
 Every command except `info` needs the table and region of a deployment:
 
 - `--env <environment>` (or `--ENV`, or the `ENV` environment variable) names the deployment. Its configuration is read from the first of these files that exists, relative to the working directory: `deployments/environments/<env>/config.auto.tfvars.json` (where `scripts/new_env.sh` creates it, so run `rudolph` from the repo root), `terraform/deployments/<env>/config.auto.tfvars.json`, `terraform/environments/<env>/config.auto.tfvars.json`, `~/.rudolph-cli/<env>.json`, `./<env>.json`. The file needs `region` and `prefix`; the table is `<prefix>_rudolph_store`, or `dynamodb_table_name` when the file sets it. A file with an empty `region` is an error.
-- `--region`, `--dynamodb_table` and `--prefix` override what the environment file says.
-- Without an environment file, `--region` and `--dynamodb_table` are enough, and the `REGION` and `DYNAMODB_NAME` environment variables (the names the Lambdas use) stand in for them. This is the way in for CI and for DynamoDB Local.
+- `--region`, `--dynamodb_table` and `--prefix` override what the environment file says. A typed `--prefix` also sets the table to `<prefix>_rudolph_store` (ignoring the file's `dynamodb_table_name`) unless `--dynamodb_table` is typed too.
+- Without an environment file, `--region` with `--dynamodb_table` (or with `--prefix`) is enough, and the `REGION` and `DYNAMODB_NAME` environment variables (the names the Lambdas use) stand in for them. This is the way in for CI and for DynamoDB Local.
 
 AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment variables, SSO).
 
 ## Conventions
 
-- **Confirmation.** Every command that writes shows what it is about to write and asks `Apply changes?`. `yes` or `ok`, in any case, applies it. Any other answer, or no answer (empty stdin), changes nothing and exits non-zero, so scripts can tell a declined change from an applied one. `--yes` (`-y`, on `rule`, `config`, `group` and `repair`) applies without asking.
+- **Confirmation.** The commands that write rules or configurations (`rule`, `rules import`, `config set|update`), `group delete` and `repair --delete` show what they are about to write and ask `Apply changes?`. The other `group` commands and `rules backfill-policy-index` write without asking. `yes` or `ok`, in any case, applies it. Any other answer, or no answer (empty stdin), changes nothing and exits non-zero, so scripts can tell a declined change from an applied one. `--yes` (`-y`, on `rule`, `rules import`, `config`, `group` and `repair`) applies without asking.
 - **Targets.** Commands that write rules (`rule allow|deny|silent|silent-gui|silent-tty|compiler|cel|update|remove`) need exactly one of `--global` (`-g`, every Mac), `--machine <machine-id>` (`-m`, one Mac), `--group <group>` or `--ungrouped` (a [device group](groups.md); not for `rule update`). `rules` and `config get|set|update` take at most one of `--global` and `--machine`; without either they apply to the Mac running the command, whose machine ID is read from `/Library/Preferences/com.google.santa.machine-mapping.plist`.
 - **Machine IDs** are UUIDs in the 8-4-4-4-12 form, typed in any case; see [rules.md](rules.md#global-and-machine-specific-rules) for how the stored spelling is found.
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
@@ -50,7 +50,7 @@ rudolph rule <verb> (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine
 rudolph rule update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--expires <when>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]
 ```
 
-Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is is refused. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be. Group rules are changed by writing them again.
+Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is is refused. A machine rule that is being removed (after `rule remove`, until the Mac's sync deletes it) cannot be updated: create it again instead. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be. Group rules are changed by writing them again.
 
 ### `rule remove`
 
@@ -66,7 +66,7 @@ rudolph rule remove (-t <rule-type> -i <identifier>|<rule-name>) (-m <machine-id
 rudolph rule get (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global)
 ```
 
-Shows one global or machine rule as stored: policy, description, expiry, messages and whether its allowed executions are collected. A group's rules are shown by `rudolph group get <group>`.
+Shows one global or machine rule as stored: policy, description, expiry, messages, whether its allowed executions are collected, and whether a machine rule is being removed. A group's rules are shown by `rudolph group get <group>`.
 
 ### `rules`
 
@@ -83,7 +83,7 @@ rudolph rules export -f <file-path> [--fileformat csv|json]
 rudolph rules import -f <file-path> [--fileformat csv|json] [--workers <n>]
 ```
 
-`export` writes the **global** rules only (not machine or group rules) as CSV (default) or JSON, and refuses any other format. `import` creates or replaces global rules from such a file; the format is `--fileformat`, or else the file's extension (`.csv`, `.json`). `--workers` (default 10) is how many rules are written at once. The columns are described in [rules.md](rules.md#importing-or-exporting-rules). `--filename`, the flag's former name, still works.
+`export` writes the **global** rules only (not machine or group rules) as CSV or JSON: `--fileformat`, or else JSON for a `.json` file and CSV otherwise; any other format is refused. `import` creates or replaces global rules from such a file, after showing how many rules it creates, replaces or removes and asking for confirmation (none with `--yes`); the format is `--fileformat`, or else the file's extension (`.csv`, `.json`). `--workers` (default 10) is how many rules are written at once. The columns are described in [rules.md](rules.md#importing-or-exporting-rules). `--filename`, the flag's former name, still works.
 
 ### `rules backfill-policy-index`
 
@@ -99,8 +99,8 @@ rudolph config update -m <machine-id> -c <mode> (--for <duration>|--until <time>
 rudolph config update -m <machine-id> --end-temporary-mode
 ```
 
-- `get` shows the global configuration, or the one a machine gets; for a machine, each setting is marked `(machine)` when the machine's own configuration sets it and `(inherited)` when it follows the global one.
-- `set` replaces the whole configuration; `-c` (`monitor`, `lockdown` or `standalone`) is required.
+- `get` shows the global configuration, or the one a machine gets; for a machine, each setting is marked `(machine)` when the machine gets it from its own configuration and `(inherited)` when it follows the global one (a stored value that cannot be read is inherited, except remount flags, which are then not sent at all).
+- `set` replaces the whole configuration; `-c` (`monitor`, `lockdown` or `standalone`) is required. Its old shorthands `-s` (`--batch-size`) and `-u` (`--upload-logs`) still work but are deprecated; `-f` no longer means `--full-sync-interval`.
 - `update` changes only the settings given. Setting flags (both commands): `--allowed-paths`/`-a`, `--blocked-paths`/`-b` (repeatable regexes), `--batch-size`, `--bundles`, `--transitive-rules`, `--full-sync-interval`, `--upload-logs`, `--enable-all-event-upload`, `--disable-unknown-event-upload`, `--override-file-access-action`, `--block-usb-mount`, `--remount-usb-mode`, `--event-detail-url`, `--event-detail-text`.
 - `--inherit <setting>` makes a machine follow the global value of a setting again; `--clean-sync` requests one clean sync of a machine; `--for`/`--until`/`--end-temporary-mode` manage a temporary client mode.
 - A global client mode that blocks unknown executions needs `--confirm-global-lockdown` as well.

@@ -81,3 +81,26 @@ func mergeMachineConfig(global MachineConfiguration, machineItem map[string]awst
 	config.remountUsbModeDropped = remountUsbModeDropped
 	return config, nil
 }
+
+// MachineSettingsInUse returns the attribute names of the settings of a stored machine config item that
+// GetIntendedConfig takes from it rather than from the global config: those present, not NULL and decodable. A
+// RemountUsbMode that cannot be decoded is reported too, as false: it is not replaced by the global value either.
+func MachineSettingsInUse(machineItem map[string]awstypes.AttributeValue) map[string]bool {
+	inUse := map[string]bool{}
+	for name, value := range machineItem {
+		if name == "PK" || name == "SK" {
+			continue
+		}
+		if _, isNull := value.(*awstypes.AttributeValueMemberNULL); isNull {
+			continue
+		}
+		if err := decodesAsSetting(name, value); err != nil {
+			if name == remountUsbModeAttribute {
+				inUse[name] = false
+			}
+			continue
+		}
+		inUse[name] = true
+	}
+	return inUse
+}
