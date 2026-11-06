@@ -37,6 +37,16 @@ resource "aws_dynamodb_table" "store" {
     type = "S"
   }
 
+  attribute {
+    name = "SerialKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "HostnameKey"
+    type = "S"
+  }
+
   ttl {
     attribute_name = "ExpiresAfter"
     enabled        = true
@@ -57,6 +67,30 @@ resource "aws_dynamodb_table" "store" {
     hash_key        = "DataType"
     range_key       = "MachineID"
     projection_type = "KEYS_ONLY"
+  }
+
+  # The web view's machine list, ordered by serial and searched by serial prefix (sensor data rows only). SerialKey
+  # is the trimmed, upper-case serial (sensordata.SerialKey), so a search matches mixed-case virtual machine serials;
+  # SerialNum is projected so the list shows the serial as reported. The projection is limited to attributes that
+  # rarely change: projecting Time, ExpiresAfter, RulesHash or the rule counts would cost a write to this index on
+  # every sync. Each machine list index also projects the other's key (HostnameKey here, SerialKey there), so both
+  # return the same row shape. Rudolph itself does not query these indexes.
+  global_secondary_index {
+    name               = "DataType_SerialKey"
+    hash_key           = "DataType"
+    range_key          = "SerialKey"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["SerialNum", "HostnameKey", "MachineID", "Hostname", "ModelIdentifier", "OSVersion", "SantaVersion", "ClientMode", "PrimaryUser", "LastSeenDay"]
+  }
+
+  # The web view's case-insensitive hostname prefix search. HostnameKey is the trimmed, lower-case hostname
+  # (sensordata.HostnameKey); same small projection as DataType_SerialKey, for the same reason.
+  global_secondary_index {
+    name               = "DataType_HostnameKey"
+    hash_key           = "DataType"
+    range_key          = "HostnameKey"
+    projection_type    = "INCLUDE"
+    non_key_attributes = ["SerialNum", "SerialKey", "MachineID", "Hostname", "ModelIdentifier", "OSVersion", "SantaVersion", "ClientMode", "PrimaryUser", "LastSeenDay"]
   }
 
   server_side_encryption {

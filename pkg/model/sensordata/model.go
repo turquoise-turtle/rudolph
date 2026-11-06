@@ -3,6 +3,7 @@ package sensordata
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -14,6 +15,8 @@ const (
 	sensorDataDefaultSK = "Current"
 
 	sensorDataExpiresAfterInDays int = 90
+
+	lastSeenDayLayout = "2006-01-02"
 )
 
 // SensorData encapsulation for a DDB row encapsulating data that is uploaded in preflight
@@ -21,6 +24,8 @@ type SensorData struct {
 	dynamodb.PrimaryKey
 	MachineID string `dynamodbav:"MachineID,omitempty"`
 	SerialNum string `dynamodbav:"SerialNum,omitempty"`
+	// SerialKey is the key of the web view's serial index, omitted when empty for the same reason as HostnameKey.
+	SerialKey string `dynamodbav:"SerialKey,omitempty"`
 	// Hostname and HostnameKey are omitted when empty: HostnameKey is the key of the web view's hostname index,
 	// and DynamoDB rejects a PutItem that stores an empty string in an index key attribute.
 	Hostname        string `dynamodbav:"Hostname,omitempty"`
@@ -46,14 +51,24 @@ type SensorData struct {
 	CompilerRuleCount    int              `dynamodbav:"CompilerRuleCount"`
 	TransitiveRuleCount  int              `dynamodbav:"TransitiveRuleCount"`
 	Time                 string           `dynamodbav:"Time"`
-	ExpiresAfter         int64            `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType             types.DataType   `dynamodbav:"DataType,omitempty"`
+	// LastSeenDay is the UTC date of the last preflight. Unlike Time it changes at most once a day, so the web
+	// view's machine list indexes can project it without an index write on every sync.
+	LastSeenDay  string         `dynamodbav:"LastSeenDay,omitempty"`
+	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType     types.DataType `dynamodbav:"DataType,omitempty"`
 }
 
 // HostnameKey is the form of a hostname the web view searches by prefix: trimmed and lower case, so the search is
 // case-insensitive and a blank hostname has no key.
 func HostnameKey(hostname string) string {
 	return strings.ToLower(strings.TrimSpace(hostname))
+}
+
+// SerialKey is the form of a serial number the web view searches by prefix: trimmed and upper case. Apple serials
+// are upper case, but some virtual machines report mixed case, which an upper-case prefix search would never match
+// against the serial as reported. A blank serial has no key.
+func SerialKey(serialNumber string) string {
+	return strings.ToUpper(strings.TrimSpace(serialNumber))
 }
 
 // MachineIDSensorDataPKSK returns the partition and sort keys for a machine id
@@ -67,6 +82,11 @@ func SensorDataPK(machineID string) string {
 
 func GetSensorDataExpiresAfter(timeProvider clock.TimeProvider) int64 {
 	return clock.Unixtimestamp(timeProvider.Now().UTC().AddDate(0, 0, sensorDataExpiresAfterInDays))
+}
+
+// LastSeenDay returns the UTC calendar date of t in the form stored in SensorData.LastSeenDay.
+func LastSeenDay(t time.Time) string {
+	return t.UTC().Format(lastSeenDayLayout)
 }
 
 func GetDataType() types.DataType {

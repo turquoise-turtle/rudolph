@@ -25,6 +25,7 @@ func NewSensorData(
 	transitiveRuleCount int,
 ) SensorData {
 	pk, sk := MachineIDSensorDataPKSK(machineID)
+	now := timeProvider.Now()
 	var totalRuleCount int
 	totalRuleCount += certRuleCount + binaryRuleCount + compilerRuleCount + transitiveRuleCount + cdHashRuleCount + teamIDRuleCount + signingIDRuleCount
 	return SensorData{
@@ -34,6 +35,7 @@ func NewSensorData(
 		},
 		MachineID:            machineID,
 		SerialNum:            serialNumber,
+		SerialKey:            SerialKey(serialNumber),
 		OSVersion:            osVersion,
 		OSBuild:              osBuild,
 		SantaVersion:         santaVersion,
@@ -48,7 +50,8 @@ func NewSensorData(
 		SigningIDRuleCount:   signingIDRuleCount,
 		CompilerRuleCount:    compilerRuleCount,
 		TransitiveRuleCount:  transitiveRuleCount,
-		Time:                 clock.RFC3339(timeProvider.Now()),
+		Time:                 clock.RFC3339(now),
+		LastSeenDay:          LastSeenDay(now),
 		ExpiresAfter:         GetSensorDataExpiresAfter(timeProvider),
 		DataType:             GetDataType(),
 	}
