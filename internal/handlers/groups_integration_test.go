@@ -398,3 +398,31 @@ func TestGroups_SteadyStateSyncStaysWithinBudget(t *testing.T) {
 		t.Errorf("the Mac holds %d rules, want at least the 500 group rules", got)
 	}
 }
+
+// From the groups review: a Mac whose sync state expired (offline for more than 90 days) and that no longer reports a
+// group must lose that group's rules at its next sync, even though no previous membership digest is left to compare.
+func TestGroups_ReportedMembershipClearsAfterTheSyncStateExpired(t *testing.T) {
+	transport := groupsServer(t)
+	registerGroups(t, map[string]bool{"eng": true})
+	putGroupRule(t, "eng", sha1, types.RuleTypeBinary, types.RulePolicyBlocklist, "")
+	h := newHost(t, machineA, transport)
+	h.PrimaryUserGroups = []string{"eng"}
+	syncNormal(t, h)
+	if h.Policy("BINARY", sha1) != "BLOCKLIST" {
+		t.Fatalf("precondition: the eng rule, got %q", h.Policy("BINARY", sha1))
+	}
+
+	if _, err := ddblocal.Raw(t).DeleteItem(context.Background(), &awsdynamodb.DeleteItemInput{
+		TableName: aws.String(ddblocal.TableName),
+		Key:       map[string]awstypes.AttributeValue{"PK": &awstypes.AttributeValueMemberS{Value: "Machine#" + machineA}, "SK": &awstypes.AttributeValueMemberS{Value: "SyncState"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.PrimaryUserGroups = nil
+	for i := 0; i < 3; i++ {
+		h.MustSync(t)
+	}
+	if got := h.Policy("BINARY", sha1); got != "" {
+		t.Errorf("after leaving eng while the sync state had expired: %q, want the group rule gone", got)
+	}
+}
