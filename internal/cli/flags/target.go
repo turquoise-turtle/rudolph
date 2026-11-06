@@ -4,17 +4,8 @@ import (
 	"errors"
 
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
-	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
-
-type RuleTargetFlags struct {
-	RuleTypeArg  types.RuleType
-	IsGlobal     bool
-	MachineIdArg string
-	SHA256Arg    string
-	FilepathArg  string
-}
 
 type TargetFlags struct {
 	MachineID     string
@@ -31,37 +22,52 @@ func (t TargetFlags) IsGroup() bool {
 	return t.Group != "" || t.Ungrouped
 }
 
+// AddTargetFlags adds --global and --machine to a command that reads or writes a configuration. Without either, the
+// command applies to this Mac; call RequireAtMostOneTarget before using them.
 func (t *TargetFlags) AddTargetFlags(cmd *cobra.Command) {
-	cmd.Flags().BoolVarP(&t.IsGlobal, "global", "g", false, "Apply globally. Provide one of [--global|--machine], or exclude both to apply to current machine.")
-	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", `The uuid of the machine.`)
+	cmd.Flags().BoolVarP(&t.IsGlobal, "global", "g", false, "Apply to the global configuration. Pass at most one of --global and --machine; without either, the command applies to this Mac.")
+	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", "Apply to the machine with this UUID. Pass at most one of --global and --machine; without either, the command applies to this Mac.")
 }
 
+// AddTargetFlagsRules adds --global and --machine to the command that lists rules; call RequireAtMostOneTarget
+// before using them
 func (t *TargetFlags) AddTargetFlagsRules(cmd *cobra.Command) {
-	cmd.Flags().BoolVarP(&t.IsGlobal, "global", "g", false, "Retrieve rules that apply globally.")
-	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", "Retrieve rules for a single machine. Omit to apply to the current machine.")
+	cmd.Flags().BoolVarP(&t.IsGlobal, "global", "g", false, "List the global rules. Pass at most one of --global and --machine; without either, the rules of this Mac are listed.")
+	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", "List the rules of the machine with this UUID. Pass at most one of --global and --machine; without either, the rules of this Mac are listed.")
+}
 
+// RequireAtMostOneTarget refuses --global together with --machine
+func (t *TargetFlags) RequireAtMostOneTarget() error {
+	if t.IsGlobal && t.MachineID != "" {
+		return errors.New("pass only one of --global and --machine <machine-id>")
+	}
+	if t.MachineID != "" {
+		return ValidateMachineIDFlag(t.MachineID)
+	}
+	return nil
 }
 
 // GetMachineID returns the machine ID given with --machine, or else this Mac's own machine ID. Call ResolveMachineID
 // first, so that a machine ID typed in another case than the one it is stored under still addresses that machine.
-func (t TargetFlags) GetMachineID() (string, error) {
-	t.getSelfMachineID() // We do some ninja initialization
-
+// It also records this Mac's machine ID, when it can be read, for IsTargetSelf.
+func (t *TargetFlags) GetMachineID() (string, error) {
 	if t.IsGlobal {
 		return "", errors.New("do not call GetMachineID when IsGlobal is true")
-	} else if t.MachineID != "" {
+	}
+	if t.MachineID != "" {
 		if err := ValidateMachineIDFlag(t.MachineID); err != nil {
 			return "", err
 		}
+		// Only to mark "(This machine)": a Mac without Santa can still address other machines
+		_, _ = t.getSelfMachineID()
 		return t.MachineID, nil
-	} else {
-		return santa_sensor.GetSelfMachineID()
 	}
+	return t.getSelfMachineID()
 }
 
-// WARNING: This is best-effort as if you don't call getSelfMachineID first, it'll just always return false.
+// IsTargetSelf reports whether the target is this Mac. It is only known after GetMachineID.
 func (t TargetFlags) IsTargetSelf() bool {
-	return t.SelfMachineID == t.MachineID
+	return t.SelfMachineID != "" && (t.MachineID == "" || t.SelfMachineID == t.MachineID)
 }
 
 func (t *TargetFlags) getSelfMachineID() (string, error) {

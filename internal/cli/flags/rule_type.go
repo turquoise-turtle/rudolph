@@ -20,16 +20,6 @@ const (
 // ruleType is a custom type for use as a CLI flag representing the type of rule being applied
 type RuleType types.RuleType
 
-func newRuleTypeValue(val string, p *RuleType) *RuleType {
-	err := p.Set(val)
-	if err != nil {
-		fmt.Println(`Warning: invalid default value for rule-type, using "binary"`)
-		*p = RuleType(types.Binary)
-	}
-
-	return p
-}
-
 func (i *RuleType) AsRuleType() types.RuleType {
 	return types.RuleType(*i)
 }

@@ -13,7 +13,7 @@ func init() {
 	ef := flags.RuleExpiryFlags{}
 
 	var ruleSilentCmd = &cobra.Command{
-		Use:     "silent",
+		Use:     ruleUse("silent", "[--expires <duration-or-time>|--permanent]"),
 		Aliases: []string{"silentblock"},
 		Short:   "Create a rule that applies the SilentBlocklist policy to the specified file",
 		Args:    cobra.NoArgs,

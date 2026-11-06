@@ -1,12 +1,8 @@
 package rule
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"log"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
@@ -37,12 +33,25 @@ var (
 func init() {
 	// Every rule subcommand that writes checks the local clock first (see clockcheck)
 	clockcheck.AddFlag(RuleCmd)
+	flags.AddYesFlag(RuleCmd)
 }
 
-// createRule runs a command that creates a rule with the given policy. The target and expiry flags are checked before
-// anything is read or written.
+// ruleUse is the usage line of a command that creates a rule; extra is inserted after the target
+func ruleUse(verb, extra string) string {
+	use := verb + " (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global|--group <group>|--ungrouped)"
+	if extra != "" {
+		use += " " + extra
+	}
+	return use
+}
+
+// createRule runs a command that creates a rule with the given policy. The target, the identifier and the expiry
+// flags are checked before anything is read or written.
 func createRule(cmd *cobra.Command, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, ef flags.RuleExpiryFlags, options ...rules.RuleOption) error {
 	if err := tf.RequireExplicitTarget(); err != nil {
+		return err
+	}
+	if err := rf.RequireOne(); err != nil {
 		return err
 	}
 	timeProvider := clock.ConcreteTimeProvider{}
@@ -68,63 +77,63 @@ func createRule(cmd *cobra.Command, policy types.Policy, tf flags.TargetFlags, r
 		return err
 	}
 
-	return applyPolicyForPath(timeProvider, dynamodbClient, policy, tf, rf, expires, options...)
+	return applyPolicyForPath(timeProvider, dynamodbClient, policy, tf, rf, expires, flags.AssumeYes(cmd), options...)
 }
 
-// applyPolicyForPath creates a rule after a typed confirmation. A machine rule expires at expires, or never when it is
-// the zero time.
-func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, expires time.Time, options ...rules.RuleOption) (err error) {
-	// Second, determine the rule type and identifier
-	ruleType := (*rf.RuleType).AsRuleType()
-	var description string
-	var identifier string
-
-	if *rf.FilePath != "" {
-		fileInfo, err := santa_sensor.RunSantaFileInfo(*rf.FilePath)
-		if err != nil {
-			return fmt.Errorf("encountered an error while attempting to get file information for %q", *rf.FilePath)
-		}
-		identifier = fileInfo.SHA256
-		description = fmt.Sprintf("%s from %s", fileInfo.Path, tf.SelfMachineID) // FIXME (derek.wang) tf.SelfMachineID is Not initialized.
-
-		switch ruleType {
-		case types.RuleTypeBinary:
-			break
-		case types.RuleTypeCertificate:
-			if len(fileInfo.SigningChain) == 0 {
-				return fmt.Errorf("NO SIGNING INFO FOUND FOR GIVEN BINARY")
-			}
-			if fileInfo.SigningChain[0].SHA256 == "" {
-				return fmt.Errorf("NO CERTIFICATE SHA FOUND FOR GIVEN BINARY")
-			}
-			if fileInfo.SigningChain[0].CommonName == "" {
-				return fmt.Errorf("NO CERTIFICATE NAME FOUND FOR GIVEN BINARY")
-			}
-
-			identifier = fileInfo.SigningChain[0].SHA256
-			description = fmt.Sprintf("%v, by %v (%v)", fileInfo.SigningChain[0].CommonName, fileInfo.SigningChain[0].Organization, fileInfo.SigningChain[0].OrganizationalUnit)
-		case types.RuleTypeTeamID:
-			identifier = fileInfo.TeamID
-		case types.RuleTypeSigningID:
-			identifier = fileInfo.SigningID
-		case types.RuleTypeCDHash:
-			return fmt.Errorf("CDHash rules cannot be created from a filepath; provide the CDHash with --identifier")
-		default:
-			log.Printf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
-			return fmt.Errorf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
-		}
-	} else if *rf.Identifier != "" {
-		identifier = *rf.Identifier
+// identifyRule returns the identifier of the rule given with --identifier, or read with santactl from the file given
+// with --filepath, and a description of the file
+func identifyRule(rf flags.RuleInfoFlags, ruleType types.RuleType) (identifier string, description string, err error) {
+	if err := rf.RequireOne(); err != nil {
+		return "", "", err
+	}
+	if *rf.FilePath == "" {
+		return *rf.Identifier, "", nil
+	}
+	if ruleType == types.RuleTypeCDHash {
+		return "", "", errors.New("CDHash rules cannot be created from a file path; give the CDHash with --identifier")
+	}
+	fileInfo, err := santa_sensor.RunSantaFileInfo(*rf.FilePath)
+	if err != nil {
+		return "", "", fmt.Errorf("could not read the file information of %q: %w", *rf.FilePath, err)
+	}
+	description = fileInfo.Path
+	if self, err := santa_sensor.GetSelfMachineID(); err == nil {
+		description = fmt.Sprintf("%s from %s", fileInfo.Path, self)
 	}
 
-	// TODO
-	// Query if there is an existing rule: and show the before/after
-	// partitionKey := fmt.Sprintf("%s%s", store.MachineRulesPKPrefix, machineID)
-	// ruleName :=
-	// existingItem, err := store.GetRuleByPK(&store.DynamoDBPrimaryKey{
-	// 	PartitionKey: partitionKey,
-	// 	SortKey:      ruleName,
-	// })
+	switch ruleType {
+	case types.RuleTypeBinary:
+		identifier = fileInfo.SHA256
+	case types.RuleTypeCertificate:
+		if len(fileInfo.SigningChain) == 0 || fileInfo.SigningChain[0].SHA256 == "" {
+			return "", "", fmt.Errorf("%s is not signed, so it has no certificate to make a rule for", *rf.FilePath)
+		}
+		if fileInfo.SigningChain[0].CommonName == "" {
+			return "", "", fmt.Errorf("the signing certificate of %s has no common name", *rf.FilePath)
+		}
+		identifier = fileInfo.SigningChain[0].SHA256
+		description = fmt.Sprintf("%v, by %v (%v)", fileInfo.SigningChain[0].CommonName, fileInfo.SigningChain[0].Organization, fileInfo.SigningChain[0].OrganizationalUnit)
+	case types.RuleTypeTeamID:
+		identifier = fileInfo.TeamID
+	case types.RuleTypeSigningID:
+		identifier = fileInfo.SigningID
+	default:
+		return "", "", fmt.Errorf("unknown rule type %d", ruleType)
+	}
+	if identifier == "" {
+		return "", "", fmt.Errorf("santactl found no %s for %s", ruleTypeName(ruleType), *rf.FilePath)
+	}
+	return identifier, description, nil
+}
+
+// applyPolicyForPath creates a rule after a confirmation (none with yes). A machine rule expires at expires, or never
+// when it is the zero time.
+func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoDBClient, policy types.Policy, tf flags.TargetFlags, rf flags.RuleInfoFlags, expires time.Time, yes bool, options ...rules.RuleOption) (err error) {
+	ruleType := (*rf.RuleType).AsRuleType()
+	identifier, description, err := identifyRule(rf, ruleType)
+	if err != nil {
+		return err
+	}
 
 	policyDescription, err := policy.MarshalText()
 	if err != nil {
@@ -136,10 +145,9 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	}
 
 	if tf.IsGroup() {
-		return applyGroupRule(client, policy, tf.Group, ruleType, identifier, description, options...)
+		return applyGroupRule(client, policy, tf.Group, ruleType, identifier, description, yes, options...)
 	}
 
-	// First, determine which machine to apply
 	machineID := "(Global)"
 	suffix := ""
 	if !tf.IsGlobal {
@@ -147,7 +155,6 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
 		}
-		// All args set up; send confirmation message
 		if tf.IsTargetSelf() {
 			suffix = " (This machine)"
 		}
@@ -161,48 +168,55 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
 	if !tf.IsGlobal {
-		if expires.IsZero() {
-			fmt.Println("  Expires:      never")
-		} else {
-			fmt.Println("  Expires:     ", expires.Format(time.RFC3339))
-		}
+		fmt.Println("  Expires:     ", expiryText(expires))
 	}
 	printRuleOptions(options)
 	fmt.Println("")
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-
-	// Read confirmation
-	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	text = strings.Replace(text, "\n", "", -1)
-	if strings.ToLower(text) == "ok" || strings.ToLower(text) == "yes" {
-		// Do rule creation
-		if tf.IsGlobal {
-			err = globalrules.AddNewGlobalRule(timeProvider, client, identifier, ruleType, policy, description, options...)
-		} else {
-			err = machinerules.AddNewMachineRule(client, machineID, identifier, ruleType, policy, description, expires, options...)
-		}
-		if err != nil {
-			return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
-		}
-		fmt.Println("Successfully sent a rule to dynamodb")
-		// The new row replaced any earlier one without its CollectAllowedEvents flag
-		indexMachineID := ""
-		if !tf.IsGlobal {
-			indexMachineID = machineID
-		}
-		forgetCollectedRule(client, indexMachineID, rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType))
-	} else {
-		fmt.Println("Well ok then")
+	if err := flags.Confirm(yes); err != nil {
+		return err
 	}
-	fmt.Println("")
 
-	return
+	if tf.IsGlobal {
+		err = globalrules.AddNewGlobalRule(timeProvider, client, identifier, ruleType, policy, description, options...)
+	} else {
+		err = machinerules.AddNewMachineRule(client, machineID, identifier, ruleType, policy, description, expires, options...)
+	}
+	if err != nil {
+		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+	}
+	if tf.IsGlobal {
+		fmt.Printf("Added %s %s rule %s for every machine\n", policyDescription, ruleTypeDescription, identifier)
+	} else {
+		fmt.Printf("Added %s %s rule %s for machine %s, expires %s\n", policyDescription, ruleTypeDescription, identifier, machineID, expiryText(expires))
+	}
+	// The new row replaced any earlier one without its CollectAllowedEvents flag
+	indexMachineID := ""
+	if !tf.IsGlobal {
+		indexMachineID = machineID
+	}
+	forgetCollectedRule(client, indexMachineID, rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType))
+	return nil
 }
 
-// applyGroupRule creates or replaces a device group's rule after a typed confirmation
-func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group string, ruleType types.RuleType, identifier, description string, options ...rules.RuleOption) error {
+// expiryText formats when a machine rule expires; the zero time is never
+func expiryText(expires time.Time) string {
+	if expires.IsZero() {
+		return "never"
+	}
+	return expires.UTC().Format(time.RFC3339)
+}
+
+// ruleTypeName returns Santa's name of a rule type, e.g. TEAMID
+func ruleTypeName(ruleType types.RuleType) string {
+	name, err := ruleType.MarshalText()
+	if err != nil {
+		return fmt.Sprint(ruleType)
+	}
+	return string(name)
+}
+
+// applyGroupRule creates or replaces a device group's rule after a confirmation (none with yes)
+func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group string, ruleType types.RuleType, identifier, description string, yes bool, options ...rules.RuleOption) error {
 	writer, ok := client.(groups.RegistryWriter)
 	if !ok {
 		return errors.New("this DynamoDB client cannot write group rules")
@@ -220,10 +234,6 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 		if group != groups.Ungrouped {
 			return fmt.Errorf("no group %q; create it first with rudolph group create", group)
 		}
-		// The reserved group exists as soon as it has a rule; only operators' own groups need creating
-		if err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false); err != nil && !errors.Is(err, groups.ErrGroupExists) {
-			return err
-		}
 	}
 
 	policyDescription, _ := policy.MarshalText()
@@ -240,21 +250,23 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 	fmt.Println("  Description: ", description)
 	printRuleOptions(options)
 	fmt.Println("")
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-
-	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	text = strings.ToLower(strings.TrimSpace(text))
-	if text != "ok" && text != "yes" {
-		fmt.Println("Well ok then")
-		return nil
+	if err := flags.Confirm(yes); err != nil {
+		return err
+	}
+	if _, ok := registry.Groups[group]; !ok {
+		// The reserved group exists as soon as it has a rule; only operators' own groups need creating
+		if err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false); err != nil && !errors.Is(err, groups.ErrGroupExists) {
+			return err
+		}
 	}
 	if err := groups.PutRule(writer, group, rule, description); err != nil {
 		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
 	}
-	fmt.Println("Successfully sent a rule to dynamodb")
-	fmt.Println("")
+	target := fmt.Sprintf("group %s", group)
+	if group == groups.Ungrouped {
+		target = "the Macs in no group"
+	}
+	fmt.Printf("Added %s %s rule %s for %s\n", policyDescription, ruleTypeDescription, identifier, target)
 	return nil
 }
 

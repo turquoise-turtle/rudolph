@@ -1,6 +1,8 @@
 package flags
 
 import (
+	"errors"
+
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/spf13/cobra"
 )
@@ -18,24 +20,34 @@ func (r *RuleInfoFlags) AddRuleInfoFlags(cmd *cobra.Command) {
 		filepathArg   string
 	)
 
-	// Flag specifying the binary
-	cmd.Flags().StringVarP(&filepathArg, "filepath", "f", "", `The filepath of a binary/application. Provide exactly one of [--filepath|--sha]`)
-	cmd.Flags().StringVarP(&identifierArg, "identifier", "i", "", `The Identifier/SHA256 for a file, application, teamID, signingID or CDHash`)
+	cmd.Flags().StringVarP(&filepathArg, "filepath", "f", "", `The path of a binary or application bundle; santactl fileinfo reads the rule's identifier from it. Pass exactly one of --filepath and --identifier`)
+	cmd.Flags().StringVarP(&identifierArg, "identifier", "i", "", `The rule's identifier: a SHA-256 (binary, certificate), Team ID, signing ID or CDHash. Pass exactly one of --filepath and --identifier`)
 
-	// rule-type should be one of "binary" or "cert" ("bin" and "certificate" also work)
-	cmd.Flags().VarP(&ruleTypeArg, "rule-type", "t", `type of rule being applied. valid options are: "binary", "bin", "certificate", "cert", "teamid", "signingid", "cdhash"`)
+	cmd.Flags().VarP(&ruleTypeArg, "rule-type", "t", `The type of the rule: "binary" ("bin"), "certificate" ("cert"), "teamid", "signingid" or "cdhash"`)
 	_ = cmd.MarkFlagRequired("rule-type")
-
-	// If we want to make the `rule-type` flag optional with a default (say "binary"),
-	// we can remove the previous 2 lines and instead use the following
-	// cmd.Flags().VarP(newRuleTypeValue("binary", &ruleTypeArg), "rule-type", "t", `type of rule being applied. valid options are: "binary", "bin", "certificate", or "cert"`)
-
-	// rule-policy is to specify the policy for edit commands
 
 	r.RuleType = &ruleTypeArg
 	r.Identifier = &identifierArg
 	r.FilePath = &filepathArg
 }
+
+// RequireOne returns an error unless exactly one of --filepath and --identifier was given
+func (r *RuleInfoFlags) RequireOne() error {
+	switch {
+	case *r.FilePath != "" && *r.Identifier != "":
+		return errors.New("pass either --filepath or --identifier, not both")
+	case *r.FilePath == "" && *r.Identifier == "":
+		return errors.New("pass the rule's --identifier, or --filepath to read it from a file")
+	}
+	return nil
+}
+
+const (
+	customMsgFlag              = "custom-msg"
+	customURLFlag              = "custom-url"
+	eventDetailButtonLabelFlag = "event-detail-button-label"
+	notificationAppNameFlag    = "notification-app-name"
+)
 
 // RuleOptionFlags are the optional per-rule fields that are sent to Santa along with a new rule
 type RuleOptionFlags struct {
@@ -53,10 +65,10 @@ func (r *RuleOptionFlags) AddRuleOptionFlags(cmd *cobra.Command) {
 		notificationAppNameArg    string
 	)
 
-	cmd.Flags().StringVar(&customMessageArg, "custom-msg", "", `For block rules, the message shown to the user instead of the default block message`)
-	cmd.Flags().StringVar(&customURLArg, "custom-url", "", `For block rules, the URL opened from the block dialog instead of EventDetailURL (same format values)`)
-	cmd.Flags().StringVar(&eventDetailButtonLabelArg, "event-detail-button-label", "", `For block rules, the label of the block dialog's button instead of EventDetailText`)
-	cmd.Flags().StringVar(&notificationAppNameArg, "notification-app-name", "", `When set, Santa notifies the user that this application is now allowed (ignored during clean syncs)`)
+	cmd.Flags().StringVar(&customMessageArg, customMsgFlag, "", `For block rules, the message shown to the user instead of the default block message`)
+	cmd.Flags().StringVar(&customURLArg, customURLFlag, "", `For block rules, the URL opened from the block dialog instead of EventDetailURL (same format values)`)
+	cmd.Flags().StringVar(&eventDetailButtonLabelArg, eventDetailButtonLabelFlag, "", `For block rules, the label of the block dialog's button instead of EventDetailText`)
+	cmd.Flags().StringVar(&notificationAppNameArg, notificationAppNameFlag, "", `When set, Santa notifies the user that this application is now allowed (ignored during clean syncs)`)
 
 	r.CustomMessage = &customMessageArg
 	r.CustomURL = &customURLArg

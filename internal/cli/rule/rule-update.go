@@ -1,23 +1,19 @@
 package rule
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"log"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
-	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
+	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -37,10 +33,12 @@ func init() {
 	ruleHandler := ruleHandler{}
 
 	var ruleUpdateCmd = &cobra.Command{
-		Use:     "update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--collect-allowed-events=true|false]",
-		Aliases: []string{"update"},
-		Short:   "Update an existing rule",
-		Args:    cobra.NoArgs,
+		Use:   "update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--expires <duration-or-time>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]",
+		Short: "Change an existing rule's policy, expiry, messages or event collection",
+		Long: `Change an existing rule. Only what is given changes; the rest of the rule is kept. An empty message or URL
+(e.g. --custom-msg "") clears it. A rule cannot be updated to the CEL policy or removed with -p: use "rule cel" and
+"rule remove". A group rule is changed by writing it again with "rule <policy> ... --group <group>".`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := tf.RequireExplicitTarget(); err != nil {
 				return err
@@ -48,6 +46,23 @@ func init() {
 			if tf.IsGroup() {
 				return errors.New(`a group rule is changed by writing it again (e.g. "rule deny ... --group <group>"), which replaces it`)
 			}
+			if err := ru.RequireChange(); err != nil {
+				return err
+			}
+			if err := rf.RequireOne(); err != nil {
+				return err
+			}
+			timeProvider := clock.ConcreteTimeProvider{}
+			// When the rule expires after the update; the zero time keeps the current expiry
+			var newExpiry *time.Time
+			if ru.ExpiryChanged() {
+				expires, err := ru.Expiry.Expiry(timeProvider.Now(), tf.IsGlobal)
+				if err != nil {
+					return err
+				}
+				newExpiry = &expires
+			}
+
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -58,7 +73,6 @@ func init() {
 			if err := clockcheck.Check(cmd, client); err != nil {
 				return err
 			}
-			timeProvider := clock.ConcreteTimeProvider{}
 
 			ruleHandler.dynamodbClient = client
 			ruleHandler.timeProvider = timeProvider
@@ -71,7 +85,7 @@ func init() {
 				TimeProvider: timeProvider,
 			}
 
-			return ruleHandler.updateRulePolicy(tf, rf, ru)
+			return ruleHandler.updateRule(tf, rf, ru, newExpiry, flags.AssumeYes(cmd))
 		},
 	}
 
@@ -82,219 +96,181 @@ func init() {
 	RuleCmd.AddCommand(ruleUpdateCmd)
 }
 
-func (rh *ruleHandler) updateRulePolicy(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags) (err error) {
-	if err := ru.RequireChange(); err != nil {
+// existingRule is what updateRule needs of a global or machine rule
+type existingRule struct {
+	key         dynamodb.PrimaryKey
+	rule        rules.SantaRule
+	description string
+	// expires is when a machine rule expires; the zero time for one that never expires and for global rules
+	expires    time.Time
+	collecting bool
+}
+
+func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleType types.RuleType) (*existingRule, error) {
+	sortKey := rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType)
+	if global {
+		row, err := globalrules.GetGlobalRuleByShaType(rh.dynamodbClient, identifier, ruleType)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			return nil, fmt.Errorf("there is no global rule %s", sortKey)
+		}
+		return &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents}, nil
+	}
+	row, err := machinerules.GetMachineRuleByShaType(rh.dynamodbClient, machineID, identifier, ruleType)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return nil, fmt.Errorf("machine %s has no rule %s", machineID, sortKey)
+	}
+	// An update cannot bring back a rule that has expired (and that DynamoDB has not deleted yet): it would look
+	// successful and change nothing on any Mac.
+	if row.ExpiresAfter != 0 && row.ExpiresAfter <= rh.timeProvider.Now().Unix() {
+		return nil, fmt.Errorf("the rule %s of machine %s expired at %s; create it again with --expires or --permanent", sortKey, machineID, time.Unix(row.ExpiresAfter, 0).UTC().Format(time.RFC3339))
+	}
+	existing := &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents}
+	if row.ExpiresAfter != 0 {
+		existing.expires = time.Unix(row.ExpiresAfter, 0).UTC()
+	}
+	return existing, nil
+}
+
+func printRule(heading, machineID, suffix string, rule rules.SantaRule, description string, global bool, expires time.Time, collecting bool) {
+	policyDescription, _ := rule.Policy.MarshalText()
+	ruleTypeDescription, _ := rule.RuleType.MarshalText()
+	fmt.Println(heading)
+	fmt.Println("  MachineID:   ", machineID, suffix)
+	fmt.Println("  Identifier/SHA256:      ", rule.Identifier)
+	fmt.Println("  Policy:      ", rule.Policy, "  (", string(policyDescription), ")")
+	fmt.Println("  RuleType:    ", rule.RuleType, "  (", string(ruleTypeDescription), ")")
+	fmt.Println("  Description: ", description)
+	if !global {
+		fmt.Println("  Expires:     ", expiryText(expires))
+	}
+	printRuleOptions([]rules.RuleOption{
+		rules.WithCustomMessage(rule.CustomMessage),
+		rules.WithCustomURL(rule.CustomURL),
+		rules.WithEventDetailButtonLabel(rule.EventDetailButtonLabel),
+		rules.WithNotificationAppName(rule.NotificationAppName),
+		rules.WithCELExpr(rule.CELExpr),
+	})
+	fmt.Println("  CollectAllowedEvents:", collecting)
+}
+
+// updateRule changes what the flags give of an existing global or machine rule, after a confirmation (none with
+// yes). newExpiry is when a machine rule expires after the update, or nil to keep its expiry.
+func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags, newExpiry *time.Time, yes bool) error {
+	ruleType := rf.RuleType.AsRuleType()
+	identifier, _, err := identifyRule(rf, ruleType)
+	if err != nil {
 		return err
 	}
-	changePolicy := ru.PolicyChanged()
-	changeCollection := ru.CollectAllowedEventsChanged()
 
-	// Determine the ruleType and rulePolicy and return the following types from RuleInfoFlags
-	ruleType := rf.RuleType.AsRuleType()
-	rulePolicy := ru.RulePolicy.AsRulePolicy()
-	// Updating a rule only changes its policy, so it cannot supply the expression a CEL rule requires
-	if changePolicy && rulePolicy == types.RulePolicyCEL {
-		return errors.New(`a rule cannot be updated to the CEL policy; remove it and create it with "rule cel"`)
-	}
-	var description string
-	var identifier string
-
-	if *rf.FilePath != "" {
-		// Only a file path needs santactl: an identifier given with --identifier is used as it is, also on a computer
-		// without Santa
-		fileInfo, err := santa_sensor.RunSantaFileInfo(*rf.FilePath)
-		if err != nil {
-			return fmt.Errorf("encountered an error while attempting to get file information for %q", *rf.FilePath)
-		}
-		identifier = fileInfo.SHA256
-		description = fmt.Sprintf("%s from %s", fileInfo.Path, tf.SelfMachineID) // FIXME (derek.wang) tf.SelfMachineID is Not initialized.
-		switch ruleType {
-		case types.RuleTypeBinary:
-			break
-		case types.RuleTypeCertificate:
-			if len(fileInfo.SigningChain) == 0 {
-				return fmt.Errorf("NO SIGNING INFO FOUND FOR GIVEN BINARY")
-			}
-			if fileInfo.SigningChain[0].SHA256 == "" {
-				return fmt.Errorf("NO CERTIFICATE SHA FOUND FOR GIVEN BINARY")
-			}
-			if fileInfo.SigningChain[0].CommonName == "" {
-				return fmt.Errorf("NO CERTIFICATE NAME FOUND FOR GIVEN BINARY")
-			}
-
-			identifier = fileInfo.SigningChain[0].SHA256
-			description = fmt.Sprintf("%v, by %v (%v)", fileInfo.SigningChain[0].CommonName, fileInfo.SigningChain[0].Organization, fileInfo.SigningChain[0].OrganizationalUnit)
-		case types.RuleTypeTeamID:
-			identifier = fileInfo.TeamID
-		case types.RuleTypeSigningID:
-			identifier = fileInfo.SigningID
-		case types.RuleTypeCDHash:
-			return fmt.Errorf("CDHash rules cannot be looked up from a filepath; provide the CDHash with --identifier")
-		default:
-			log.Printf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
-			return fmt.Errorf("error (recovered): encountered unknown ruleType: (%+v)", ruleType)
-		}
-	} else if *rf.Identifier != "" {
-		identifier = *rf.Identifier
-	} else {
-		return errors.New("pass the rule's --identifier, or --filepath to read it from a file")
-	}
-
-	ruleTypeDescription, err := ruleType.MarshalText()
-	if err != nil {
-		return
-	}
-
-	// First, determine which machine to apply
 	machineID := "(Global)"
 	suffix := ""
-	// When the existing machine rule expires; empty for global rules, which never expire
-	expiry := ""
-	// The existing rule's key, policy and collection flag
-	var ruleKey dynamodb.PrimaryKey
-	var currentPolicy types.Policy
-	var collecting bool
 	if !tf.IsGlobal {
 		machineID, err = tf.GetMachineID()
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
 		}
-		// All args set up; send confirmation message
 		if tf.IsTargetSelf() {
 			suffix = " (This machine)"
 		}
 	}
 
-	// Query if there is an existing rule: and show the before/after
-	if machineID == "(Global)" {
-		existingItem, err := globalrules.GetGlobalRuleByShaType(rh.dynamodbClient, identifier, ruleType)
-		if err != nil {
-			return err
-		}
-
-		// If nil, no rule exists
-		if existingItem == nil {
-			return errors.New("no global rule exists")
-		}
-		ruleKey, currentPolicy, collecting = existingItem.PrimaryKey, existingItem.Policy, existingItem.CollectAllowedEvents
-
-		rulePolicyDescription, err := existingItem.Policy.MarshalText()
-		if err != nil {
-			return err
-		}
-
-		ruleTypeDescription, err := existingItem.RuleType.MarshalText()
-		if err != nil {
-			return err
-		}
-
-		fmt.Println("The current rule is rule:")
-		fmt.Println("  MachineID:   ", machineID, suffix)
-		fmt.Println("  Identifier/SHA256:      ", existingItem.Identifier)
-		fmt.Println("  Policy:      ", existingItem.Policy, "  (", string(rulePolicyDescription), ")")
-		fmt.Println("  RuleType:    ", existingItem.RuleType, "  (", string(ruleTypeDescription), ")")
-		fmt.Println("  Description: ", description)
-		fmt.Println("  CollectAllowedEvents:", existingItem.CollectAllowedEvents)
-	} else {
-		existingItem, err := machinerules.GetMachineRuleByShaType(rh.dynamodbClient, machineID, identifier, ruleType)
-		if err != nil {
-			return err
-		}
-
-		// If nil, no rule exists
-		if existingItem == nil {
-			return errors.New("no machine rule exists")
-		}
-		ruleKey, currentPolicy, collecting = existingItem.PrimaryKey, existingItem.Policy, existingItem.CollectAllowedEvents
-
-		rulePolicyDescription, err := existingItem.Policy.MarshalText()
-		if err != nil {
-			return err
-		}
-
-		ruleTypeDescription, err := existingItem.RuleType.MarshalText()
-		if err != nil {
-			return err
-		}
-
-		// The update keeps the rule's expiry, so it cannot bring back a rule that has expired (and that DynamoDB has
-		// not deleted yet): the update would look successful and change nothing on any Mac.
-		if existingItem.ExpiresAfter != 0 && existingItem.ExpiresAfter <= rh.timeProvider.Now().Unix() {
-			return fmt.Errorf("the machine rule expired at %s; create it again with --expires or --permanent", time.Unix(existingItem.ExpiresAfter, 0).UTC().Format(time.RFC3339))
-		}
-		expiry = "never"
-		if existingItem.ExpiresAfter != 0 {
-			expiry = time.Unix(existingItem.ExpiresAfter, 0).UTC().Format(time.RFC3339)
-		}
-
-		fmt.Println("The current rule is rule:")
-		fmt.Println("  MachineID:   ", machineID, suffix)
-		fmt.Println("  Identifier/SHA256:      ", existingItem.Identifier)
-		fmt.Println("  Policy:      ", existingItem.Policy, "  (", string(rulePolicyDescription), ")")
-		fmt.Println("  RuleType:    ", existingItem.RuleType, "  (", string(ruleTypeDescription), ")")
-		fmt.Println("  Description: ", description)
-		fmt.Println("  Expires:     ", expiry)
-		fmt.Println("  CollectAllowedEvents:", existingItem.CollectAllowedEvents)
-	}
-
-	newPolicy, policyNote := currentPolicy, "  (unchanged)"
-	if changePolicy {
-		newPolicy, policyNote = rulePolicy, ""
-	}
-	rulePolicyDescription, err := newPolicy.MarshalText()
+	current, err := rh.readRule(tf.IsGlobal, machineID, identifier, ruleType)
 	if err != nil {
-		return
-	}
-	newCollecting, collectingNote := collecting, "  (unchanged)"
-	if changeCollection {
-		newCollecting, collectingNote = *ru.CollectAllowedEvents, ""
+		return err
 	}
 
-	fmt.Println("Updating the rule to the following:")
-	fmt.Println("  MachineID:   ", machineID, suffix)
-	fmt.Println("  Identifier/SHA256:      ", identifier)
-	fmt.Println("  Policy:      ", newPolicy, "  (", string(rulePolicyDescription), ")"+policyNote)
-	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
-	fmt.Println("  Description: ", description)
-	if expiry != "" {
-		fmt.Println("  Expires:     ", expiry, "  (unchanged)")
+	updated := current.rule
+	if ru.PolicyChanged() {
+		updated.Policy = ru.RulePolicy.AsRulePolicy()
+		if updated.Policy != current.rule.Policy {
+			// Only CEL rules may have an expression
+			updated.CELExpr = ""
+		}
 	}
-	fmt.Println("  CollectAllowedEvents:", newCollecting, collectingNote)
-	if changeCollection && newCollecting {
+	ru.ApplyOptions(&updated)
+	expires := current.expires
+	if newExpiry != nil {
+		expires = *newExpiry
+	}
+	collecting := current.collecting
+	if ru.CollectAllowedEventsChanged() {
+		collecting = *ru.CollectAllowedEvents
+	}
+
+	policyChanged := updated.Policy != current.rule.Policy
+	// What a policy update alone stores; any other change writes the rule row again
+	policyUpdated := current.rule
+	if policyChanged {
+		policyUpdated = withPolicy(current.rule, updated.Policy)
+	}
+	rewrite := updated != policyUpdated || !expires.Equal(current.expires)
+	collectionChanged := collecting != current.collecting
+	if !policyChanged && !rewrite && !collectionChanged {
+		return errors.New("the rule already is as given; nothing to change")
+	}
+
+	printRule("The current rule:", machineID, suffix, current.rule, current.description, tf.IsGlobal, current.expires, current.collecting)
+	fmt.Println("")
+	printRule("Updating the rule to:", machineID, suffix, updated, current.description, tf.IsGlobal, expires, collecting)
+	if collectionChanged && collecting {
 		warnIfAllEventUploadOff(rh.dynamodbClient)
 	}
 	fmt.Println("")
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-
-	// Read confirmation
-	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	text = strings.Replace(text, "\n", "", -1)
-	if text == "ok" || text == "yes" {
-		// Do rule update
-		if changePolicy {
-			if tf.IsGlobal {
-				err = rh.globalRuleUpdater.UpdateGlobalRule(identifier, ruleType, rulePolicy)
-			} else {
-				err = rh.machineRuleUpdater.UpdateMachineRulePolicy(machineID, identifier, ruleType, rulePolicy)
-			}
-			if err != nil {
-				return fmt.Errorf("could not upload rule to dynamodb: %w", err)
-			}
-		}
-		if changeCollection {
-			if err := rh.setCollectAllowedEvents(tf, machineID, ruleKey, newCollecting); err != nil {
-				return err
-			}
-		}
-		fmt.Println("Successfully updated the rule on dynamodb")
-	} else {
-		fmt.Println("Well ok then")
+	if err := flags.Confirm(yes); err != nil {
+		return err
 	}
-	fmt.Println("")
 
-	return
+	switch {
+	case rewrite:
+		options := []rules.RuleOption{
+			rules.WithCustomMessage(updated.CustomMessage),
+			rules.WithCustomURL(updated.CustomURL),
+			rules.WithEventDetailButtonLabel(updated.EventDetailButtonLabel),
+			rules.WithNotificationAppName(updated.NotificationAppName),
+			rules.WithCELExpr(updated.CELExpr),
+		}
+		if tf.IsGlobal {
+			err = globalrules.AddNewGlobalRule(rh.timeProvider, rh.dynamodbClient, identifier, ruleType, updated.Policy, current.description, options...)
+		} else {
+			err = machinerules.AddNewMachineRule(rh.dynamodbClient, machineID, identifier, ruleType, updated.Policy, current.description, expires, options...)
+		}
+		// The new row has no CollectAllowedEvents flag: set it again below
+		collectionChanged = collectionChanged || current.collecting
+	case policyChanged:
+		if tf.IsGlobal {
+			err = rh.globalRuleUpdater.UpdateGlobalRule(identifier, ruleType, updated.Policy)
+		} else {
+			err = rh.machineRuleUpdater.UpdateMachineRulePolicy(machineID, identifier, ruleType, updated.Policy)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("could not update the rule in DynamoDB: %w", err)
+	}
+	if collectionChanged {
+		if err := rh.setCollectAllowedEvents(tf, machineID, current.key, collecting); err != nil {
+			return err
+		}
+	}
+	if tf.IsGlobal {
+		fmt.Printf("Updated global rule %s\n", current.key.SortKey)
+	} else {
+		fmt.Printf("Updated rule %s of machine %s, expires %s\n", current.key.SortKey, machineID, expiryText(expires))
+	}
+	return nil
+}
+
+// withPolicy returns rule with the given policy, as a policy update stores it (UpdateGlobalRule,
+// UpdateMachineRulePolicy): the expression is cleared, the other fields are kept
+func withPolicy(rule rules.SantaRule, policy types.Policy) rules.SantaRule {
+	rule.Policy = policy
+	rule.CELExpr = ""
+	return rule
 }
 
 func (rh *ruleHandler) setCollectAllowedEvents(tf flags.TargetFlags, machineID string, ruleKey dynamodb.PrimaryKey, collect bool) error {

@@ -13,7 +13,7 @@ func init() {
 	ef := flags.RuleExpiryFlags{}
 
 	var ruleAllowCmd = &cobra.Command{
-		Use:   "allow [-f <file-path>|-i <identifier/sha256>] -t <rule-type> (-m <machine-id>|--global)",
+		Use:   ruleUse("allow", "[--expires <duration-or-time>|--permanent]"),
 		Short: "Create a rule that applies the Allowlist policy to the specified file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

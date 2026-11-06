@@ -3,10 +3,8 @@
 package group
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -26,6 +24,8 @@ it here. Rules target a group with "rudolph rule ... --group <group>", and the M
 }
 
 func init() {
+	flags.AddYesFlag(GroupCmd)
+
 	var description string
 	var noReported, acceptReported, force bool
 	var machineID string
@@ -110,9 +110,8 @@ func init() {
 				fmt.Print(" and all of its rules")
 			}
 			fmt.Println(". Its member Macs drop its rules, or get the global rules back, at their next sync.")
-			if !confirm() {
-				fmt.Println("Well ok then")
-				return nil
+			if err := flags.Confirm(flags.AssumeYes(cmd)); err != nil {
+				return err
 			}
 			if err := groups.DeleteGroup(client, name, force); err != nil {
 				return fmt.Errorf("group %q: %w", name, err)
@@ -193,7 +192,7 @@ func init() {
 	}
 
 	addCmd := &cobra.Command{
-		Use:   "add --machine <machine-id> <group>",
+		Use:   "add -m <machine-id> <group>",
 		Short: "Assign a group to a Mac",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -204,7 +203,7 @@ func init() {
 	_ = addCmd.MarkFlagRequired("machine")
 
 	removeCmd := &cobra.Command{
-		Use:   "remove --machine <machine-id> <group>",
+		Use:   "remove -m <machine-id> <group>",
 		Short: "Remove a group assigned to a Mac (groups the Mac reports are not affected)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -215,7 +214,7 @@ func init() {
 	_ = removeCmd.MarkFlagRequired("machine")
 
 	showCmd := &cobra.Command{
-		Use:   "show --machine <machine-id>",
+		Use:   "show -m <machine-id>",
 		Short: "Show a Mac's assigned, reported and effective groups",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -295,14 +294,6 @@ func writer(cmd *cobra.Command) (client, error) {
 		return nil, errors.New("this DynamoDB client cannot write groups")
 	}
 	return c, nil
-}
-
-func confirm() bool {
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-	text, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-	text = strings.ToLower(strings.TrimSpace(text))
-	return text == "ok" || text == "yes"
 }
 
 func list(names []string) string {

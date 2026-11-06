@@ -13,8 +13,8 @@ func init() {
 	ef := flags.RuleExpiryFlags{}
 
 	var ruleCompilerCmd = &cobra.Command{
-		Use:     "compiler  <file-path>",
-		Aliases: []string{"allow-complier"},
+		Use:     ruleUse("compiler", "[--expires <duration-or-time>|--permanent]"),
+		Aliases: []string{"allow-compiler"},
 		Short:   "Create a rule that applies the AllowlistCompiler policy to the specified file",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
