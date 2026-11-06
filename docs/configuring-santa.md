@@ -13,8 +13,7 @@ Santa 2025.12 supports `SyncExtraHeaders`, so it authenticates with the settings
 Provided here are some accelerated instructions.
 
 ## Full Disk Access and Sysext Approval
-For unattended installs of Santa you'll want to approve Santa's system extension and full disk access. For convenience
-we've provided some sample configuration profiles here to get you started:
+For unattended installs of Santa you'll want to approve Santa's system extension and full disk access. For convenience we've provided some sample configuration profiles for North Pole Security's Santa (team ID `ZMCG7MLDV9`) here to get you started:
 
 * [configs/santa-sysext.mobileconfig](/configs/santa-sysext.mobileconfig)
 * [configs/santa-tcc.mobileconfig](/configs/santa-tcc.mobileconfig)
@@ -116,10 +115,9 @@ Once Santa syncs, Rudolph sends the client mode and the other settings it manage
 
 
 ## Plist File
-Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or otherwise. We've included an example file,
-[configs/com.google.santa.machine-mapping.plist](/configs/com.google.santa.machine-mapping.plist).
+Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or otherwise. We've included an example file, [configs/com.northpolesec.santa.machine-mapping.plist](/configs/com.northpolesec.santa.machine-mapping.plist).
 
-The file name is not a preference domain, so it did not change when Santa moved to `com.northpolesec.santa`: Santa reads whatever file `MachineIDPlist` names. The example profile and the `rudolph` CLI keep `/Library/Preferences/com.google.santa.machine-mapping.plist`; the CLI reads that path when a command run on a Mac targets that Mac (no `--global` or `--machine`), so keep it unless you always pass `--machine`.
+The example profile and the `rudolph` CLI use `/Library/Preferences/com.northpolesec.santa.machine-mapping.plist`. Santa reads whatever file `MachineIDPlist` names, but the CLI reads this path when a command run on a Mac targets that Mac (no `--global` or `--machine`), so keep it unless you always pass `--machine`. Macs set up from the older example still have `/Library/Preferences/com.google.santa.machine-mapping.plist`; the CLI falls back to that file when the `com.northpolesec.santa` one does not exist.
 
 We **_highly recommend_** using **UPPER-CASE-HEXADECIMAL-UUID-WITH-SPACES** (e.g. `AAAABBBB-CCCC-DDDD-EEEE-123456780000`)
 for the `MachineID`. The `MachineID` must be a UUID: the API rejects sync requests for any other machine ID.
@@ -136,13 +134,7 @@ After Santa is installed, you can perform your first sync via:
 sudo santactl sync --debug
 ```
 
-If you receive some messages like:
-
-> Received 0 rules
-> Received 0 rules
-> Sync completed successfully
-
-Then you should be good to go.
+If the sync completes successfully, you should be good to go. The first sync is a clean sync, and on a deployment with no rules Rudolph sends it one rule, a `REMOVE` of a placeholder identifier, so Santa may report one rule received; the Mac still holds 0 rules (`santactl status` shows the rule counts).
 
 An HTTP 401 means the `Authorization` header is missing or its token does not match a configured digest. With mTLS
 enabled, a TLS handshake failure means Santa did not find or present a client certificate the truststore accepts.

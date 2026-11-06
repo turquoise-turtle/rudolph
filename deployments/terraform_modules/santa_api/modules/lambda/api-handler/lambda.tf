@@ -4,7 +4,7 @@
 
 locals {
   handler       = "bootstrap"
-  runtime       = "provided.al2"
+  runtime       = "provided.al2023"
   function_name = "${var.prefix}_rudolph_${var.endpoint}"
 }
 

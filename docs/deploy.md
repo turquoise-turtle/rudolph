@@ -101,7 +101,7 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 | `api_5xx` | API Gateway answered 5 or more 5xx responses in 5 minutes. |
 | `api_4xx` | More than 5% of requests were answered 4xx in two 5-minute periods in a row, counting only periods with at least `api_4xx_alarm_min_requests` requests (default 100, so that a few scanner requests in a quiet night do not fire it; fleets below about 40 Macs need a lower value to be covered): the stage is throttling (429; raise `api_throttling_rate_limit`) or the authorizer is rejecting sync tokens (401/403, e.g. after a botched token rotation). Throttled requests never reach Lambda, so this is the only alarm that sees them. |
 | `request_too_large` | A handler refused a request body above 6 MiB with HTTP 413. That host cannot sync or upload those events until the cause is fixed. |
-| `lambda_errors` | Any Rudolph Lambda function, the hourly ranker included, returned an error. |
+| `lambda_errors` | Any Rudolph Lambda function except the authoriser, the hourly ranker included, returned an error. The authoriser is left out because it rejects a wrong token by returning an error, so any scanner with a made-up token would fire it; rejected tokens show in `api_4xx`, and an authoriser that really fails makes API Gateway answer 500, which `api_5xx` covers. |
 | `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
 | `dynamodb_throttles` | Reads or writes to the table were throttled. |
 | `event_sink_failures` | eventupload could not forward events to Firehose, Kinesis or the output Lambda (only created when a sink is configured). |
