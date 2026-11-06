@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,15 +32,25 @@ const (
 
 func addRuleImportCommand() {
 	var filename string
+	var format string
 	var workers int
 
 	var ruleImportCmd = &cobra.Command{
-		Use:     "import <file-name>",
+		Use:     "import -f <file-path> [--fileformat csv|json] [--workers <n>]",
 		Aliases: []string{"rules-import"},
-		Short:   "Imports riles from a csv file",
-		Args:    cobra.NoArgs,
+		Short:   "Create or replace global rules from a CSV or JSON file",
+		Long: `Create or replace global rules from a CSV or JSON file, in the format "rules export" writes. The format is taken
+from --fileformat, or else from the file's extension (.csv or .json). A rule with the REMOVE policy removes the
+global rule.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// args[0] has already been validated as a file before this
+			if filename == "" {
+				return errors.New("pass the file to import with -f <file-path>")
+			}
+			fileFormat, err := importFormat(filename, format)
+			if err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -54,31 +65,61 @@ func addRuleImportCommand() {
 				workers = defaultWorkers
 			}
 
-			return runImport(dynamodbClient, clock.ConcreteTimeProvider{}, filename, workers)
+			return runImportFormat(dynamodbClient, clock.ConcreteTimeProvider{}, filename, fileFormat, workers)
 		},
 	}
 
-	ruleImportCmd.Flags().StringVarP(&filename, "filename", "f", "", "The filename")
-	ruleImportCmd.Flags().IntVarP(&workers, "workers", "w", defaultWorkers, "Number of workers")
+	addFileFlags(ruleImportCmd, &filename, "The CSV or JSON file to import")
+	ruleImportCmd.Flags().StringVar(&format, "fileformat", "", "File format: csv or json; by default taken from the file's extension")
+	ruleImportCmd.Flags().IntVarP(&workers, "workers", "w", defaultWorkers, fmt.Sprintf("Number of rules written at the same time, between %d and %d", minWorkers, maxWorkers))
 	clockcheck.AddFlag(ruleImportCmd)
-	_ = ruleImportCmd.MarkFlagRequired("filename")
 
 	RulesCmd.AddCommand(ruleImportCmd)
 }
 
+// importFormat returns the format of the file to import: format if given, else the file's extension
+func importFormat(filename, format string) (string, error) {
+	if format == "" {
+		switch strings.ToLower(filepath.Ext(filename)) {
+		case ".csv":
+			return "csv", nil
+		case ".json":
+			return "json", nil
+		}
+		return "", fmt.Errorf("cannot tell the format of %s from its extension: name it .csv or .json, or pass --fileformat csv|json", filename)
+	}
+	format = strings.ToLower(format)
+	if format != "csv" && format != "json" {
+		return "", fmt.Errorf("--fileformat %q: must be csv or json", format)
+	}
+	return format, nil
+}
+
+// runImport imports a file in the format its extension names
 func runImport(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
 	filename string,
 	numWorkers int,
 ) error {
-	if strings.HasSuffix(filename, ".csv") {
-		return runCsvImport(client, timeProvider, filename, numWorkers)
-	} else if strings.HasSuffix(filename, ".json") {
+	format, err := importFormat(filename, "")
+	if err != nil {
+		return err
+	}
+	return runImportFormat(client, timeProvider, filename, format, numWorkers)
+}
+
+func runImportFormat(
+	client dynamodb.DynamoDBClient,
+	timeProvider clock.TimeProvider,
+	filename string,
+	format string,
+	numWorkers int,
+) error {
+	if format == "json" {
 		return runJsonImport(client, timeProvider, filename, numWorkers)
 	}
-
-	return errors.New("unrecognized file extension")
+	return runCsvImport(client, timeProvider, filename, numWorkers)
 }
 
 func runJsonImport(

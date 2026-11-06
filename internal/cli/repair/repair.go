@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
+	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/scan"
 )
@@ -19,27 +20,38 @@ var (
 )
 
 func init() {
+	var deleteItems bool
 	RepairCmd = &cobra.Command{
-		Use:   "repair",
-		Short: "Scans the entire DynamoDB database and repairs broken records",
-		Args:  cobra.NoArgs,
+		Use:   "repair [--delete [--yes]]",
+		Short: "Scan the whole table for legacy items (MachineInfo#, MachineConfig#); with --delete, delete them",
+		Long: `Scan the whole table for items written by early versions of Rudolph under the MachineInfo# and MachineConfig#
+partition keys, which nothing reads any more, and list them. Without --delete this is a dry run that changes
+nothing. With --delete the items found are deleted, after a confirmation (none with --yes).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if deleteItems {
+				fmt.Println("Legacy items found are deleted as they are found.")
+				if err := flags.Confirm(flags.AssumeYes(cmd)); err != nil {
+					return err
+				}
+			} else {
+				fmt.Println("Dry run: legacy items are listed, not deleted (pass --delete to delete them).")
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
 			scanService := scan.GetScanService(dynamodbClient)
 
-			return repair(scanService, dynamodbClient)
+			return repair(scanService, dynamodbClient, deleteItems)
 		},
 	}
+	RepairCmd.Flags().BoolVar(&deleteItems, "delete", false, "Delete the legacy items found")
+	flags.AddYesFlag(RepairCmd)
 }
 
-func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI) error {
-
-	// Configuration
+func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete bool) error {
 	pageSize := int32(10)
-	delete := false
 
 	input := awsdynamodb.ScanInput{
 		ConsistentRead: aws.Bool(false),
