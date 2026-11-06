@@ -94,6 +94,12 @@ not get) or the sync fails, the next sync is a clean sync again. Santa 2026.8 on
 whose download holds at least one rule it can parse, so a clean sync with no rule to send sends a `REMOVE` of a
 placeholder identifier (see [rule-pagination](./rule-pagination.md#tracking-storage-and-costs)).
 
+A Mac that reports holding no rules at all is also clean synced, so a Mac whose rule database was lost gets its rules
+back. If Rudolph has no rules for it either (a new deployment in monitor mode, before any rule is written), every sync
+of that Mac is therefore a clean sync, and Santa 2026.8 uploads no events during a clean sync: it deletes them unless
+the Mac's Santa configuration profile sets `EnableCleanSyncEventUpload` to true. Set it in the MDM profile, or add any
+rule, before relying on events from such Macs.
+
 #### Request - JSON
 
 ```json
