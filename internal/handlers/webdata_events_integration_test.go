@@ -581,3 +581,18 @@ func TestR7_LongFieldsAreCutSoTheEventIsStored(t *testing.T) {
 		t.Error("the other event of the upload was not stored")
 	}
 }
+
+// R8 (internal/ranker) counts the Macs that ran a binary within a window from the machine markers, so each marker
+// carries LastSeenDay: the UTC date of the Mac's latest upload of an event of that binary.
+func TestR8_MachineMarkersCarryLastSeenDay(t *testing.T) {
+	transport := eventsServer(t)
+	host := syncedHost(t, machineA, transport)
+	host.PendingEvents = []string{execEvent(sha1, "BLOCK_BINARY", 1, time.Now().Add(-26*time.Hour), "")}
+	before := time.Now().UTC().Format("2006-01-02")
+	host.MustSync(t)
+	after := time.Now().UTC().Format("2006-01-02")
+	got, _ := sensorString(t, eventsItem(t, "BinarySeen#"+sha1, machineA), "LastSeenDay")
+	if got != before && got != after {
+		t.Errorf("marker LastSeenDay = %q, want today (%s)", got, after)
+	}
+}
