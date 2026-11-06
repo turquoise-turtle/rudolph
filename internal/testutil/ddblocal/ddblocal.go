@@ -39,7 +39,9 @@ import (
 
 const (
 	TableName = "rudolph_integration_test"
-	Region    = "us-east-1"
+	// EventsTableName is the execution events table (EventsTerraformFile). It exists only once that file does.
+	EventsTableName = "rudolph_events_integration_test"
+	Region          = "us-east-1"
 )
 
 // Main starts DynamoDB Local, runs the tests and stops it again. It returns the exit code for os.Exit.
@@ -135,8 +137,9 @@ func start() (func(), error) {
 		"AWS_REGION":                Region,
 		"AWS_EC2_METADATA_DISABLED": "true",
 		// Environment read by Rudolph's Lambda handlers in Boot().
-		"REGION":        Region,
-		"DYNAMODB_NAME": TableName,
+		"REGION":               Region,
+		"DYNAMODB_NAME":        TableName,
+		"EVENTS_DYNAMODB_NAME": EventsTableName,
 	} {
 		os.Setenv(k, v)
 	}
@@ -191,8 +194,9 @@ func Client(t testing.TB) rudolphdynamodb.DynamoDBClient {
 	return sharedClient
 }
 
-// Reset recreates an empty table with the schema of deployments/.../modules/store/dynamodb.tf (see LoadTableSchema)
-// and clears the operation counters and consumed capacity.
+// Reset recreates an empty table with the schema of deployments/.../modules/store/dynamodb.tf (see LoadTableSchema),
+// and an empty events table from events.tf when that file exists, and clears the operation counters and consumed
+// capacity.
 func Reset(t testing.TB) {
 	t.Helper()
 	ctx := context.Background()
@@ -211,6 +215,22 @@ func Reset(t testing.TB) {
 	}
 	if _, err := raw.CreateTable(ctx, schema.CreateTableInput(TableName)); err != nil {
 		t.Fatalf("create table: %v", err)
+	}
+
+	if _, err := raw.DeleteTable(ctx, &dynamodb.DeleteTableInput{TableName: aws.String(EventsTableName)}); err != nil {
+		var notFound *types.ResourceNotFoundException
+		if !errors.As(err, &notFound) {
+			t.Fatalf("delete events table: %v", err)
+		}
+	}
+	if _, err := os.Stat(EventsTerraformFile()); err == nil {
+		events, err := LoadEventsTableSchema()
+		if err != nil {
+			t.Fatalf("events table definition: %v", err)
+		}
+		if _, err := raw.CreateTable(ctx, events.CreateTableInput(EventsTableName)); err != nil {
+			t.Fatalf("create events table: %v", err)
+		}
 	}
 	ResetCounts()
 }

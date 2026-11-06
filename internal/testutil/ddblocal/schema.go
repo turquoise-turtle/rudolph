@@ -34,15 +34,31 @@ type IndexSchema struct {
 	NonKeyAttributes  []string
 }
 
+// EventsTerraformFile is the definition of the execution events table read by the web view (rudolph-web's
+// docs/data-layer-design.md, R6).
+func EventsTerraformFile() string {
+	return filepath.Join(repoRoot(), "deployments", "terraform_modules", "santa_api", "modules", "store", "events.tf")
+}
+
 // LoadTableSchema reads the table definition from StoreTerraformFile.
 func LoadTableSchema() (TableSchema, error) {
-	file, diags := hclparse.NewParser().ParseHCLFile(StoreTerraformFile())
+	return LoadTableSchemaFrom(StoreTerraformFile(), "store")
+}
+
+// LoadEventsTableSchema reads the aws_dynamodb_table "events" definition from EventsTerraformFile.
+func LoadEventsTableSchema() (TableSchema, error) {
+	return LoadTableSchemaFrom(EventsTerraformFile(), "events")
+}
+
+// LoadTableSchemaFrom reads the aws_dynamodb_table resource with the given name from a Terraform file.
+func LoadTableSchemaFrom(path, resource string) (TableSchema, error) {
+	file, diags := hclparse.NewParser().ParseHCLFile(path)
 	if diags.HasErrors() {
-		return TableSchema{}, fmt.Errorf("parse %s: %s", StoreTerraformFile(), diags.Error())
+		return TableSchema{}, fmt.Errorf("parse %s: %s", path, diags.Error())
 	}
 	body := file.Body.(*hclsyntax.Body)
 	for _, block := range body.Blocks {
-		if block.Type != "resource" || len(block.Labels) != 2 || block.Labels[0] != "aws_dynamodb_table" || block.Labels[1] != "store" {
+		if block.Type != "resource" || len(block.Labels) != 2 || block.Labels[0] != "aws_dynamodb_table" || block.Labels[1] != resource {
 			continue
 		}
 		schema := TableSchema{Attributes: map[string]string{}}
@@ -96,7 +112,7 @@ func LoadTableSchema() (TableSchema, error) {
 		}
 		return schema, nil
 	}
-	return TableSchema{}, fmt.Errorf("no resource \"aws_dynamodb_table\" \"store\" in %s", StoreTerraformFile())
+	return TableSchema{}, fmt.Errorf("no resource \"aws_dynamodb_table\" %q in %s", resource, path)
 }
 
 func stringAttr(body *hclsyntax.Body, name string, required bool) (string, error) {
