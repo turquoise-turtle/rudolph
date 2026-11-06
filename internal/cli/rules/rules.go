@@ -44,6 +44,7 @@ func init() {
 
 	addRuleExportCommand()
 	addRuleImportCommand()
+	addRuleBackfillPolicyIndexCommand()
 }
 
 func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, limit int) error {

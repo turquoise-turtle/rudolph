@@ -90,6 +90,11 @@ A sample output is provided below:
 
 
 
+## Global rules and the policy index
+Each global rule row (partition `GlobalRules`) also stores `GlobalRulePolicy`, a number equal to its `Policy`. Rudolph sets it when a global rule is created (`rudolph rule ... --global`, `rudolph rules import`) and keeps it in step when the policy is updated. Machine-specific rules and rules feed rows never carry it, so the `GlobalRulePolicy_SK` global secondary index (hash `GlobalRulePolicy`, range `SK`, every attribute projected) holds global rules only, in sort key order. The web view uses it to filter global rules by policy; Rudolph itself does not query it, and Santa never sees the attribute.
+
+Global rules written before this attribute existed do not have it, so they are missing from the index until `rudolph rules backfill-policy-index` is run once (see [Upgrading an existing deployment](deploy.md#6-global-rule-policy-index)). The command adds `GlobalRulePolicy` to every global rule that lacks it, changes nothing else, does not touch the rules feed, prints how many rules it updated, and can safely be run again.
+
 ## Importing or Exporting Rules
 Rudolph comes with a handy CLI tool. One of the useful commands is to import/export rules to/from a csv or json file.
 Files have the columns (or json keys) `identifier`, `type`, `policy`, `description` and, optionally, `custom_msg`,

@@ -27,7 +27,8 @@ func AddNewGlobalRule(
 			PartitionKey: globalRulesPK,
 			SortKey:      globalRulesSK(identifier, ruleType),
 		},
-		Description: description,
+		Description:      description,
+		GlobalRulePolicy: policy,
 		SantaRule: rules.SantaRule{
 			RuleType:   ruleType,
 			Policy:     policy,
