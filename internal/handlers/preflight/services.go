@@ -29,7 +29,7 @@ type stateTrackingService interface {
 	saveSensorDataFromPreflightRequest(machineID string, request *PreflightRequest) error
 	getSyncState(machineID string) (syncState *syncstate.SyncStateRow, err error)
 	saveReportedGroups(machineID string, groups []string, prevSyncState *syncstate.SyncStateRow) (reportedGroupsRecord, error)
-	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord) error
+	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord, policies clientPolicies) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
 }
 
@@ -173,8 +173,15 @@ func (c concreteStateTrackingService) getSyncState(machineID string) (syncState 
 	return syncstate.GetByMachineID(c.getter, machineID)
 }
 
+// clientPolicies is what the sync state records about the policies the Mac's Santa understands (see
+// syncstate.SyncState.SilentBlocklistOnly and HoldsDowngradedPolicies).
+type clientPolicies struct {
+	silentBlocklistOnly     bool
+	holdsDowngradedPolicies bool
+}
+
 // configCleanSync is not nil when this sync is a clean sync performing the clean sync flag of the machine config.
-func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord) error {
+func (c concreteStateTrackingService) saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord, policies clientPolicies) error {
 	syncState := syncstate.CreateNewSyncState(
 		c.timeProvider,
 		machineID,
@@ -189,6 +196,8 @@ func (c concreteStateTrackingService) saveSyncState(machineID string, requestCle
 	syncState.ReportedGroupsHash = reportedGroups.hash
 	syncState.ReportedGroupsWrittenAt = reportedGroups.writtenAt
 	syncState.GroupsBasis = reportedGroups.groupsBasis
+	syncState.SilentBlocklistOnly = policies.silentBlocklistOnly
+	syncState.HoldsDowngradedPolicies = policies.holdsDowngradedPolicies
 	if configCleanSync != nil && requestCleanSync {
 		syncState.SetConfigCleanSync(*configCleanSync)
 	}

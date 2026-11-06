@@ -83,7 +83,16 @@ The row stores the temporary mode in two attributes, which tools writing the row
 
 They only ever appear on a machine's row (`PK` `Machine#<uuid>`, `SK` `Config`); on the global row they are ignored. A temporary mode applies only while both are present, the mode is a known one, and the current time is before `TemporaryClientModeExpiresAt`, which must be at most 30 days ahead (with 10 minutes of slack for clocks): an expiry further ahead, such as milliseconds from JavaScript's `Date.now()`, is ignored, so a "temporary" mode cannot become permanent. Values that cannot be decoded (a string instead of a number, an unknown mode, a missing expiry) are ignored like any other mistyped setting: the Mac gets its usual mode. Ended attributes may stay on the row; readers must compare the expiry with the current time rather than treat their presence as an active temporary mode. To end one, remove both attributes.
 
-The path regexes are always sent, because Santa 2026.8 only clears a regex when it receives an empty string; Rudolph requires Santa 2026.8 or later.
+The path regexes are always sent, because Santa 2026.8 only clears a regex when it receives an empty string.
+
+#### Supported Santa releases
+
+Rudolph requires Santa 2026.8 or newer, tested with 2026.8 and 2026.9 (the vendored sources in `testdata/santa-2026.9` describe the current protocol). Santa 2025.12 is supported only for macOS 13 Macs, with these limits. Preflight reads the release from `santa_version` (e.g. `2025.12.0`); an empty or unparseable version counts as the current release, and so does a release older than 2025.12, which is not supported.
+
+- **Path regexes.** Santa before 2026.8 compiles a path regex as received, so an empty one matches every path. Such a client gets the never-matching `(?!x)x` wherever the configured allowed or blocked path regex is empty; a configured regex is sent unchanged.
+- **Silent GUI and TTY rules.** `SILENT_GUI_BLOCKLIST` and `SILENT_TTY_BLOCKLIST` exist from Santa 2026.6; an older client skips a rule whose policy it does not know. Such a client gets them as `SILENT_BLOCKLIST`, on clean and incremental syncs, for global, feed, machine and group rules alike, and for the global rules sent in place of a machine or group rule that stopped applying. Ruledownload requests carry no version, so preflight records on the sync state row whether the sync's client needs this (`SilentBlocklistOnly`), and the ruledownload cursor carries it to later pages. Only what is sent changes: delivery tracking and the rules hash checks are the same whichever policy the Mac got.
+- **CEL.** Santa 2025.12's CEL support may not parse an expression written for Santa 2026.x, so a CEL rule may not apply on those Macs.
+- **Upgrades.** A Mac upgraded across the 2026.6 boundary holds the downgraded rules, which an incremental sync never sends again. The sync state records that the Mac may hold them (`HoldsDowngradedPolicies`) until a clean sync of a client that knows the real policies completes; until then every preflight of such a client performs a clean sync.
 
 Settings are managed with `rudolph config set` / `rudolph config update`. Remount flags (`--remount-usb-mode`) are only accepted when USB mounts are blocked (`--block-usb-mount`, or inherited from the global configuration), because Santa ignores them otherwise.
 
@@ -284,6 +293,8 @@ This endpoints accepts events logs from the Santa agent which records all binary
 ```
 
 #### RESPONSE - None
+
+Santa 2026.9 adds `identity_unverified` (true when Santa could not confirm that the file it evaluated is the image the kernel loaded; the file hash and other content-derived fields are then report-only). Rudolph forwards it to every sink as sent, omitted when false, and stores it on the event's item as `IdentityUnverified`.
 
 #### Delivery to the event sink
 Blocked and unknown executions are also stored in the execution events table, whatever sink is configured, and a

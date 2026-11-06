@@ -111,9 +111,17 @@ type SyncState struct {
 	ReportedGroupsWrittenAt string `dynamodbav:"ReportedGroupsWrittenAt,omitempty"`
 	// The digest of the reported group membership preflight last stored on the machine's groups item
 	// (groups.ReportedBasis), so that it only rewrites the item when that changes. Empty when never recorded.
-	GroupsBasis  string         `dynamodbav:"GroupsBasis,omitempty"`
-	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType     types.DataType `dynamodbav:"DataType"`
+	GroupsBasis string `dynamodbav:"GroupsBasis,omitempty"`
+	// Set when this sync's client predates SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST (Santa before 2026.6, see
+	// types.SantaVersion.KnowsSilentGUITTYPolicies): ruledownload sends those rules as SILENT_BLOCKLIST. Preflight
+	// writes it on every sync, since Santa sends no version with ruledownload.
+	SilentBlocklistOnly bool `dynamodbav:"SilentBlocklistOnly,omitempty"`
+	// Set while the Mac may hold rules sent as SILENT_BLOCKLIST in place of their real policy: from a sync with
+	// SilentBlocklistOnly until a clean sync of a client that knows the real policies completes. See
+	// SyncState.MayHoldDowngradedPolicies.
+	HoldsDowngradedPolicies bool           `dynamodbav:"HoldsDowngradedPolicies,omitempty"`
+	ExpiresAfter            int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType                types.DataType `dynamodbav:"DataType"`
 
 	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
 	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.

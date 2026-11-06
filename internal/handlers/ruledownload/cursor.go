@@ -24,6 +24,9 @@ type ruledownloadCursor struct {
 	// an older sync, served after a newer sync of the machine started, is not recorded as the newer sync's. Absent in
 	// cursors issued by earlier versions of Rudolph.
 	SyncSeq int `json:"seq,omitempty"`
+	// SilentBlocklistOnly carries syncstate.SyncState.SilentBlocklistOnly of the sync to its later pages, which do not
+	// read the sync state: the client predates the silent GUI and TTY policies.
+	SilentBlocklistOnly bool `json:"silent_only,omitempty"`
 
 	// syncState is the sync state read for the first page of a sync; it is never sent to the client. When the first
 	// page is also the last one (e.g. a steady-state incremental sync), the machine rules page reuses it instead of
@@ -56,6 +59,8 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 		BatchSize:  r.BatchSize,
 		PageNumber: r.PageNumber + 1,
 		SyncSeq:    r.SyncSeq,
+
+		SilentBlocklistOnly: r.SilentBlocklistOnly,
 	}
 }
 
@@ -140,6 +145,7 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 
 		cursor.syncState = syncState
 		cursor.SyncSeq = syncState.SyncSeq
+		cursor.SilentBlocklistOnly = syncState.SilentBlocklistOnly
 
 	} else {
 		cursor = *ruledownloadRequest.Cursor

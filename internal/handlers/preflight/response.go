@@ -13,9 +13,10 @@ import (
 //
 //	are consistent with the fields of the store.MachineConfiguration type
 //
-// Field names and types follow santa.sync.v1.PreflightResponse (testdata/santa-2026.8/sync_v1.proto).
+// Field names and types follow santa.sync.v1.PreflightResponse (testdata/santa-2026.9/sync_v1.proto).
 // Santa leaves a setting unchanged when its optional field is absent, so settings that are not configured
-// are omitted. The path regexes are always sent: on Santa 2026.8 "" clears a regex, an absent field keeps it.
+// are omitted. The path regexes are always sent: from Santa 2026.8 "" clears a regex, an absent field keeps it
+// (see adaptToClient for older clients).
 // The client mode is omitted only when the stored one is invalid (see machineconfiguration.SanitizeForSanta);
 // Santa then keeps its current mode.
 type PreflightResponse struct {
@@ -78,5 +79,24 @@ func ConstructPreflightResponse(machineConfiguration machineconfiguration.Machin
 		EventDetailURL:            machineConfiguration.EventDetailURL,
 		EventDetailText:           machineConfiguration.EventDetailText,
 		// Notably, we do not grab the clean sync from the config
+	}
+}
+
+// neverMatchingRegex matches no path: a negative lookahead for "x" followed by "x".
+const neverMatchingRegex = "(?!x)x"
+
+// adaptToClient adjusts the response for the Santa release the Mac runs. Santa before 2026.8 compiles a path regex as
+// received (SNTDaemonControlController.mm in testdata/santa-2025.12), so the empty string that clears a regex on a
+// current client would match every path: such a client gets a regex that never matches instead. A configured regex
+// is sent unchanged.
+func (r *PreflightResponse) adaptToClient(version types.SantaVersion) {
+	if version.ClearsRegexWhenEmpty() {
+		return
+	}
+	if r.AllowedPathRegex == "" {
+		r.AllowedPathRegex = neverMatchingRegex
+	}
+	if r.BlockedPathRegex == "" {
+		r.BlockedPathRegex = neverMatchingRegex
 	}
 }

@@ -51,7 +51,7 @@ func parseRequest(request events.APIGatewayProxyRequest) (parsedRequest *Preflig
 
 // PreflightRequest represents sync payload sent to a sync server from a Santa client.
 //
-// Field names follow santa.sync.v1.PreflightRequest (testdata/santa-2026.8/sync_v1.proto); the fields without
+// Field names follow santa.sync.v1.PreflightRequest (testdata/santa-2026.9/sync_v1.proto); the fields without
 // a `json_name` there (sip_status, rules_hash) are sent lowerCamelCased by Santa and normalized to the
 // spelling below before unmarshalling. See pkg/request.UnmarshalSantaJSON.
 type PreflightRequest struct {
