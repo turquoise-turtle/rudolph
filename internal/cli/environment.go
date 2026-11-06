@@ -62,6 +62,14 @@ func flagString(cmd *cobra.Command, name string) string {
 	return value
 }
 
+// typedString returns the value of a flag given on the command line, or ""
+func typedString(cmd *cobra.Command, name string) string {
+	if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+		return f.Value.String()
+	}
+	return ""
+}
+
 // setUnlessGiven sets a flag that was not given on the command line, so a typed --region, --prefix or
 // --dynamodb_table wins over the environment's configuration
 func setUnlessGiven(cmd *cobra.Command, name, value string) {
@@ -72,7 +80,8 @@ func setUnlessGiven(cmd *cobra.Command, name, value string) {
 
 // retrieveConfig reads the configuration of the environment named by --ENV (or --env, or the ENV environment
 // variable) and sets --region, --prefix and --dynamodb_table from it, unless they were given. Without an environment
-// file, the DYNAMODB_NAME and REGION environment variables (as the Lambdas use them) are used.
+// file, --prefix gives the table <prefix>_rudolph_store, and the DYNAMODB_NAME and REGION environment variables (as the
+// Lambdas use them) stand in for --dynamodb_table and --region.
 func retrieveConfig(cmd *cobra.Command) (*environmentConfiguration, error) {
 	env := flagString(cmd, "ENV")
 	if env == "" {
@@ -91,6 +100,11 @@ func retrieveConfig(cmd *cobra.Command) (*environmentConfiguration, error) {
 			if err != nil {
 				return nil, err
 			}
+			// A typed --prefix names another deployment, so the file's table (and its override) is not that one's
+			if typed := typedString(cmd, "prefix"); typed != "" {
+				config.Prefix = typed
+				config.DynamoDBTableName = ""
+			}
 			setUnlessGiven(cmd, "prefix", config.Prefix)
 			setUnlessGiven(cmd, "region", config.Region)
 			setUnlessGiven(cmd, "dynamodb_table", config.tableName())
@@ -106,6 +120,9 @@ func retrieveConfig(cmd *cobra.Command) (*environmentConfiguration, error) {
 	}
 	if config.Region == "" {
 		config.Region = os.Getenv("REGION")
+	}
+	if config.DynamoDBTableName == "" && config.Prefix != "" {
+		config.DynamoDBTableName = config.tableName()
 	}
 	if config.DynamoDBTableName == "" {
 		config.DynamoDBTableName = os.Getenv("DYNAMODB_NAME")

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,29 +25,46 @@ func addRuleExportCommand() {
 		Use:     "export -f <file-path> [--fileformat csv|json]",
 		Aliases: []string{"rules-export"},
 		Short:   "Export the global rules to a CSV or JSON file",
-		Long: `Export the global rules to a CSV or JSON file, in the format "rules import" reads. Machine rules and group rules
+		Long: `Export the global rules to a CSV or JSON file, in the format "rules import" reads. The format is --fileformat, or
+else JSON for a file named .json and CSV otherwise. Machine rules and group rules
 are not exported. The collect_allowed_events column is for information: "rules import" does not set it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filename == "" {
 				return errors.New("pass the file to write with -f <file-path>")
 			}
-			if format != "csv" && format != "json" {
-				return fmt.Errorf("--fileformat %q: must be csv or json", format)
+			fileFormat, err := exportFormat(filename, format)
+			if err != nil {
+				return err
 			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
 
-			return runExport(dynamodbClient, filename, format)
+			return runExport(dynamodbClient, filename, fileFormat)
 		},
 	}
 
 	addFileFlags(ruleExportCmd, &filename, "The file to write the rules to; it is replaced")
-	ruleExportCmd.Flags().StringVar(&format, "fileformat", "csv", "File format: csv or json")
+	ruleExportCmd.Flags().StringVar(&format, "fileformat", "", "File format: csv or json; by default json for a .json file and csv otherwise")
 
 	RulesCmd.AddCommand(ruleExportCmd)
+}
+
+// exportFormat returns the format to export in: format if given, else json for a .json file and csv otherwise
+func exportFormat(filename, format string) (string, error) {
+	if format == "" {
+		if strings.EqualFold(filepath.Ext(filename), ".json") {
+			return "json", nil
+		}
+		return "csv", nil
+	}
+	format = strings.ToLower(format)
+	if format != "csv" && format != "json" {
+		return "", fmt.Errorf("--fileformat %q: must be csv or json", format)
+	}
+	return format, nil
 }
 
 // addFileFlags adds -f/--filepath, and --filename, its former name, to an export or import command

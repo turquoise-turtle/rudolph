@@ -104,14 +104,18 @@ config update --end-temporary-mode.`,
 	pathRegexArgs.addFlags(configSetCmd)
 
 	// Flags defining batchSize and events to sync back to the server
-	configSetCmd.Flags().IntVar(&batchSizeArg, "batch-size", machineconfiguration.DefaultBatchSize, "Number of events Santa uploads per request, between 1 and 500")
+	configSetCmd.Flags().IntVarP(&batchSizeArg, "batch-size", "s", machineconfiguration.DefaultBatchSize, "Number of events Santa uploads per request, between 1 and 500")
 	configSetCmd.Flags().BoolVar(&isEnableBundles, "bundles", false, "Enables bundle events to be uploaded back to the sync server")
 	configSetCmd.Flags().BoolVar(&isEnabledTransitiveRules, "transitive-rules", false, "Enables the usage of transitive rules")
 
 	// Flags define sync behavior and upload logs url
 	configSetCmd.Flags().BoolVar(&isCleanSync, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once. Only for a machine (--machine); refused with --global. Without it, a clean sync requested earlier and not yet performed is cancelled")
-	configSetCmd.Flags().StringVar(&uploadLogsUrlArgs, "upload-logs", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
+	configSetCmd.Flags().StringVarP(&uploadLogsUrlArgs, "upload-logs", "u", "", "Set an upload logs URL link here. If using the sync server, define the API endpoint of the sync server logs upload path")
 
+	// -s and -u are kept for scripts written for earlier versions; -f, the old full sync interval shorthand, now
+	// always means a file path, so it is gone
+	_ = configSetCmd.Flags().MarkShorthandDeprecated("batch-size", "use --batch-size")
+	_ = configSetCmd.Flags().MarkShorthandDeprecated("upload-logs", "use --upload-logs")
 	configSetCmd.Flags().IntVar(&fullSyncIntervalArg, "full-sync-interval", machineconfiguration.DefaultFullSyncInterval, "Full sync interval in seconds, at least 60")
 
 	// Flags for optional Santa settings; settings without a flag are not configured
