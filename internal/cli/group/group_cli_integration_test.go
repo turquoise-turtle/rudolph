@@ -228,3 +228,23 @@ func TestGroupCLI_DeleteNeedsForceWhileTheGroupHasRules(t *testing.T) {
 		t.Error("delete --force left the group or its rules")
 	}
 }
+
+// From the groups review: rule partitions are cached by group name and RulesVersion, so a group that is deleted and
+// created again must never reuse a RulesVersion its earlier life had, or a server could keep serving the deleted
+// group's rules.
+func TestGroupCLI_RecreatedGroupNeverReusesARulesVersion(t *testing.T) {
+	ddblocal.Reset(t)
+	mustGroup(t, "create", "x")
+	if out, err := ruleCmd(t, "deny", "-t", "binary", "-i", sha, "--group", "x", "--force"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if out, err := ruleCmd(t, "deny", "-t", "binary", "-i", strings.Repeat("cd", 32), "--group", "x", "--force"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	highest := rulesVersion(t, "x")
+	mustGroup(t, "delete", "x", "--force")
+	mustGroup(t, "create", "x")
+	if v := rulesVersion(t, "x"); v <= highest {
+		t.Errorf("recreated group starts at RulesVersion %d; its earlier life reached %d", v, highest)
+	}
+}
