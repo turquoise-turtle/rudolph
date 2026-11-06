@@ -16,6 +16,7 @@ import (
 	"github.com/airbnb/rudolph/internal/csv"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	rudolphrules "github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
@@ -234,23 +235,23 @@ func (r *importResult) report() error {
 
 // storedRuleUnchanged reports whether the global rule is already stored with every field the file sets. The read is
 // strongly consistent, so a change written moments ago by someone else is not mistaken for the file's version.
-func storedRuleUnchanged(client dynamodb.BatchGetItemAPI, rule fileRule) (bool, error) {
+// storedRule returns the global rule stored for the imported rule, or nil, and whether writing the imported rule would
+// change it.
+func storedRule(client dynamodb.BatchGetItemAPI, rule fileRule) (*globalrules.GlobalRuleRow, bool, error) {
 	sortKey := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
 	stored, err := globalrules.GetGlobalRulesBySortKeysConsistently(client, []string{sortKey})
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	current := stored[sortKey]
 	if current == nil || current.SHA256 != "" || current.RuleType != rule.RuleType || current.Identifier != rule.Identifier {
-		// Absent, or a legacy row that writing it again migrates
-		return false, nil
+		return current, false, nil
 	}
 	want := rudolphrules.SantaRule{RuleType: rule.RuleType, Policy: rule.Policy, Identifier: rule.Identifier}
 	want.ApplyOptions(rule.options()...)
-	return current.SantaRule == want && current.Description == rule.Description, nil
+	return current, current.SantaRule == want && current.Description == rule.Description, nil
 }
 
-// startWriters starts the workers writing rules to DynamoDB; wait on the returned WaitGroup after closing rules
 func startWriters(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
@@ -314,10 +315,14 @@ func ddbWriter(
 				sortkey,
 				"",
 			)
+			if err == nil {
+				// A removed rule's allowed executions are no longer collected, also if it is imported again later
+				err = forgetCollectedRule(client, sortkey)
+			}
 		default:
 			// Writing a rule that is already stored as it is would add a feed row every Mac downloads again, and for
 			// Macs whose postflights do not arrive such rows hold back the feed cursor (see docs/rule-pagination.md)
-			unchanged, checkErr := storedRuleUnchanged(client, rule)
+			current, unchanged, checkErr := storedRule(client, rule)
 			if checkErr != nil {
 				result.fail(fmt.Errorf("rule %s%s: %w", rule.Identifier, suffix, checkErr))
 				continue
@@ -336,10 +341,33 @@ func ddbWriter(
 				rule.Description,
 				rule.options()...,
 			)
+			if err == nil && current != nil && current.CollectAllowedEvents {
+				// The new row replaced the old one: keep collecting the rule's allowed executions
+				err = keepCollectingRule(client, current.PrimaryKey, timeProvider)
+			}
 		}
 
 		if err != nil {
 			result.fail(fmt.Errorf("rule %s%s: %w", rule.Identifier, suffix, err))
 		}
 	}
+}
+
+func forgetCollectedRule(client dynamodb.DynamoDBClient, ruleSortKey string) error {
+	writer, ok := client.(eventcollection.Writer)
+	if !ok {
+		return nil
+	}
+	return eventcollection.Forget(writer, "", ruleSortKey)
+}
+
+func keepCollectingRule(client dynamodb.DynamoDBClient, ruleKey dynamodb.PrimaryKey, timeProvider clock.TimeProvider) error {
+	writer, ok := client.(eventcollection.Writer)
+	if !ok {
+		return errors.New("this DynamoDB client cannot keep the rule's allowed executions collected")
+	}
+	if err := eventcollection.SetCollectAllowedEvents(writer, "", ruleKey, true, timeProvider.Now()); err != nil {
+		return fmt.Errorf("the rule was written, but its allowed executions are no longer collected: %w", err)
+	}
+	return nil
 }

@@ -10,13 +10,16 @@
 //
 // The CLI changes a rule's flag and this item in one transaction, with ADD and DELETE on the sets, which DynamoDB
 // applies atomically: concurrent CLI runs flagging different rules never lose each other's changes. A set left empty
-// disappears.
+// disappears. The item is only a hint: a rule row can be deleted by the TTL, or rewritten, without it, so the reader
+// confirms each rule on its row (and takes stale entries out).
 package eventcollection
 
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	awsdynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -37,10 +40,15 @@ func IndexKey() dynamodb.PrimaryKey {
 	return dynamodb.PrimaryKey{PartitionKey: indexPartitionKey, SortKey: indexSortKey}
 }
 
-// Index is the set of flagged rules, by rule sort key.
+// Index is the set of flagged rules, by rule sort key as stored. It is a hint: a rule removed, re-created or expired
+// since may still be listed, so a reader confirms a rule on its row before acting on it.
 type Index struct {
 	Global   map[string]bool
 	Machines map[string]map[string]bool
+
+	// By MatchKey, the stored sort keys that match it.
+	globalByMatch   map[string][]string
+	machinesByMatch map[string]map[string][]string
 }
 
 // Empty reports whether no rule is flagged.
@@ -48,19 +56,40 @@ func (ix Index) Empty() bool {
 	return len(ix.Global) == 0 && len(ix.Machines) == 0
 }
 
-// Collects reports whether events allowed by the rule with this sort key are stored for this Mac: the global rule is
-// flagged, or the Mac's own machine rule is.
-func (ix Index) Collects(machineID, ruleSortKey string) bool {
-	if ruleSortKey == "" {
-		return false
+// hashRulePrefixes are the sort key prefixes of rules whose identifier is a hash. Rules stored by older versions may
+// have an upper-case hash, while Santa reports lower case.
+var hashRulePrefixes = []string{"Binary#", "Cert#", "CDHash#"}
+
+// MatchKey is the form of a rule sort key that events are matched on: hash identifiers in lower case, others as they
+// are (team IDs and signing IDs are case-sensitive).
+func MatchKey(ruleSortKey string) string {
+	for _, prefix := range hashRulePrefixes {
+		if strings.HasPrefix(ruleSortKey, prefix) {
+			return prefix + strings.ToLower(strings.TrimPrefix(ruleSortKey, prefix))
+		}
 	}
-	return ix.Global[ruleSortKey] || ix.Machines[machineID][ruleSortKey]
+	return ruleSortKey
+}
+
+// Candidates returns the stored sort keys of the flagged global rules, and of the Mac's flagged machine rules, that
+// match the rule sort key of an event (see MatchKey).
+func (ix Index) Candidates(machineID, ruleSortKey string) (global, machine []string) {
+	if ruleSortKey == "" {
+		return nil, nil
+	}
+	key := MatchKey(ruleSortKey)
+	return ix.globalByMatch[key], ix.machinesByMatch[machineID][key]
 }
 
 // ParseIndex reads the index item; a nil item (no rule ever flagged) is an empty index. Attributes it does not know
 // are ignored.
 func ParseIndex(item map[string]awsdynamodbtypes.AttributeValue) Index {
-	ix := Index{Global: map[string]bool{}, Machines: map[string]map[string]bool{}}
+	ix := Index{
+		Global:          map[string]bool{},
+		Machines:        map[string]map[string]bool{},
+		globalByMatch:   map[string][]string{},
+		machinesByMatch: map[string]map[string][]string{},
+	}
 	for name, value := range item {
 		set, ok := value.(*awsdynamodbtypes.AttributeValueMemberSS)
 		if !ok {
@@ -70,14 +99,18 @@ func ParseIndex(item map[string]awsdynamodbtypes.AttributeValue) Index {
 		case name == globalAttribute:
 			for _, sk := range set.Value {
 				ix.Global[sk] = true
+				ix.globalByMatch[MatchKey(sk)] = append(ix.globalByMatch[MatchKey(sk)], sk)
 			}
 		case strings.HasPrefix(name, machineAttributePrefix):
 			machineID := strings.TrimPrefix(name, machineAttributePrefix)
 			rules := map[string]bool{}
+			byMatch := map[string][]string{}
 			for _, sk := range set.Value {
 				rules[sk] = true
+				byMatch[MatchKey(sk)] = append(byMatch[MatchKey(sk)], sk)
 			}
 			ix.Machines[machineID] = rules
+			ix.machinesByMatch[machineID] = byMatch
 		}
 	}
 	return ix
@@ -99,12 +132,13 @@ type Writer interface {
 	dynamodb.TransactUpdateExpressionAPI
 }
 
-// ErrRuleNotFound is returned by SetCollectAllowedEvents when the rule row does not exist.
-var ErrRuleNotFound = errors.New("no such rule exists")
+// ErrRuleNotFound is returned by SetCollectAllowedEvents when the rule row does not exist, or is a machine rule that
+// has expired.
+var ErrRuleNotFound = errors.New("no such rule exists, or the machine rule has expired")
 
-// indexAttribute is the index attribute holding the flagged rules of the target: a Mac, or the global rules when
+// IndexAttribute is the index attribute holding the flagged rules of the target: a Mac, or the global rules when
 // machineID is empty.
-func indexAttribute(machineID string) string {
+func IndexAttribute(machineID string) string {
 	if machineID == "" {
 		return globalAttribute
 	}
@@ -114,15 +148,24 @@ func indexAttribute(machineID string) string {
 // SetCollectAllowedEvents sets or clears CollectAllowedEvents on an existing rule row (ruleKey: a global rule when
 // machineID is empty, else the Mac's machine rule) and updates the index in the same transaction. The rule's other
 // attributes, the rules feed and what Santa downloads are left as they are.
-func SetCollectAllowedEvents(client Writer, machineID string, ruleKey dynamodb.PrimaryKey, collect bool) error {
+//
+// A machine rule is only flagged while it has not expired at now: an expired rule allows nothing on the Mac.
+func SetCollectAllowedEvents(client Writer, machineID string, ruleKey dynamodb.PrimaryKey, collect bool, now time.Time) error {
 	ruleUpdate := "REMOVE #flag"
+	condition := "attribute_exists(PK)"
+	names := map[string]string{"#flag": RuleAttribute}
 	var ruleValues map[string]awsdynamodbtypes.AttributeValue
 	if collect {
 		ruleUpdate = "SET #flag = :true"
 		ruleValues = map[string]awsdynamodbtypes.AttributeValue{":true": &awsdynamodbtypes.AttributeValueMemberBOOL{Value: true}}
+		if machineID != "" {
+			condition += " AND (attribute_not_exists(#expires) OR #expires = :zero OR #expires > :now)"
+			names["#expires"] = "ExpiresAfter"
+			ruleValues[":zero"] = &awsdynamodbtypes.AttributeValueMemberN{Value: "0"}
+			ruleValues[":now"] = &awsdynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now.Unix(), 10)}
+		}
 	}
-	rule, err := client.CreateTransactUpdateExpression(ruleKey, ruleUpdate, "attribute_exists(PK)",
-		map[string]string{"#flag": RuleAttribute}, ruleValues)
+	rule, err := client.CreateTransactUpdateExpression(ruleKey, ruleUpdate, condition, names, ruleValues)
 	if err != nil {
 		return err
 	}
@@ -132,7 +175,7 @@ func SetCollectAllowedEvents(client Writer, machineID string, ruleKey dynamodb.P
 		operation = "ADD"
 	}
 	index, err := client.CreateTransactUpdateExpression(IndexKey(), operation+" #rules :rule", "",
-		map[string]string{"#rules": indexAttribute(machineID)},
+		map[string]string{"#rules": IndexAttribute(machineID)},
 		map[string]awsdynamodbtypes.AttributeValue{":rule": &awsdynamodbtypes.AttributeValueMemberSS{Value: []string{ruleKey.SortKey}}})
 	if err != nil {
 		return err
@@ -159,7 +202,7 @@ func Forget(client Writer, machineID string, ruleSortKey string) error {
 		return nil
 	}
 	index, err := client.CreateTransactUpdateExpression(IndexKey(), "DELETE #rules :rule", "attribute_exists(PK)",
-		map[string]string{"#rules": indexAttribute(machineID)},
+		map[string]string{"#rules": IndexAttribute(machineID)},
 		map[string]awsdynamodbtypes.AttributeValue{":rule": &awsdynamodbtypes.AttributeValueMemberSS{Value: []string{ruleSortKey}}})
 	if err != nil {
 		return err

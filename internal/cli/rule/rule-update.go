@@ -303,25 +303,26 @@ func (rh *ruleHandler) setCollectAllowedEvents(tf flags.TargetFlags, machineID s
 	if !tf.IsGlobal {
 		indexMachineID = machineID
 	}
-	err := eventcollection.SetCollectAllowedEvents(writer, indexMachineID, ruleKey, collect)
+	err := eventcollection.SetCollectAllowedEvents(writer, indexMachineID, ruleKey, collect, rh.timeProvider.Now())
 	if errors.Is(err, eventcollection.ErrRuleNotFound) {
-		return errors.New("the rule was removed while it was being updated")
+		return errors.New("the rule was removed, or the machine rule expired, while it was being updated")
 	}
 	return err
 }
 
-// warnIfAllEventUploadOff warns that flagging a rule collects nothing while Santa does not upload allowed executions.
-func warnIfAllEventUploadOff(client dynamodb.DynamoDBClient) {
-	enabled, err := machineconfiguration.AllEventUploadEnabledAnywhere(client)
+// warnIfAllEventUploadOff warns that flagging a rule collects nothing from Macs where Santa does not upload allowed
+// executions. Only the global config is checked: machine configs have no index, and the warning names the per-Mac
+// setting.
+func warnIfAllEventUploadOff(client dynamodb.GetItemAPI) {
+	global, err := machineconfiguration.GetGlobalConfig(client)
 	if err != nil {
-		fmt.Printf("[WARNING] could not check whether EnableAllEventUpload is on: %v\n", err)
+		fmt.Printf("[WARNING] could not read the global config to check EnableAllEventUpload: %v\n", err)
 		return
 	}
-	if enabled {
+	if global != nil && global.EnableAllEventUpload != nil && *global.EnableAllEventUpload {
 		return
 	}
-	fmt.Println("[WARNING] EnableAllEventUpload is off in the global config and in every machine config. Santa uploads")
-	fmt.Println("          executions allowed by a rule only with it, so nothing will be collected until it is on:")
-	fmt.Println("          rudolph config update --global --enable-all-event-upload, or for a few Macs only with")
-	fmt.Println("          rudolph config update --machine <machine-id> --enable-all-event-upload.")
+	fmt.Println("[WARNING] Santa uploads allowed executions only with EnableAllEventUpload; it is off in the global")
+	fmt.Println("          configuration. Enable it for the Macs to watch with")
+	fmt.Println("          rudolph config update --machine <id> --enable-all-event-upload")
 }

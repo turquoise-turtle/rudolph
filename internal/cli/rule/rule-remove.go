@@ -12,7 +12,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
-	"github.com/airbnb/rudolph/pkg/model/rules"
+	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -115,19 +115,18 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 }
 
 // ruleRemoved reports whether the rule is gone (global) or marked for removal (machine), so that the operator did
-// not answer no to the confirmation.
+// not answer no to the confirmation. The reads are strongly consistent: the removal was written moments ago.
 func ruleRemoved(client dynamodb.DynamoDBClient, machineID string, ruleSortKey string) (bool, error) {
 	if machineID == "" {
-		rule, err := globalrules.GetGlobalRuleBySortKey(client, ruleSortKey)
-		return rule == nil, err
+		stored, err := globalrules.GetGlobalRulesBySortKeysConsistently(client, []string{ruleSortKey})
+		if err != nil {
+			return false, err
+		}
+		return stored[ruleSortKey] == nil, nil
 	}
-	ruleType, identifier, ok := rules.RuleTypeIdentifierFromSortKey(ruleSortKey)
-	if !ok {
-		return false, nil
-	}
-	rule, err := machinerules.GetMachineRuleByShaType(client, machineID, identifier, ruleType)
+	rule, err := machinerules.GetMachineRuleConsistently(client, machineID, ruleSortKey)
 	if err != nil {
 		return false, err
 	}
-	return rule == nil || rule.DeleteOnNextSync, nil
+	return rule == nil || rule.DeleteOnNextSync || rule.Policy == types.RulePolicyRemove, nil
 }

@@ -36,9 +36,18 @@ Santa has no per-rule upload switch, so the writer decides. A rule row (global o
 | `ALLOW_SIGNINGID` | `SigningID#<signing_id>` |
 | `ALLOW_CDHASH` | `CDHash#<cdhash>` |
 
-The writer does not read a rule per event. The CLI keeps an index of the flagged rules in one item of the store table, PK `EventCollection`, SK `Rules`: a string set `Global` of flagged global rule sort keys, and a string set `Machine#<machine ID>` per Mac with flagged machine rules. It changes the rule row and the index in one transaction, with `ADD` and `DELETE` on the sets, so concurrent CLI runs never lose each other's changes; removing or re-creating a rule takes it out of the index. The eventupload Lambda reads the item (`GetItem` on that one key of the store table, named by `DYNAMODB_NAME`) only for an upload holding at least one allowed-by-rule event, and a warm Lambda keeps it for up to 60 seconds, so a change takes up to a minute to apply. An upload with no such events makes no extra call.
+The writer does not scan the rules. The CLI keeps an index of the flagged rules in one item of the store table, PK `EventCollection`, SK `Rules`: a string set `Global` of flagged global rule sort keys, and a string set `Machine#<machine ID>` per Mac with flagged machine rules. It changes the rule row and the index in one transaction, with `ADD` and `DELETE` on the sets, so concurrent CLI runs never lose each other's changes. Removing a rule (`rudolph rule remove`, or `REMOVE` in `rudolph rules import`) or creating it again with `rudolph rule ...` takes it out of the index; rewriting it with `rudolph rules import` keeps its flag.
 
-Santa uploads allowed-by-rule executions only when `EnableAllEventUpload` is on (`rudolph config update --global --enable-all-event-upload`, or `--machine <id>` for a few Macs only); the CLI warns when a rule is flagged while it is off everywhere.
+The index is a hint, not the truth: a machine rule's row can expire or be deleted by the TTL while its entry stays. So the eventupload Lambda (store table named by `DYNAMODB_NAME`):
+
+- reads the index only for an upload holding at least one allowed-by-rule event (an upload with none makes no extra call);
+- confirms each matching rule on its row (`GetItem`, strongly consistent) before storing anything: the row must exist and be flagged, and a machine rule must still apply (not expired, not marked for removal, not a `REMOVE`);
+- takes a rule whose row is gone or not flagged out of the index, in a transaction that checks the row has not been flagged again meanwhile (best effort);
+- keeps the index and each confirmation for up to 60 seconds in a warm Lambda, so a change takes up to a minute to apply;
+- matches hash identifiers (binary, certificate and CDHash rules) case-insensitively, as older versions stored some in upper case;
+- never fails an upload because one of these reads failed: it logs it, skips the allowed-by-rule events concerned, and stores the rest.
+
+Santa uploads allowed-by-rule executions only when `EnableAllEventUpload` is on (`rudolph config update --machine <id> --enable-all-event-upload` for a few Macs, or `--global`); the CLI warns when a rule is flagged while it is off in the global configuration.
 
 ## Items
 
@@ -76,4 +85,4 @@ Point-in-time recovery is on, as for the store table, and is billed by table siz
 
 The `santa_api` module outputs `events_dynamodb_table_name`, `events_dynamodb_table_arn` and `store_kms_key_arn`. The web view's role needs `dynamodb:Query` and `dynamodb:GetItem` on the table ARN and `<table ARN>/index/*`. The table is encrypted with the same customer managed KMS key as the store table; that key's policy already lets any principal in the account use it through DynamoDB, so no extra KMS grant is needed unless your organisation has tightened the key policy.
 
-The eventupload Lambda is the only writer: it gets `dynamodb:PutItem` and `dynamodb:UpdateItem` (which also cover its transactions) on this table only (policy `PREFIX_rudolph_events_write_policy`), and no access to read it. The same policy lets it `GetItem` the `EventCollection` item of the store table (condition `dynamodb:LeadingKeys` = `EventCollection`), and nothing else of that table.
+The eventupload Lambda is the only writer: it gets `dynamodb:PutItem` and `dynamodb:UpdateItem` (which also cover its transactions) on this table only (policy `PREFIX_rudolph_events_write_policy`), and no access to read it. The same policy lets it, on the store table, `GetItem` the `EventCollection` item and the rule rows (`dynamodb:LeadingKeys` `EventCollection`, `GlobalRules`, `MachineRules#*`), `UpdateItem` the `EventCollection` item only, and `ConditionCheckItem` the rule rows; nothing else of that table.

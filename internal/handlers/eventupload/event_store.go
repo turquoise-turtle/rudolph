@@ -20,7 +20,6 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/airbnb/rudolph/pkg/eventsink"
-	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 )
@@ -127,51 +126,6 @@ func allowingRule(e EventUploadEvent) string {
 	return rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType)
 }
 
-// collectedRulesCacheFor is how long a warm Lambda keeps the flagged rules it read: a change made with the CLI
-// reaches the events table within this time.
-const collectedRulesCacheFor = 60 * time.Second
-
-type indexGetter interface {
-	GetItem(ctx context.Context, in *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
-}
-
-// collectedRules reads the index of flagged rules (pkg/model/eventcollection) from the store table, at most once per
-// collectedRulesCacheFor.
-type collectedRules struct {
-	api   indexGetter
-	table string
-	now   func() time.Time
-
-	mu      sync.Mutex
-	index   eventcollection.Index
-	readAt  time.Time
-	hasRead bool
-}
-
-func newCollectedRules(api indexGetter, storeTable string) *collectedRules {
-	return &collectedRules{api: api, table: storeTable, now: time.Now}
-}
-
-func (c *collectedRules) get(ctx context.Context) (eventcollection.Index, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now()
-	if c.hasRead && now.Sub(c.readAt) < collectedRulesCacheFor && !now.Before(c.readAt) {
-		return c.index, nil
-	}
-	key := eventcollection.IndexKey()
-	out, err := c.api.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:      aws.String(c.table),
-		Key:            map[string]types.AttributeValue{"PK": str(key.PartitionKey), "SK": str(key.SortKey)},
-		ConsistentRead: aws.Bool(true),
-	})
-	if err != nil {
-		return eventcollection.Index{}, fmt.Errorf("reading the rules whose allowed events are collected: %w", err)
-	}
-	c.index, c.readAt, c.hasRead = eventcollection.ParseIndex(out.Item), now, true
-	return c.index, nil
-}
-
 type storableEvent struct {
 	event   EventUploadEvent
 	micros  int64
@@ -231,22 +185,12 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	seen := map[string]bool{}
 	var incomplete, outside, overLimit int
 	// The flagged rules are read only for an upload holding an execution allowed by a rule.
-	var collected *eventcollection.Index
+	lookup := s.collected.lookup(machineID)
 	for _, e := range events {
 		store, blocked := storedDecision(e.Decision)
 		if !store {
 			rule := allowingRule(e)
-			if rule == "" || s.collected == nil {
-				continue
-			}
-			if collected == nil {
-				index, err := s.collected.get(ctx)
-				if err != nil {
-					return fmt.Errorf("events table: %w", err)
-				}
-				collected = &index
-			}
-			if !collected.Collects(machineID, rule) {
+			if rule == "" || !lookup.collects(ctx, rule) {
 				continue
 			}
 		}

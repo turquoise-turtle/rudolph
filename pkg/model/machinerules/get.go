@@ -9,12 +9,21 @@ import (
 )
 
 func getItemAsMachineRule(client dynamodb.GetItemAPI, partitionKey string, sortKey string) (rule *MachineRuleRow, err error) {
+	return readMachineRule(client, partitionKey, sortKey, false)
+}
+
+// GetMachineRuleConsistently returns the machine rule with this sort key, or nil, with a strongly consistent read.
+func GetMachineRuleConsistently(client dynamodb.GetItemAPI, machineID string, ruleSortKey string) (*MachineRuleRow, error) {
+	return readMachineRule(client, machineRulePK(machineID), ruleSortKey, true)
+}
+
+func readMachineRule(client dynamodb.GetItemAPI, partitionKey string, sortKey string, consistent bool) (rule *MachineRuleRow, err error) {
 	output, err := client.GetItem(
 		dynamodb.PrimaryKey{
 			PartitionKey: partitionKey,
 			SortKey:      sortKey,
 		},
-		false,
+		consistent,
 	)
 
 	if err != nil {
