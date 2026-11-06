@@ -74,3 +74,19 @@ func TestQOL_EnvironmentFileWithoutARegionIsAnError(t *testing.T) {
 		t.Errorf("an environment file without a region gave err %v, want an error saying the region is empty", err)
 	}
 }
+
+// From the review of the CLI batch: a typed --prefix overrides the environment file's prefix for the table too, so
+// `--env prod --prefix staging` cannot write to production's table.
+func TestQOL_TypedPrefixOverridesTheEnvironmentFile(t *testing.T) {
+	qolRepoWithEnvironment(t, "qa", `{"prefix":"qa1","region":"ap-southeast-2"}`)
+	cmd := qolEnvCommand(t, "qa")
+	if err := cmd.Flags().Set("prefix", "staging"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retrieveConfig(cmd); err != nil {
+		t.Fatalf("retrieveConfig: %v", err)
+	}
+	if got, _ := cmd.Flags().GetString("dynamodb_table"); got != "staging_rudolph_store" {
+		t.Errorf("dynamodb_table = %q with --prefix staging, want staging_rudolph_store", got)
+	}
+}
