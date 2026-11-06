@@ -1,7 +1,9 @@
 package santa_sensor
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 )
@@ -49,7 +51,11 @@ func RunSantaFileInfo(filepath string) (santaFileInfo, error) {
 	var fileInfo santaFileInfo
 	output, err := cmd.Output()
 	if err != nil {
-		return fileInfo, err
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(bytes.TrimSpace(exitErr.Stderr)) > 0 {
+			return fileInfo, fmt.Errorf("santactl fileinfo %s: %w: %s", filepath, err, bytes.TrimSpace(exitErr.Stderr))
+		}
+		return fileInfo, fmt.Errorf("santactl fileinfo %s: %w", filepath, err)
 	}
 
 	var allInfo []santaFileInfo
@@ -59,7 +65,7 @@ func RunSantaFileInfo(filepath string) (santaFileInfo, error) {
 	}
 
 	if len(allInfo) == 0 {
-		return fileInfo, fmt.Errorf("zero items found in loaded file info from santa: %w", err)
+		return fileInfo, fmt.Errorf("santactl fileinfo returned no information about %s", filepath)
 	}
 
 	// We only support running on one item right now (not directories of items) so get the first one

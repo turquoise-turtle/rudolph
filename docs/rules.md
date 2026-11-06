@@ -50,7 +50,7 @@ Every `rudolph rule` command that writes a rule (`allow`, `deny`, `silent`, `sil
 `cel`, `update`, `remove`) requires exactly one of `--global` (every Mac) or `--machine <machine-uuid>` (one Mac), or
 `--group <group>` / `--ungrouped` for a device group (all but `update`; see [Device groups](groups.md)).
 There is no default target: older versions applied the rule to the Mac running the CLI when both were left out.
-`rudolph rule remove` takes the rule as `<rule-name>` (e.g. `TeamID#EQHXZ8M8AV`) or as `-t <rule-type> -i <identifier>`.
+`rudolph rule remove` takes the rule as `-t <rule-type> -i <identifier>` or as `<rule-name>`, the sort key `rudolph rules` prints (`Binary#`, `Cert#`, `TeamID#`, `SigningID#` or `CDHash#` and the identifier, e.g. `TeamID#EQHXZ8M8AV`). Every command and flag is listed in the [CLI reference](cli.md).
 
 The machine UUID must be in its canonical form (8-4-4-4-12 hexadecimal digits); every `rudolph` command that takes `--machine` (`rule`, `rules`, `config`) refuses anything else, as the API does. It can be typed in any case. The server keeps a Mac's machine ID exactly as the Mac sends it, which is upper case for the hardware UUID but can be any case when Santa's `MachineID` setting is used, so the CLI looks the ID up in the case typed, in upper case and in lower case, and uses the first of these that a Mac has synced under; failing that, one with a machine configuration; failing that, one with machine rules (older CLIs stored the ID as typed); and otherwise upper case. The lookup is one DynamoDB BatchGetItem request, plus at most three one-item queries when nothing is known about the machine. The CLI warns when no Mac has ever synced under the ID it uses.
 
@@ -65,7 +65,7 @@ From the CLI, `rudolph rule allow|deny|silent|silent-gui|silent-tty|compiler` ac
 `--event-detail-button-label` and `--notification-app-name`, and `rudolph rule cel --expression <expr>` creates CEL rules.
 CDHash rules must be given with `--identifier`.
 
-Changing a rule's policy (`rudolph rule update`) keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. A machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated, including one that expires while the CLI waits for confirmation (the write is conditional on the rule not having expired); create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
+`rudolph rule update` changes only what it is given: the policy (`-p`), the expiry of a machine rule (`--expires`, `--permanent`), the four message and URL flags, and `--collect-allowed-events`. Changing a rule's policy keeps its other fields but clears its CEL expression, so a rule cannot be updated *to* `CEL`: remove it and create it again with `rudolph rule cel`. `-p remove` is refused as well: use `rudolph rule remove`. Without `--expires` or `--permanent`, a machine-specific rule keeps its expiry: a permanent rule stays permanent and an expiring rule still expires when it did. A rule that has already expired cannot be updated, including one that expires while the CLI waits for confirmation (the write is conditional on the rule not having expired); create it again with `--expires` or `--permanent`. `rudolph rule update --identifier` does not need Santa on the computer running the CLI; only `--filepath` runs `santactl fileinfo`.
 
 Removing a machine-specific rule restores
 the global rule for the same target, including its fields; so does its expiry. Without a global rule Santa can apply,
@@ -119,7 +119,7 @@ Global rules written before this attribute existed do not have it, so they are m
 ## Importing or Exporting Rules
 Rudolph comes with a handy CLI tool. One of the useful commands is to import/export rules to/from a csv or json file.
 Files have the columns (or json keys) `identifier`, `type`, `policy`, `description` and, optionally, `custom_msg`,
-`custom_url`, `event_detail_button_label`, `notification_app_name` and `cel_expr`; `type` and `policy` use the names above.
+`custom_url`, `event_detail_button_label`, `notification_app_name` and `cel_expr`; `type` and `policy` use the names above. Export also writes `collect_allowed_events`, for information: import does not read it. Export writes the global rules only; machine and group rules are not exported. The format is `--fileformat csv|json`, or else taken from the file's extension (export writes CSV unless the file is named `.json`). Import asks for confirmation before writing (none with `--yes`). See the [CLI reference](cli.md#rules-export-and-rules-import).
 
 You will first need to build the command line utility:
 
@@ -130,14 +130,11 @@ make build
 Once it is built, it will be available at `./rudolph`.
 
 ```
-export ENV=YOURENV
-./rudolph rules export -f /path/to/rules.csv
+./rudolph --env YOURENV rules export -f /path/to/rules.csv
+./rudolph --env YOURENV rules import -f /path/to/rules.csv
 ```
 
-```
-export ENV=YOURENV
-./rudolph rules import -f /path/to/rules.csv
-```
+`--env` (or the `ENV` environment variable) names the deployment; see [Choosing the deployment](cli.md#choosing-the-deployment).
 
 Import skips rules that are already stored with the same policy, custom message, custom URL, CEL expression, button label, notification app name and description (it reads each one first, strongly consistently), so importing an unchanged file again writes nothing and adds no rules feed row for Macs to download.
 

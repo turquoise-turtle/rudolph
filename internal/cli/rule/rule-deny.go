@@ -13,7 +13,7 @@ func init() {
 	ef := flags.RuleExpiryFlags{}
 
 	var ruleDenyCmd = &cobra.Command{
-		Use:     "deny <file-path>",
+		Use:     ruleUse("deny", "[--expires <duration-or-time>|--permanent]"),
 		Aliases: []string{"block"},
 		Short:   "Create a rule that applies the Blocklist policy to the specified file",
 		Args:    cobra.NoArgs,

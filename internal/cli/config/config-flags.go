@@ -258,6 +258,52 @@ func (o *optionalClientMode) String() string {
 	return o.mode.String()
 }
 
+// configTarget names the configuration a command changed
+func configTarget(tf flags.TargetFlags, machineID string) string {
+	if tf.IsGlobal {
+		return "every machine (global)"
+	}
+	return "machine " + machineID
+}
+
+// baseSettingsFlags are the flags of `config update` for the settings that `config set` always sets. A setting is
+// only changed when its flag is given.
+type baseSettingsFlags struct {
+	batchSize        int
+	bundles          bool
+	transitiveRules  bool
+	fullSyncInterval int
+	uploadLogsURL    string
+}
+
+func (f *baseSettingsFlags) addFlags(cmd *cobra.Command) {
+	cmd.Flags().IntVar(&f.batchSize, "batch-size", 0, "Number of events Santa uploads per request, between 1 and 500")
+	cmd.Flags().BoolVar(&f.bundles, "bundles", false, "Upload bundle events to the sync server (true or false)")
+	cmd.Flags().BoolVar(&f.transitiveRules, "transitive-rules", false, "Enable transitive rules (true or false)")
+	cmd.Flags().IntVar(&f.fullSyncInterval, "full-sync-interval", 0, "Full sync interval in seconds, at least 60")
+	cmd.Flags().StringVar(&f.uploadLogsURL, "upload-logs", "", "The upload logs URL; \"\" clears it")
+}
+
+// updateRequest adds the settings whose flags were given to the request
+func (f *baseSettingsFlags) updateRequest(cmd *cobra.Command, request *machineconfiguration.MachineConfigurationUpdateRequest) {
+	flags := cmd.Flags()
+	if flags.Changed("batch-size") {
+		request.BatchSize = &f.batchSize
+	}
+	if flags.Changed("bundles") {
+		request.EnableBundles = &f.bundles
+	}
+	if flags.Changed("transitive-rules") {
+		request.EnableTransitiveRules = &f.transitiveRules
+	}
+	if flags.Changed("full-sync-interval") {
+		request.FullSyncInterval = &f.fullSyncInterval
+	}
+	if flags.Changed("upload-logs") {
+		request.UploadLogsURL = &f.uploadLogsURL
+	}
+}
+
 // santaSettingsFlags are flags for optional Santa settings. A setting is only configured when its flag is given;
 // otherwise Santa keeps its current value.
 type santaSettingsFlags struct {
@@ -349,15 +395,15 @@ func wrapWriteError(err error) error {
 	return fmt.Errorf("error writing the configuration to the sync server: %w", err)
 }
 
-// printSantaSettings prints the optional Santa settings of a config
-func printSantaSettings(writer io.Writer, config machineconfiguration.MachineConfiguration) {
-	fmt.Fprintln(writer, "EnableAllEventUpload:\t", boolSetting(config.EnableAllEventUpload))
-	fmt.Fprintln(writer, "DisableUnknownEventUpload:\t", boolSetting(config.DisableUnknownEventUpload))
-	fmt.Fprintln(writer, "OverrideFileAccessAction:\t", stringSetting(string(config.OverrideFileAccessAction), config.OverrideFileAccessAction != ""))
-	fmt.Fprintln(writer, "BlockUsbMount:\t", boolSetting(config.BlockUsbMount))
-	fmt.Fprintln(writer, "RemountUsbMode:\t", stringSetting(strings.Join(config.RemountUsbMode, ","), len(config.RemountUsbMode) > 0))
-	fmt.Fprintln(writer, "EventDetailURL:\t", stringPtrSetting(config.EventDetailURL))
-	fmt.Fprintln(writer, "EventDetailText:\t", stringPtrSetting(config.EventDetailText))
+// printSantaSettings prints the optional Santa settings of a config, each followed by its origin
+func printSantaSettings(writer io.Writer, config machineconfiguration.MachineConfiguration, origin settingOrigin) {
+	fmt.Fprintln(writer, "EnableAllEventUpload:\t", boolSetting(config.EnableAllEventUpload)+origin("EnableAllEventUpload"))
+	fmt.Fprintln(writer, "DisableUnknownEventUpload:\t", boolSetting(config.DisableUnknownEventUpload)+origin("DisableUnknownEventUpload"))
+	fmt.Fprintln(writer, "OverrideFileAccessAction:\t", stringSetting(string(config.OverrideFileAccessAction), config.OverrideFileAccessAction != "")+origin("OverrideFileAccessAction"))
+	fmt.Fprintln(writer, "BlockUsbMount:\t", boolSetting(config.BlockUsbMount)+origin("BlockUsbMount"))
+	fmt.Fprintln(writer, "RemountUsbMode:\t", stringSetting(strings.Join(config.RemountUsbMode, ","), len(config.RemountUsbMode) > 0)+origin("RemountUsbMode"))
+	fmt.Fprintln(writer, "EventDetailURL:\t", stringPtrSetting(config.EventDetailURL)+origin("EventDetailURL"))
+	fmt.Fprintln(writer, "EventDetailText:\t", stringPtrSetting(config.EventDetailText)+origin("EventDetailText"))
 }
 
 const notConfigured = "(not configured)"

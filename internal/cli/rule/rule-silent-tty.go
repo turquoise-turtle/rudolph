@@ -13,7 +13,7 @@ func init() {
 	ef := flags.RuleExpiryFlags{}
 
 	var ruleSilentTTYCmd = &cobra.Command{
-		Use:     "silent-tty",
+		Use:     ruleUse("silent-tty", "[--expires <duration-or-time>|--permanent]"),
 		Aliases: []string{"silenttyblock"},
 		Short:   "Create a rule that applies the SilentTTYBlocklist policy (block without TTY notifications; GUI notifications are still shown)",
 		Args:    cobra.NoArgs,

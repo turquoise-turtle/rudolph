@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -26,12 +25,13 @@ func init() {
 		cleanSyncArg          bool
 		inheritArgs           []string
 		temporaryModeArgs     temporaryModeFlags
+		baseSettingsArgs      baseSettingsFlags
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <ClientMode - 'monitor', 'lockdown' or 'standalone'>|--client-mode] [--allowed-paths <regex>]... [--blocked-paths <regex>]... [--clean-sync] [--inherit <setting>]... [-c <mode> --for <duration>|--until <time>] [--end-temporary-mode]",
+		Use:   "update [-m <machine-id>|--global] [-c <client-mode>] [<setting flags>] [--clean-sync] [--inherit <setting>]... [-c <mode> (--for <duration>|--until <time>)] [--end-temporary-mode]",
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
@@ -50,6 +50,9 @@ is) again at its first sync after the end. --end-temporary-mode ends it early. A
 asks for confirmation; Santa blocks unknown binaries in them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := tf.RequireAtMostOneTarget(); err != nil {
+				return err
+			}
 			// Validate the flags before connecting to the sync server
 			var updateRequest machineconfiguration.MachineConfigurationUpdateRequest
 			if clientModeArg.set && !temporaryModeArgs.given(cmd) {
@@ -74,6 +77,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 			if err != nil {
 				return err
 			}
+			baseSettingsArgs.updateRequest(cmd, &updateRequest)
 			if cmd.Flags().Changed(flagCleanSync) {
 				updateRequest.CleanSync = &cleanSyncArg
 			}
@@ -108,7 +112,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)
 
 			if temporaryMode != nil {
-				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now())
+				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now(), flags.AssumeYes(cmd))
 			}
 
 			return updateConfig(
@@ -116,6 +120,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 				tf,
 				updateRequest,
 				confirmGlobalLockdown,
+				flags.AssumeYes(cmd),
 			)
 		},
 	}
@@ -130,7 +135,8 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 	// Flags defining blocked and allowed regex paths
 	pathRegexArgs.addFlags(configUpdateClientModeCmd)
 
-	// Flags for optional Santa settings
+	// Flags for the settings that config set also sets, and for optional Santa settings
+	baseSettingsArgs.addFlags(configUpdateClientModeCmd)
 	santaSettingsArgs.addFlags(configUpdateClientModeCmd)
 
 	configUpdateClientModeCmd.Flags().BoolVar(&cleanSyncArg, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once, and changes no other setting. Only for a machine (--machine); refused with --global. --clean-sync=false cancels a requested clean sync (with --global, it removes a flag stored by an earlier version, which is ignored)")
@@ -143,7 +149,8 @@ func updateConfig(
 	service machineconfiguration.MachineConfigurationService,
 	tf flags.TargetFlags,
 	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
-	confirmGlobalLockdown bool) (err error) {
+	confirmGlobalLockdown bool,
+	yes bool) (err error) {
 	// Refuse invalid values before asking for confirmation; the service enforces this as well
 	if err = machineconfiguration.ValidateUpdateRequest(updateRequest, tf.IsGlobal); err != nil {
 		return err
@@ -211,6 +218,21 @@ func updateConfig(
 	if updateRequest.AllowedPathRegex != nil {
 		fmt.Fprintln(writer, "AllowedPathRegex:\t \"", *updateRequest.AllowedPathRegex, "\"")
 	}
+	if updateRequest.BatchSize != nil {
+		fmt.Fprintln(writer, "BatchSize:\t", *updateRequest.BatchSize)
+	}
+	if updateRequest.EnableBundles != nil {
+		fmt.Fprintln(writer, "BundlesEnabled:\t", *updateRequest.EnableBundles)
+	}
+	if updateRequest.EnableTransitiveRules != nil {
+		fmt.Fprintln(writer, "EnabledTransitiveRules:\t", *updateRequest.EnableTransitiveRules)
+	}
+	if updateRequest.FullSyncInterval != nil {
+		fmt.Fprintln(writer, "FullSyncInterval:\t", *updateRequest.FullSyncInterval)
+	}
+	if updateRequest.UploadLogsURL != nil {
+		fmt.Fprintln(writer, "UploadLogUrl:\t \"", *updateRequest.UploadLogsURL, "\"")
+	}
 	if updateRequest.EnableAllEventUpload != nil {
 		fmt.Fprintln(writer, "EnableAllEventUpload:\t", *updateRequest.EnableAllEventUpload)
 	}
@@ -247,18 +269,8 @@ func updateConfig(
 	}
 	fmt.Print(runningTemporaryMode)
 	fmt.Println()
-	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
-	fmt.Print("> ")
-
-	// Read confirmation
-	reader := bufio.NewReader(os.Stdin)
-	text, _ := reader.ReadString('\n')
-	text = strings.Replace(text, "\n", "", -1)
-	if text == "ok" || text == "yes" {
-		fmt.Println("Sending the configuration to DynamoDB...")
-	} else {
-		fmt.Println("Confirmation not successful...")
-		return
+	if err := flags.Confirm(yes); err != nil {
+		return err
 	}
 
 	if tf.IsGlobal {
@@ -270,7 +282,7 @@ func updateConfig(
 	if err != nil {
 		return wrapWriteError(err)
 	} else {
-		fmt.Println("Success! Configuration was sent properly to DynamoDB...")
+		fmt.Printf("Updated the configuration of %s\n", configTarget(tf, machineID))
 	}
 	return
 

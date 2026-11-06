@@ -15,7 +15,7 @@ func init() {
 	var celExpr string
 
 	var ruleCELCmd = &cobra.Command{
-		Use:   "cel -e <cel-expression>",
+		Use:   ruleUse("cel", "-e <cel-expression> [--expires <duration-or-time>|--permanent]"),
 		Short: "Create a rule that applies the CEL policy: Santa evaluates the CEL expression to allow or block",
 		Long:  `The expression must return a santa.cel.v1.ReturnValue or a boolean (true allows, false blocks).`,
 		Args:  cobra.NoArgs,

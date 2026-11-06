@@ -1,10 +1,12 @@
 package flags
 
 import (
+	"errors"
 	"fmt"
 
 	"strings"
 
+	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
 )
@@ -28,28 +30,28 @@ const (
 	removeShort             = "delete"
 )
 
-var (
-	rulePolicyArg RulePolicy
-)
-
 const (
 	rulePolicyFlag           = "rule-policy"
 	collectAllowedEventsFlag = "collect-allowed-events"
 )
 
+// RuleUpdateFlags are the changes `rule update` can make to an existing rule
 type RuleUpdateFlags struct {
 	RulePolicy           *RulePolicy
 	CollectAllowedEvents *bool
+	Expiry               RuleExpiryFlags
+	Options              RuleOptionFlags
 
 	cmd *cobra.Command
 }
 
 func (r *RuleUpdateFlags) AddRuleUpdateFlags(cmd *cobra.Command) {
-
-	// rule-policy is to specify the policy for edit commands
-	cmd.Flags().VarP(&rulePolicyArg, rulePolicyFlag, "p", `type of rule being applied. valid options are: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist", "silent_tty_blocklist" or "remove"`)
+	var rulePolicyArg RulePolicy
+	cmd.Flags().VarP(&rulePolicyArg, rulePolicyFlag, "p", `The new policy of the rule: "allowlist", "blocklist", "silent_blocklist", "silent_gui_blocklist" or "silent_tty_blocklist". Without it the policy is kept`)
 
 	r.CollectAllowedEvents = cmd.Flags().Bool(collectAllowedEventsFlag, false, "store the executions this rule allows in the events table read by the web view (true or false); Santa uploads them only with EnableAllEventUpload")
+	r.Expiry.AddRuleExpiryFlags(cmd)
+	r.Options.AddRuleOptionFlags(cmd)
 
 	r.RulePolicy = &rulePolicyArg
 	r.cmd = cmd
@@ -57,34 +59,63 @@ func (r *RuleUpdateFlags) AddRuleUpdateFlags(cmd *cobra.Command) {
 
 // PolicyChanged reports whether --rule-policy was given.
 func (r *RuleUpdateFlags) PolicyChanged() bool {
-	return r.cmd != nil && r.cmd.Flags().Changed(rulePolicyFlag)
+	return r.changed(rulePolicyFlag)
 }
 
 // CollectAllowedEventsChanged reports whether --collect-allowed-events was given.
 func (r *RuleUpdateFlags) CollectAllowedEventsChanged() bool {
-	return r.cmd != nil && r.cmd.Flags().Changed(collectAllowedEventsFlag)
+	return r.changed(collectAllowedEventsFlag)
 }
 
-// RequireChange returns an error unless the policy or the collection flag is given.
+// ExpiryChanged reports whether --expires or --permanent was given
+func (r *RuleUpdateFlags) ExpiryChanged() bool {
+	return r.changed("expires") || r.changed("permanent")
+}
+
+// OptionsChanged reports whether any of the message and URL flags was given (an empty value clears the field)
+func (r *RuleUpdateFlags) OptionsChanged() bool {
+	return r.changed(customMsgFlag) || r.changed(customURLFlag) || r.changed(eventDetailButtonLabelFlag) || r.changed(notificationAppNameFlag)
+}
+
+// ApplyOptions sets the fields of rule whose message and URL flags were given
+func (r *RuleUpdateFlags) ApplyOptions(rule *rules.SantaRule) {
+	if r.changed(customMsgFlag) {
+		rule.CustomMessage = *r.Options.CustomMessage
+	}
+	if r.changed(customURLFlag) {
+		rule.CustomURL = *r.Options.CustomURL
+	}
+	if r.changed(eventDetailButtonLabelFlag) {
+		rule.EventDetailButtonLabel = *r.Options.EventDetailButtonLabel
+	}
+	if r.changed(notificationAppNameFlag) {
+		rule.NotificationAppName = *r.Options.NotificationAppName
+	}
+}
+
+func (r *RuleUpdateFlags) changed(flag string) bool {
+	return r.cmd != nil && r.cmd.Flags().Changed(flag)
+}
+
+// RequireChange returns an error unless something to change is given, and refuses the policies an update cannot set
 func (r *RuleUpdateFlags) RequireChange() error {
-	if !r.PolicyChanged() && !r.CollectAllowedEventsChanged() {
-		return fmt.Errorf("pass the new policy with --%s (-p), --%s=true|false, or both", rulePolicyFlag, collectAllowedEventsFlag)
+	if !r.PolicyChanged() && !r.CollectAllowedEventsChanged() && !r.ExpiryChanged() && !r.OptionsChanged() {
+		return fmt.Errorf("nothing to change: pass the new policy with --%s (-p), --%s=true|false, --expires or --permanent, or a message or URL flag", rulePolicyFlag, collectAllowedEventsFlag)
+	}
+	if r.PolicyChanged() {
+		switch r.RulePolicy.AsRulePolicy() {
+		case types.RulePolicyRemove:
+			// A REMOVE policy on a rule row is sent to Santa but never deletes the row
+			return errors.New(`a rule is not removed by updating its policy; use "rudolph rule remove"`)
+		case types.RulePolicyCEL:
+			return errors.New(`a rule cannot be updated to the CEL policy; remove it and create it with "rule cel"`)
+		}
 	}
 	return nil
 }
 
 // rulePolicy is a custom type for use as a CLI flag representing the type of rule policy being applied
 type RulePolicy types.Policy
-
-func newRulePolicyValue(val string, p *RuleType) *RuleType {
-	err := p.Set(val)
-	if err != nil {
-		fmt.Println(`Warning: invalid default value for rule policy, using "allowlist"`)
-		*p = RuleType(types.Allowlist)
-	}
-
-	return p
-}
 
 func (i *RulePolicy) AsRulePolicy() types.Policy {
 	return types.Policy(*i)

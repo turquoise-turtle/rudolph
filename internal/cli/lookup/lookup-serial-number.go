@@ -1,7 +1,7 @@
 package lookup
 
 import (
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -10,12 +10,16 @@ import (
 )
 
 func init() {
+	var limit int32
 
 	var lookupSerialNumberCmd = &cobra.Command{
-		Use:   "serial-number",
-		Short: "Attempts to search for a machine ID given a serial number and returns the corresponding machine ID",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   "serial-number <serial-number> [--limit <n>]",
+		Short: "Find the machine IDs that synced with a serial number",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if limit < 1 {
+				return errors.New("--limit must be at least 1")
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -25,14 +29,16 @@ func init() {
 
 			sensorDataFinderService := sensordata.GetSensorDataFinder(dynamodbClient)
 
-			machineIDs, err := sensorDataFinderService.GetMachineIDsFromSerialNumber(serialNumber, 5)
+			machineIDs, err := sensorDataFinderService.GetMachineIDsFromSerialNumber(serialNumber, limit)
 			if err != nil {
 				return err
 			}
-			fmt.Println(machineIDs)
+			printMachineIDs(machineIDs, limit)
 			return nil
 		},
 	}
+
+	lookupSerialNumberCmd.Flags().Int32Var(&limit, "limit", 5, "The most machine IDs to show")
 
 	LookupCmd.AddCommand(lookupSerialNumberCmd)
 }

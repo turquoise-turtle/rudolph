@@ -2,8 +2,12 @@ package rules
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -18,27 +22,56 @@ func addRuleExportCommand() {
 	var filename string
 	var format string
 	var ruleExportCmd = &cobra.Command{
-		Use:     "export  <file-name>",
+		Use:     "export -f <file-path> [--fileformat csv|json]",
 		Aliases: []string{"rules-export"},
-		Short:   "Export all rules into a csv file",
-		Args:    cobra.NoArgs,
+		Short:   "Export the global rules to a CSV or JSON file",
+		Long: `Export the global rules to a CSV or JSON file, in the format "rules import" reads. The format is --fileformat, or
+else JSON for a file named .json and CSV otherwise. Machine rules and group rules
+are not exported. The collect_allowed_events column is for information: "rules import" does not set it.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// args[0] has already been validated as a file before this
+			if filename == "" {
+				return errors.New("pass the file to write with -f <file-path>")
+			}
+			fileFormat, err := exportFormat(filename, format)
+			if err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
 			dynamodbClient := dynamodb.GetClient(table, region)
 
-			return runExport(dynamodbClient, filename, format)
+			return runExport(dynamodbClient, filename, fileFormat)
 		},
 	}
 
-	ruleExportCmd.Flags().StringVarP(&filename, "filename", "f", "", "The filename")
-	_ = ruleExportCmd.MarkFlagRequired("filename")
-
-	ruleExportCmd.Flags().StringVarP(&format, "fileformat", "t", "csv", "File format (one of: [json|csv])")
+	addFileFlags(ruleExportCmd, &filename, "The file to write the rules to; it is replaced")
+	ruleExportCmd.Flags().StringVar(&format, "fileformat", "", "File format: csv or json; by default json for a .json file and csv otherwise")
 
 	RulesCmd.AddCommand(ruleExportCmd)
+}
+
+// exportFormat returns the format to export in: format if given, else json for a .json file and csv otherwise
+func exportFormat(filename, format string) (string, error) {
+	if format == "" {
+		if strings.EqualFold(filepath.Ext(filename), ".json") {
+			return "json", nil
+		}
+		return "csv", nil
+	}
+	format = strings.ToLower(format)
+	if format != "csv" && format != "json" {
+		return "", fmt.Errorf("--fileformat %q: must be csv or json", format)
+	}
+	return format, nil
+}
+
+// addFileFlags adds -f/--filepath, and --filename, its former name, to an export or import command
+func addFileFlags(cmd *cobra.Command, filename *string, usage string) {
+	cmd.Flags().StringVarP(filename, "filepath", "f", "", usage)
+	cmd.Flags().StringVar(filename, "filename", "", usage)
+	_ = cmd.Flags().MarkDeprecated("filename", "use -f or --filepath")
 }
 
 func runExport(
@@ -52,7 +85,7 @@ func runExport(
 	case "csv":
 		return runCsvExport(client, filename)
 	}
-	return
+	return fmt.Errorf("unknown file format %q; must be csv or json", format)
 }
 
 type fileRule struct {
@@ -65,6 +98,8 @@ type fileRule struct {
 	NotificationAppName    string         `json:"notification_app_name,omitempty"`
 	CELExpr                string         `json:"cel_expr,omitempty"`
 	Description            string         `json:"description"`
+	// CollectAllowedEvents is exported for information; import does not set it
+	CollectAllowedEvents bool `json:"collect_allowed_events,omitempty"`
 }
 
 // options returns the optional rule fields of a file rule
@@ -92,6 +127,7 @@ func runJsonExport(client dynamodb.QueryAPI, filename string) (err error) {
 			NotificationAppName:    rule.NotificationAppName,
 			CELExpr:                rule.CELExpr,
 			Description:            rule.Description,
+			CollectAllowedEvents:   rule.CollectAllowedEvents,
 		})
 		return
 	})
@@ -130,11 +166,17 @@ func runCsvExport(
 		"notification_app_name",
 		"cel_expr",
 		"description",
+		"collect_allowed_events",
 	}
 
 	wg, err := csv.WriteCsvFile(filename, header, csvRules)
 	if err != nil {
-		panic(err)
+		return err
+	}
+	// Also on a failed query, so that the writer finishes
+	closeAndWait := func() {
+		close(csvRules)
+		wg.Wait()
 	}
 
 	fmt.Println("Querying rules from DynamoDB...")
@@ -158,21 +200,17 @@ func runCsvExport(
 			rule.NotificationAppName,
 			rule.CELExpr,
 			rule.Description,
-		}
-		if err != nil {
-			return
+			strconv.FormatBool(rule.CollectAllowedEvents),
 		}
 
 		totalWritten += 1
 		csvRules <- record
 		return
 	})
+	closeAndWait()
 	if err != nil {
 		return
 	}
-
-	close(csvRules)
-	wg.Wait()
 
 	fmt.Printf("rules discovered: %d, rules written: %d\n", total, totalWritten)
 

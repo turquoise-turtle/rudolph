@@ -2,6 +2,7 @@ package flags
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/airbnb/rudolph/pkg/types"
 )
@@ -16,22 +17,12 @@ const (
 // configMode is a custom type for use as a CLI flag representing the type of config mode being applied
 type ClientMode types.ClientMode
 
-func newConfigTypeValue(val string, c *ClientMode) *ClientMode {
-	err := c.Set(val)
-	if err != nil {
-		fmt.Println(`Warning: invalid value for client mode provided, default to using "monitor"`)
-		*c = ClientMode(types.Monitor)
-	}
-
-	return c
-}
-
 func (i *ClientMode) AsClientMode() types.ClientMode {
 	return types.ClientMode(*i)
 }
 
 func (i *ClientMode) Set(c string) error {
-	switch c {
+	switch strings.ToLower(c) {
 	case monitorMode:
 		*i = ClientMode(types.Monitor)
 	case lockdownMode:

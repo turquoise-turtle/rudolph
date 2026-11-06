@@ -13,42 +13,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-/*
-Usage:
-  First run `% make rudolph` to generate the rudolph binary to build/macos/rudolph
-
-export ENV={YOUR_ENVIRONMENT}
-  You will have to supply a ENV environment variable with every execution. This variable corresponds to a
-  directory inside of the terraform/deployments/ directory.
-
-  ./rudolph [COMMAND]
-
-     ./rudolph info
-       Dump information about your current machine and whatever.
-
-     ./rudolph rule allow --rule-type binary (--global | --machine <uuid> [--expires 48h | --permanent]) -f $PATH
-       Creates a new rule based upon the given binary and uploads it to the currently configured
-       Rudolph server. Can do both binary and certificate rules. Exactly one of --global, --machine, --group or
-       --ungrouped is required.
-
-     ./rudolph group create|update|delete|list|get|add|remove|show
-       Manages device groups, which rules can target with --group <group> (see docs/groups.md).
-
-     ./rudolph rules [--global]
-       Queries DDB and returns all rules pertinent to either your machine or available globally.
-
-	 ./rudolph config [--global]
-		Creates, modifies, or retrieves the current configuration for either a machine or globally.
-
-*/
+// The command reference is docs/cli.md.
 
 func init() {
-	RootCmd.PersistentFlags().StringVar(&env, "ENV", "", "Environment of Rudolph deployment")
-	RootCmd.PersistentFlags().StringVar(&region, "region", "", ".")
-	RootCmd.PersistentFlags().StringVar(&prefix, "prefix", "", ".")
-	RootCmd.PersistentFlags().StringVar(&dynamodbTableName, "dynamodb_table", "", ".")
+	RootCmd.PersistentFlags().StringVar(&env, "ENV", "", "The Rudolph environment (deployment) to use; its configuration is read from deployments/environments/<env>/config.auto.tfvars.json or ~/.rudolph-cli/<env>.json. Defaults to the ENV environment variable")
+	RootCmd.PersistentFlags().StringVar(&env, "env", "", "Same as --ENV")
+	RootCmd.PersistentFlags().StringVar(&region, "region", "", "The AWS region of the deployment; overrides the environment's region (default: the environment's, or the REGION environment variable)")
+	RootCmd.PersistentFlags().StringVar(&prefix, "prefix", "", "The deployment's prefix; overrides the environment's prefix")
+	RootCmd.PersistentFlags().StringVar(&dynamodbTableName, "dynamodb_table", "", "The DynamoDB table of the deployment; overrides the environment's table (default: <prefix>_rudolph_store, or the DYNAMODB_NAME environment variable)")
 
 	// Add subcommands
+	info.InfoCmd.Annotations = map[string]string{noEnvironment: "true"}
 	RootCmd.AddCommand(info.InfoCmd)
 	RootCmd.AddCommand(rule.RuleCmd)
 	RootCmd.AddCommand(rules.RulesCmd)
@@ -65,20 +40,24 @@ var (
 	dynamodbTableName string
 )
 
+// noEnvironment is the annotation of commands that do not read or write the sync server's table, so need no
+// environment
+const noEnvironment = "rudolph/no-environment"
+
 // RootCmd is the entry point command for the CLI, exported for use elsewhere
 var RootCmd = &cobra.Command{
 	Use:          "rudolph",
-	Short:        "cli for interacting with Santa server",
+	Short:        "Manage the rules and configuration of a Rudolph Santa sync server",
 	SilenceUsage: true,
-	Long:         "cli for interacting with Santa server",
+	Long: `Manage the rules and configuration of a Rudolph Santa sync server. Commands read and write the server's
+DynamoDB table, found from the environment given with --env (or ENV), or from --region and --dynamodb_table.
+See docs/cli.md.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-
-		_, err := retrieveConfig(cmd)
-		if err != nil {
-			return err
+		if cmd.Annotations[noEnvironment] != "" {
+			return nil
 		}
-
-		return nil
+		_, err := retrieveConfig(cmd)
+		return err
 	},
 }
 

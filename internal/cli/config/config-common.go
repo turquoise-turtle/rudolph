@@ -1,11 +1,9 @@
 package config
 
 import (
+	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/spf13/cobra"
 )
-
-// config specific variables
-// isGlobal, machineIDArg reside in parser.go
 
 var (
 	ConfigCmd *cobra.Command
@@ -14,6 +12,7 @@ var (
 func init() {
 	ConfigCmd = &cobra.Command{
 		Use:   "config",
-		Short: "Perform various config operations",
+		Short: "Show and change the Santa configuration Rudolph sends, globally or for one machine",
 	}
+	flags.AddYesFlag(ConfigCmd)
 }

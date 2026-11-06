@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
+	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/csv"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -31,15 +32,25 @@ const (
 
 func addRuleImportCommand() {
 	var filename string
+	var format string
 	var workers int
 
 	var ruleImportCmd = &cobra.Command{
-		Use:     "import <file-name>",
+		Use:     "import -f <file-path> [--fileformat csv|json] [--workers <n>]",
 		Aliases: []string{"rules-import"},
-		Short:   "Imports riles from a csv file",
-		Args:    cobra.NoArgs,
+		Short:   "Create or replace global rules from a CSV or JSON file",
+		Long: `Create or replace global rules from a CSV or JSON file, in the format "rules export" writes. The format is taken
+from --fileformat, or else from the file's extension (.csv or .json). A rule with the REMOVE policy removes the
+global rule. The import asks for confirmation first (none with --yes).`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// args[0] has already been validated as a file before this
+			if filename == "" {
+				return errors.New("pass the file to import with -f <file-path>")
+			}
+			fileFormat, err := importFormat(filename, format)
+			if err != nil {
+				return err
+			}
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
@@ -54,109 +65,139 @@ func addRuleImportCommand() {
 				workers = defaultWorkers
 			}
 
-			return runImport(dynamodbClient, clock.ConcreteTimeProvider{}, filename, workers)
+			return runImportFormat(dynamodbClient, clock.ConcreteTimeProvider{}, filename, fileFormat, workers, confirmImport(filename, flags.AssumeYes(cmd)))
 		},
 	}
 
-	ruleImportCmd.Flags().StringVarP(&filename, "filename", "f", "", "The filename")
-	ruleImportCmd.Flags().IntVarP(&workers, "workers", "w", defaultWorkers, "Number of workers")
+	addFileFlags(ruleImportCmd, &filename, "The CSV or JSON file to import")
+	ruleImportCmd.Flags().StringVar(&format, "fileformat", "", "File format: csv or json; by default taken from the file's extension")
+	ruleImportCmd.Flags().IntVarP(&workers, "workers", "w", defaultWorkers, fmt.Sprintf("Number of rules written at the same time, between %d and %d", minWorkers, maxWorkers))
 	clockcheck.AddFlag(ruleImportCmd)
-	_ = ruleImportCmd.MarkFlagRequired("filename")
+	flags.AddYesFlag(ruleImportCmd)
 
 	RulesCmd.AddCommand(ruleImportCmd)
 }
 
+// importFormat returns the format of the file to import: format if given, else the file's extension
+func importFormat(filename, format string) (string, error) {
+	if format == "" {
+		switch strings.ToLower(filepath.Ext(filename)) {
+		case ".csv":
+			return "csv", nil
+		case ".json":
+			return "json", nil
+		}
+		return "", fmt.Errorf("cannot tell the format of %s from its extension: name it .csv or .json, or pass --fileformat csv|json", filename)
+	}
+	format = strings.ToLower(format)
+	if format != "csv" && format != "json" {
+		return "", fmt.Errorf("--fileformat %q: must be csv or json", format)
+	}
+	return format, nil
+}
+
+// runImport imports a file in the format its extension names
 func runImport(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
 	filename string,
 	numWorkers int,
 ) error {
-	if strings.HasSuffix(filename, ".csv") {
-		return runCsvImport(client, timeProvider, filename, numWorkers)
-	} else if strings.HasSuffix(filename, ".json") {
-		return runJsonImport(client, timeProvider, filename, numWorkers)
+	format, err := importFormat(filename, "")
+	if err != nil {
+		return err
 	}
-
-	return errors.New("unrecognized file extension")
+	return runImportFormat(client, timeProvider, filename, format, numWorkers, nil)
 }
 
-func runJsonImport(
+// runImportFormat imports a file in the given format. confirm, unless nil, is asked with the rules read from the file
+// before anything is written; an error from it stops the import.
+func runImportFormat(
 	client dynamodb.DynamoDBClient,
 	timeProvider clock.TimeProvider,
 	filename string,
+	format string,
 	numWorkers int,
-) (err error) {
-	fp, err := os.Open(filename)
-	if err != nil {
-		return
-	}
-	defer fp.Close()
-	contents, err := ioutil.ReadAll(fp)
-	if err != nil {
-		return
-	}
-
+	confirm func([]fileRule) error,
+) error {
 	var rules []fileRule
-	err = json.Unmarshal(contents, &rules)
+	var parseErrors []error
+	var err error
+	if format == "json" {
+		rules, err = readJsonRules(filename)
+	} else {
+		rules, parseErrors, err = readCsvRules(filename)
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("%s: %w", filename, err)
+	}
+	if confirm != nil {
+		if err := confirm(rules); err != nil {
+			return err
+		}
 	}
 
-	// Start the workers
 	result := &importResult{}
-	rulesBuffer := make(chan fileRule)
-	wg := startWriters(client, timeProvider, rulesBuffer, result, numWorkers)
-
-	// Shovel all the json-parsed rules into the worker queue
-	for _, rule := range rules {
-		rulesBuffer <- rule
+	for _, parseErr := range parseErrors {
+		result.fail(parseErr)
 	}
-	close(rulesBuffer)
-
-	// Chill
+	buffer := make(chan fileRule)
+	wg := startWriters(client, timeProvider, buffer, result, numWorkers)
+	for _, rule := range rules {
+		buffer <- rule
+	}
+	close(buffer)
 	wg.Wait()
 
 	return result.report()
 }
 
-func runCsvImport(
-	client dynamodb.DynamoDBClient,
-	timeProvider clock.TimeProvider,
-	filename string,
-	numWorkers int,
-) error {
-	// ParseCsvFile returns a data channel and an optional error if any issues
-	// occurred while opening the file for reading
+// confirmImport shows how many rules the file creates or replaces and removes, and asks before they are written
+func confirmImport(filename string, yes bool) func([]fileRule) error {
+	return func(rules []fileRule) error {
+		removals := 0
+		for _, rule := range rules {
+			if rule.Policy == types.RulePolicyRemove {
+				removals++
+			}
+		}
+		fmt.Printf("Importing %d global rules from %s: %d to create or replace, %d to remove.\n", len(rules), filename, len(rules)-removals, removals)
+		fmt.Println("Rules already stored as in the file are not written again.")
+		fmt.Println()
+		return flags.Confirm(yes)
+	}
+}
+
+func readJsonRules(filename string) ([]fileRule, error) {
+	contents, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	var rules []fileRule
+	if err := json.Unmarshal(contents, &rules); err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+// readCsvRules reads the rules of a CSV file; a record that is not a rule is returned as an error, the others are
+// still imported
+func readCsvRules(filename string) (rules []fileRule, parseErrors []error, err error) {
 	data, err := csv.ParseCsvFile(filename)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-
-	// Channel for csv parsing and workers to communicate over
-	// Fanning out workers allows us to make multiple HTTP requests concurrently which can
-	// improve performance assuming we aren't network I/O bottlenecked or something.
-	result := &importResult{}
-	rules := make(chan fileRule)
-	wg := startWriters(client, timeProvider, rules, result, numWorkers)
-
-	// Start taking lines from the csv and shoveling them into the workers
 	var record int
 	for line := range data {
 		record++
 		rule, err := parseCsvRule(line)
 		if err != nil {
-			result.fail(fmt.Errorf("record %d: %w", record, err))
+			parseErrors = append(parseErrors, fmt.Errorf("record %d: %w", record, err))
 			continue
 		}
-		rules <- rule
+		rules = append(rules, rule)
 	}
-	close(rules)
-
-	// chill
-	wg.Wait()
-
-	return result.report()
+	return rules, parseErrors, nil
 }
 
 // parseCsvRule converts a csv line into a rule
