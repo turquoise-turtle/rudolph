@@ -60,6 +60,14 @@ rudolph rule remove (-t <rule-type> -i <identifier>|<rule-name>) (-m <machine-id
 
 `<rule-name>` is the rule's sort key as `rudolph rules` prints it: `Binary#`, `Cert#`, `TeamID#`, `SigningID#` or `CDHash#` followed by the identifier, e.g. `TeamID#EQHXZ8M8AV`. The command names the rule it removed, or the rule (and machine) it could not find.
 
+### `rule get`
+
+```sh
+rudolph rule get (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global)
+```
+
+Shows one global or machine rule as stored: policy, description, expiry, messages and whether its allowed executions are collected. A group's rules are shown by `rudolph group get <group>`.
+
 ### `rules`
 
 ```sh
