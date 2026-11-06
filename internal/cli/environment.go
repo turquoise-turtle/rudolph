@@ -1,107 +1,142 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
-const (
-	deploymentEnvironmentsBaseDir        = "terraform/deployments"
-	deploymentEnvironmentsFoldersBaseDir = "terraform/environments"
-)
+// environmentFileDirs are where an environment's config.auto.tfvars.json is looked for, relative to the working
+// directory: deployments/environments/<env>/ is where scripts/new_env.sh creates it in a checkout of this repo; the
+// terraform/ directories are where earlier versions kept it.
+var environmentFileDirs = []string{
+	"deployments/environments",
+	"terraform/deployments",
+	"terraform/environments",
+}
 
 type environmentConfiguration struct {
 	Prefix       string `json:"prefix"`
 	Region       string `json:"region"`
 	AWSAccountID string `json:"aws_account_id"`
-	DDBPrefix    string `json:"ddb_prefix"`
-	StageName    string `json:"stage_name"`
+	// DynamoDBTableName overrides the store module's table name, which is otherwise <prefix>_rudolph_store
+	DynamoDBTableName string `json:"dynamodb_table_name"`
+}
+
+// tableName returns the name of the DynamoDB table the environment's sync server uses
+func (c environmentConfiguration) tableName() string {
+	if c.DynamoDBTableName != "" {
+		return c.DynamoDBTableName
+	}
+	return fmt.Sprintf("%s_rudolph_store", c.Prefix)
 }
 
 func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
+	info, err := os.Stat(name)
+	return err == nil && !info.IsDir()
 }
 
+// environmentFiles returns the files an environment's configuration is read from, in order of preference
+func environmentFiles(env string) []string {
+	var files []string
+	for _, dir := range environmentFileDirs {
+		files = append(files, filepath.Join(dir, env, "config.auto.tfvars.json"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		files = append(files, filepath.Join(home, ".rudolph-cli", env+".json"))
+	}
+	return append(files, env+".json")
+}
+
+// flagString returns the value of a flag, or "" when cmd has no such flag
+func flagString(cmd *cobra.Command, name string) string {
+	if cmd.Flags().Lookup(name) == nil {
+		return ""
+	}
+	value, _ := cmd.Flags().GetString(name)
+	return value
+}
+
+// setUnlessGiven sets a flag that was not given on the command line, so a typed --region, --prefix or
+// --dynamodb_table wins over the environment's configuration
+func setUnlessGiven(cmd *cobra.Command, name, value string) {
+	if f := cmd.Flags().Lookup(name); f != nil && !f.Changed {
+		_ = cmd.Flags().Set(name, value)
+	}
+}
+
+// retrieveConfig reads the configuration of the environment named by --ENV (or --env, or the ENV environment
+// variable) and sets --region, --prefix and --dynamodb_table from it, unless they were given. Without an environment
+// file, the DYNAMODB_NAME and REGION environment variables (as the Lambdas use them) are used.
 func retrieveConfig(cmd *cobra.Command) (*environmentConfiguration, error) {
-	var tfConfigFileFound bool
-	p, err := cmd.Flags().GetString("ENV")
-	if err != nil {
-		return nil, err
-	}
-
-	if p == "" {
-		// Try to get prefix from env instead
-		p = os.Getenv("ENV")
-	}
-	env = p
-
+	env := flagString(cmd, "ENV")
 	if env == "" {
-		return nil, errors.New("missing ENV variable")
+		env = flagString(cmd, "env")
+	}
+	if env == "" {
+		env = os.Getenv("ENV")
 	}
 
-	// Check to see if this is running under the git repo root source
-
-	if fileExists(fmt.Sprintf(
-		"%s/%s/config.auto.tfvars.json",
-		deploymentEnvironmentsBaseDir,
-		env,
-	)) {
-		tfConfigFileFound = true
-	}
-
-	if fileExists(fmt.Sprintf(
-		"%s/%s/config.auto.tfvars.json",
-		deploymentEnvironmentsFoldersBaseDir,
-		env,
-	)) {
-		tfConfigFileFound = true
-	}
-
-	v := viper.New()
-
-	// If running under the current git repo, use the TF config.auto.tfvars file
-	// Else use a configuration stored under the $HOME/.rudolph-cli or current working directory
-	if tfConfigFileFound {
-		v.SetConfigName("config.auto.tfvars")
-		v.SetConfigType("json")
-		v.AddConfigPath(fmt.Sprintf("%s/%s", deploymentEnvironmentsBaseDir, env))
-	} else {
-		v.SetConfigName(env)
-		v.SetConfigType("json")
-		v.AddConfigPath("$HOME/.rudolph-cli")
-		v.AddConfigPath(".")
-	}
-
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; ignore error if desired
-			return nil, err
-		} else {
-			// Config file was found but another error was produced
-			return nil, err
+	if env != "" {
+		for _, file := range environmentFiles(env) {
+			if !fileExists(file) {
+				continue
+			}
+			config, err := readEnvironmentFile(file)
+			if err != nil {
+				return nil, err
+			}
+			setUnlessGiven(cmd, "prefix", config.Prefix)
+			setUnlessGiven(cmd, "region", config.Region)
+			setUnlessGiven(cmd, "dynamodb_table", config.tableName())
+			return config, nil
 		}
 	}
 
-	config := &environmentConfiguration{}
-	err = v.Unmarshal(config)
+	// Without an environment file: what was typed, else the variables the Lambdas are configured with
+	config := &environmentConfiguration{
+		Prefix:            flagString(cmd, "prefix"),
+		Region:            flagString(cmd, "region"),
+		DynamoDBTableName: flagString(cmd, "dynamodb_table"),
+	}
+	if config.Region == "" {
+		config.Region = os.Getenv("REGION")
+	}
+	if config.DynamoDBTableName == "" {
+		config.DynamoDBTableName = os.Getenv("DYNAMODB_NAME")
+	}
+	if config.Region != "" && config.DynamoDBTableName != "" {
+		setUnlessGiven(cmd, "region", config.Region)
+		setUnlessGiven(cmd, "dynamodb_table", config.DynamoDBTableName)
+		return config, nil
+	}
 
+	if env == "" {
+		return nil, errors.New("no environment: pass --env <environment> (or set ENV), or give --region and --dynamodb_table (or set REGION and DYNAMODB_NAME)")
+	}
+	return nil, fmt.Errorf("no configuration for environment %q: looked for %s", env, strings.Join(environmentFiles(env), ", "))
+}
+
+// readEnvironmentFile reads an environment's configuration, which needs a region and a prefix or table name
+func readEnvironmentFile(file string) (*environmentConfiguration, error) {
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-
-	cmd.Flags().Set("prefix", config.Prefix)
-	cmd.Flags().Set("region", config.Region)
-	cmd.Flags().Set("dynamodb_table", fmt.Sprintf("%s_rudolph_store", config.Prefix))
-
-	return config, err
-
+	config := &environmentConfiguration{}
+	if err := json.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	if strings.TrimSpace(config.Region) == "" {
+		return nil, fmt.Errorf("%s: region is empty; set \"region\" to the AWS region of the deployment", file)
+	}
+	if config.Prefix == "" && config.DynamoDBTableName == "" {
+		return nil, fmt.Errorf("%s: prefix is empty; set \"prefix\" (or \"dynamodb_table_name\")", file)
+	}
+	return config, nil
 }
