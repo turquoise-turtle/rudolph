@@ -20,6 +20,15 @@ type TargetFlags struct {
 	MachineID     string
 	IsGlobal      bool
 	SelfMachineID string
+	// Group is the device group a rule targets (--group, or groups.Ungrouped for --ungrouped), normalised by
+	// RequireExplicitTarget; only commands that add the rule target flags set it
+	Group     string
+	Ungrouped bool
+}
+
+// IsGroup reports whether the target is a device group (--group or --ungrouped)
+func (t TargetFlags) IsGroup() bool {
+	return t.Group != "" || t.Ungrouped
 }
 
 func (t *TargetFlags) AddTargetFlags(cmd *cobra.Command) {

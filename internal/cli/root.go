@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/airbnb/rudolph/internal/cli/config"
+	"github.com/airbnb/rudolph/internal/cli/group"
 	"github.com/airbnb/rudolph/internal/cli/info"
 	"github.com/airbnb/rudolph/internal/cli/lookup"
 	"github.com/airbnb/rudolph/internal/cli/repair"
@@ -27,7 +28,11 @@ export ENV={YOUR_ENVIRONMENT}
 
      ./rudolph rule allow --rule-type binary (--global | --machine <uuid> [--expires 48h | --permanent]) -f $PATH
        Creates a new rule based upon the given binary and uploads it to the currently configured
-       Rudolph server. Can do both binary and certificate rules. Exactly one of --global or --machine is required.
+       Rudolph server. Can do both binary and certificate rules. Exactly one of --global, --machine, --group or
+       --ungrouped is required.
+
+     ./rudolph group create|update|delete|list|get|add|remove|show
+       Manages device groups, which rules can target with --group <group> (see docs/groups.md).
 
      ./rudolph rules [--global]
        Queries DDB and returns all rules pertinent to either your machine or available globally.
@@ -50,6 +55,7 @@ func init() {
 	RootCmd.AddCommand(config.ConfigCmd)
 	RootCmd.AddCommand(repair.RepairCmd)
 	RootCmd.AddCommand(lookup.LookupCmd)
+	RootCmd.AddCommand(group.GroupCmd)
 }
 
 var (

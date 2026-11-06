@@ -2,6 +2,7 @@ package rule
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/model/sensordata"
@@ -44,7 +46,13 @@ func createRule(cmd *cobra.Command, policy types.Policy, tf flags.TargetFlags, r
 		return err
 	}
 	timeProvider := clock.ConcreteTimeProvider{}
-	expires, err := ef.Expiry(timeProvider.Now(), tf.IsGlobal)
+	var expires time.Time
+	var err error
+	if tf.IsGroup() {
+		err = ef.RefuseForGroup()
+	} else {
+		expires, err = ef.Expiry(timeProvider.Now(), tf.IsGlobal)
+	}
 	if err != nil {
 		return err
 	}
@@ -127,6 +135,10 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		return
 	}
 
+	if tf.IsGroup() {
+		return applyGroupRule(client, policy, tf.Group, ruleType, identifier, description, options...)
+	}
+
 	// First, determine which machine to apply
 	machineID := "(Global)"
 	suffix := ""
@@ -187,6 +199,63 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	fmt.Println("")
 
 	return
+}
+
+// applyGroupRule creates or replaces a device group's rule after a typed confirmation
+func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group string, ruleType types.RuleType, identifier, description string, options ...rules.RuleOption) error {
+	writer, ok := client.(groups.RegistryWriter)
+	if !ok {
+		return errors.New("this DynamoDB client cannot write group rules")
+	}
+	rule := rules.SantaRule{RuleType: ruleType, Policy: policy, Identifier: identifier}
+	rule.ApplyOptions(options...)
+	if err := groups.ValidateRule(rule); err != nil {
+		return err
+	}
+	registry, err := groups.GetRegistry(writer, true)
+	if err != nil {
+		return err
+	}
+	if _, ok := registry.Groups[group]; !ok {
+		if group != groups.Ungrouped {
+			return fmt.Errorf("no group %q; create it first with rudolph group create", group)
+		}
+		// The reserved group exists as soon as it has a rule; only operators' own groups need creating
+		if err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false); err != nil && !errors.Is(err, groups.ErrGroupExists) {
+			return err
+		}
+	}
+
+	policyDescription, _ := policy.MarshalText()
+	ruleTypeDescription, _ := ruleType.MarshalText()
+	fmt.Println("Uploading the following rule:")
+	if group == groups.Ungrouped {
+		fmt.Println("  Group:        (Macs in no group)")
+	} else {
+		fmt.Println("  Group:       ", group)
+	}
+	fmt.Println("  Identifier/SHA256:      ", identifier)
+	fmt.Println("  Policy:      ", policy, "  (", string(policyDescription), ")")
+	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
+	fmt.Println("  Description: ", description)
+	printRuleOptions(options)
+	fmt.Println("")
+	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
+	fmt.Print("> ")
+
+	reader := bufio.NewReader(os.Stdin)
+	text, _ := reader.ReadString('\n')
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text != "ok" && text != "yes" {
+		fmt.Println("Well ok then")
+		return nil
+	}
+	if err := groups.PutRule(writer, group, rule, description); err != nil {
+		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+	}
+	fmt.Println("Successfully sent a rule to dynamodb")
+	fmt.Println("")
+	return nil
 }
 
 // warnIfMachineNeverSynced warns when nothing is known about a machine ID, which means no sensor has ever
