@@ -1,6 +1,7 @@
 #
 # DynamoDB table of execution events, read by the separate web view (rudolph-web's docs/data-layer-design.md, "D+ in
-# detail"). The eventupload Lambda writes it; nothing in Rudolph reads it. Layout and costs: docs/events-table.md.
+# detail"). The eventupload Lambda writes it; the hourly ranker (../../ranker.tf) reads its day counters and machine
+# markers and writes the top lists. Layout and costs: docs/events-table.md.
 #
 locals {
   events_table_name = var.events_dynamodb_table_name == "" ? "${var.prefix}_rudolph_events" : var.events_dynamodb_table_name

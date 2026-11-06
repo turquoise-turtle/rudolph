@@ -3,8 +3,9 @@ VERSION := $(shell git describe --tags --always)
 DOCS_DIR ?= ./docs
 RUDOLPH_API_DEPLOYMENT_ZIP_PATH = $(PWD)/build/package/api_deployment.zip
 RUDOLPH_API_AUTHORIZER_DEPLOYMENT_ZIP_PATH = $(PWD)/build/package/api_authorizer_deployment.zip
+RUDOLPH_RANKER_DEPLOYMENT_ZIP_PATH = $(PWD)/build/package/ranker_deployment.zip
 TERRAFORM_DEPLOYMENTS_DIR = $(PWD)/deployments/environments
-TF_DEFAULT_FLAGS = --var lambda_api_zip="$(RUDOLPH_API_DEPLOYMENT_ZIP_PATH)" --var lambda_authorizer_zip="$(RUDOLPH_API_AUTHORIZER_DEPLOYMENT_ZIP_PATH)"
+TF_DEFAULT_FLAGS = --var lambda_api_zip="$(RUDOLPH_API_DEPLOYMENT_ZIP_PATH)" --var lambda_authorizer_zip="$(RUDOLPH_API_AUTHORIZER_DEPLOYMENT_ZIP_PATH)" --var lambda_ranker_zip="$(RUDOLPH_RANKER_DEPLOYMENT_ZIP_PATH)"
 LDFLAGS=-ldflags="-X main.version=$(VERSION)"
 
 # Check to ensure the prefix is being passed in as an arg like `ENV=<YOUR_ENVIRONMENT>`

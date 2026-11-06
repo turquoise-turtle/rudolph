@@ -4,10 +4,10 @@
 # Kept deliberately small for cost: seven alarms (six when no event sink is configured). Four alarm on AWS metrics,
 # which are published for free: api_5xx, api_4xx, lambda_errors and dynamodb_throttles. Three alarm on metrics that
 # metric filters extract from the Lambda logs: request_too_large, lambda_timeouts and event_sink_failures (filters
-# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 15 in
-# all, as lambda_errors sums one metric per function (7), dynamodb_throttles adds reads and writes (2) and api_4xx
-# divides 4xx responses by requests (2). At us-east-1 prices that is about 2.40 US dollars a month, independent of
-# fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
+# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 16 in
+# all, as lambda_errors sums one metric per function (8, the ranker included), dynamodb_throttles adds reads and writes
+# (2) and api_4xx divides 4xx responses by requests (2). At us-east-1 prices that is about 2.50 US dollars a month,
+# independent of fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
 #
 # Every alarm notifies var.alarm_sns_topic_arn when set, both when it fires and when it recovers.
 #
@@ -31,6 +31,7 @@ locals {
 
   all_log_groups = merge(local.handler_log_groups, {
     authorizer = module.rudolph_api_authorizer.log_group_name
+    ranker     = aws_cloudwatch_log_group.ranker.name
   })
 
   all_function_names = {
@@ -41,6 +42,7 @@ locals {
     ruledownload = module.ruledownload_function.lambda_function_name
     postflight   = module.postflight_function.lambda_function_name
     authorizer   = module.rudolph_api_authorizer.lambda_function_name
+    ranker       = aws_lambda_function.ranker.function_name
   }
 
   # Event sinks are only in use when eventupload forwards events somewhere

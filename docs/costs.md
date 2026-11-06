@@ -38,12 +38,14 @@ The alarms are kept few and cheap: seven alarms, or six when no event sink is co
 
 * Four alarm on metrics AWS publishes for free: `api_5xx`, `api_4xx`, `lambda_errors` and `dynamodb_throttles`.
 * Three alarm on metrics that metric filters extract from the Lambda logs: `request_too_large`, `lambda_timeouts` and `event_sink_failures`. The filters are free; each extracted metric is billed as one custom metric (3 in all, US$0.30 each a month).
-* Alarms are billed per metric they evaluate (US$0.10 each a month): 15 in all, as `lambda_errors` sums one metric per Rudolph function (7), `dynamodb_throttles` adds reads and writes (2) and `api_4xx` divides 4xx responses by requests (2).
+* Alarms are billed per metric they evaluate (US$0.10 each a month): 16 in all, as `lambda_errors` sums one metric per Rudolph function (8, the ranker included), `dynamodb_throttles` adds reads and writes (2) and `api_4xx` divides 4xx responses by requests (2).
 
-At us-east-1 prices that is about US$2.40 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
+At us-east-1 prices that is about US$2.50 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
 ## Execution Events Table
 Blocked and unknown executions are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, a few US dollars a month for 1,000 Macs in monitor mode); see [Execution events table](./events-table.md#costs).
+
+The hourly ranker, which builds the web view's top-blocked and top-allowed lists, reads 90 days of day counters and the machine markers of up to 800 binaries per run and writes up to 4,000 snapshot rows: about US$2 a month for 1,000 Macs and about US$19 a month for 100,000 Macs (up to about US$70 if the listed binaries all run on every Mac), mostly reading the day counters. See [Top binaries](./events-table.md#top-binaries).
 
 ## Costs of Rules
 Due to Rudolph's sync logic, we have not observed noticable cost nor performance degradatation with very large numbers of

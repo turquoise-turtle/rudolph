@@ -11,6 +11,7 @@ BUILD_DIR=$DIR/build
 LINUX_BUILD_DIR=$BUILD_DIR/linux
 LINUX_BUILD_DIR_API=$LINUX_BUILD_DIR/api
 LINUX_BUILD_DIR_AUTHORIZER=$LINUX_BUILD_DIR/authorizer
+LINUX_BUILD_DIR_RANKER=$LINUX_BUILD_DIR/ranker
 MACOS_BUILD_DIR=$BUILD_DIR/macos
 APPS_DIR=$DIR/cmd
 CLI_NAME=rudolph
@@ -18,6 +19,7 @@ CLI_BUILD_DIR=$BUILD_DIR/cli
 PKG_DIR=$BUILD_DIR/package
 API_DEPLOYMENT_ZIP_PATH=$PKG_DIR/api_deployment.zip
 API_AUTHORIZER_DEPLOYMENT_ZIP_PATH=$PKG_DIR/api_authorizer_deployment.zip
+RANKER_DEPLOYMENT_ZIP_PATH=$PKG_DIR/ranker_deployment.zip
 
 cd "$DIR"
 
@@ -32,6 +34,9 @@ GOOS=linux GOARCH=arm64 go build -o $LINUX_BUILD_DIR_API/bootstrap $APPS_DIR/api
 
 echo "  compiling authorizer in linux:arm64..."
 GOOS=linux GOARCH=arm64 go build -o $LINUX_BUILD_DIR_AUTHORIZER/bootstrap $APPS_DIR/authorizer
+
+echo "  compiling ranker in linux:arm64..."
+GOOS=linux GOARCH=arm64 go build -o $LINUX_BUILD_DIR_RANKER/bootstrap $APPS_DIR/ranker
 
 if [ "$(uname)" == "Darwin" ]; then
     echo "  compiling cross-compatible macOS cli..."
@@ -51,12 +56,14 @@ mkdir $PKG_DIR
 # but you could use the -j option as well.
 cd $LINUX_BUILD_DIR_API; zip -r $API_DEPLOYMENT_ZIP_PATH *
 cd $LINUX_BUILD_DIR_AUTHORIZER; zip -r $API_AUTHORIZER_DEPLOYMENT_ZIP_PATH *
+cd $LINUX_BUILD_DIR_RANKER; zip -r $RANKER_DEPLOYMENT_ZIP_PATH *
 
 echo "*** complete ***"
 
 echo "  created:"
 echo "    API: $API_DEPLOYMENT_ZIP_PATH"
 echo "    API Authorizer: $API_AUTHORIZER_DEPLOYMENT_ZIP_PATH"
+echo "    Ranker: $RANKER_DEPLOYMENT_ZIP_PATH"
 if [ "$(uname)" == "Darwin" ]; then
     echo "    generated cross-compiled macOS cli"
     echo "    CLI: $MACOS_BUILD_DIR/cli"

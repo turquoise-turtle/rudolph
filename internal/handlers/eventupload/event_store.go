@@ -287,7 +287,8 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	logDropped(machineID, rejected, "rejected by DynamoDB as invalid")
 
 	// Markers are written for every stored event, new or not: a marker write lost with an earlier upload is then
-	// made up for by Santa's retry. Writing a marker again only moves its expiry.
+	// made up for by Santa's retry. Writing a marker again only moves its expiry and LastSeenDay, the UTC date of the
+	// upload, from which the ranker (internal/ranker) counts the Macs that ran a binary within a window.
 	var markers []string
 	marked := map[string]bool{}
 	for i, c := range candidates {
@@ -296,6 +297,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 			markers = append(markers, c.event.FileSHA256)
 		}
 	}
+	lastSeenDay := now.UTC().Format("2006-01-02")
 	markerErr := parallel(ctx, len(markers), func(ctx context.Context, i int) error {
 		_, err := s.api.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: aws.String(s.table),
@@ -303,6 +305,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 				"PK":           str(machineMarkerPrefix + markers[i]),
 				"SK":           str(machineID),
 				"ExpiresAfter": &types.AttributeValueMemberN{Value: counterExpiry},
+				"LastSeenDay":  str(lastSeenDay),
 			},
 		})
 		return err
