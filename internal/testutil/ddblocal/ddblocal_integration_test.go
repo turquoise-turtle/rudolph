@@ -92,8 +92,10 @@ func TestConsumedCapacityIncludesIndexWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := ConsumedCapacity()
-	if c.WriteUnits != 3 || c.TableWriteUnits != 1 || c.IndexWriteUnits["DataType_MachineID"] != 1 || c.IndexWriteUnits["SerialNum_DataType_MachineID"] != 1 {
-		t.Fatalf("a new item in both indexes should cost 1 WCU on the table and 1 per index: %s", c)
+	// With DataType and SerialNum set, the item is in three indexes: DataType_MachineID, SerialNum_DataType_MachineID
+	// and DataType_SerialNum (the web view's machine list).
+	if c.WriteUnits != 4 || c.TableWriteUnits != 1 || c.IndexWriteUnits["DataType_MachineID"] != 1 || c.IndexWriteUnits["SerialNum_DataType_MachineID"] != 1 || c.IndexWriteUnits["DataType_SerialNum"] != 1 {
+		t.Fatalf("a new item in three indexes should cost 1 WCU on the table and 1 per index: %s", c)
 	}
 
 	ResetCounts()
