@@ -166,7 +166,8 @@ func printRule(heading, machineID, suffix string, rule rules.SantaRule, descript
 }
 
 // updateRule changes what the flags give of an existing global or machine rule, after a confirmation (none with
-// --yes, nothing written with --dry-run). newExpiry is when a machine rule expires after the update, or nil to keep its expiry.
+// --yes, nothing written with --dry-run). newExpiry is when a machine rule expires after the update, or nil to keep
+// its expiry.
 func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, ru flags.RuleUpdateFlags, newExpiry *time.Time, approval flags.Approval) error {
 	ruleType := rf.RuleType.AsRuleType()
 	identifier, _, err := identifyRule(rf, ruleType)
