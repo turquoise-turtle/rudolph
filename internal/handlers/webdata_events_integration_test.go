@@ -27,6 +27,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -322,9 +324,10 @@ func TestR7_EventsTableFailureIsRetriedBySanta(t *testing.T) {
 	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
 	host.PendingEvents = []string{execEvent(sha1, "BLOCK_UNKNOWN", 1, at, "")}
 
-	failing := true
+	var failing atomic.Bool // the proxy serves calls in parallel
+	failing.Store(true)
 	ddblocal.AddHook(t, ddblocal.Hook{Before: func(c *ddblocal.Call) *ddblocal.Fault {
-		if !failing {
+		if !failing.Load() {
 			return nil
 		}
 		if name, _ := c.Input["TableName"].(string); name == ddblocal.EventsTableName {
@@ -344,7 +347,7 @@ func TestR7_EventsTableFailureIsRetriedBySanta(t *testing.T) {
 		t.Fatalf("the upload must fail with the events table down and the Mac keep its event; pending %d, result %+v", len(host.PendingEvents), res)
 	}
 
-	failing = false
+	failing.Store(false)
 	host.MustSync(t)
 	if got := len(eventsOf(t, machineA)); got != 1 || len(host.PendingEvents) != 0 {
 		t.Errorf("after the table recovered: %d stored, %d pending; want 1 and 0", got, len(host.PendingEvents))
@@ -407,8 +410,11 @@ func TestR7_LostWriteResponsesStillCountEachEventOnce(t *testing.T) {
 		host.PendingEvents = append(host.PendingEvents, execEvent(sha, "BLOCK_BINARY", 10+i, at, ""))
 	}
 
+	var mu sync.Mutex // the proxy serves calls in parallel
 	lost := map[string]bool{}
 	ddblocal.AddHook(t, ddblocal.Hook{LoseResponse: func(c *ddblocal.Call) *ddblocal.Fault {
+		mu.Lock()
+		defer mu.Unlock()
 		// The first write to the events table that carries each event: applied, but the client gets a server error.
 		in := fmt.Sprint(c.Input)
 		if !strings.Contains(in, ddblocal.EventsTableName) {
@@ -427,7 +433,10 @@ func TestR7_LostWriteResponsesStillCountEachEventOnce(t *testing.T) {
 			t.Fatalf("sync: %v", err)
 		}
 	}
-	if len(lost) == 0 {
+	mu.Lock()
+	lostAny := len(lost) > 0
+	mu.Unlock()
+	if !lostAny {
 		t.Fatal("precondition: no event write passed through the hook")
 	}
 	if len(host.PendingEvents) != 0 {
