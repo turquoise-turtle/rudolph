@@ -56,10 +56,12 @@ func TestR7b_FlaggedTeamIDCollectsItsAllowedExecutions(t *testing.T) {
 	addGlobalRule(t, otherTeam, types.RuleTypeTeamID, types.RulePolicyAllowlist)
 	host := syncedHost(t, machineA, transport)
 
+	// Santa is not told anything: the sync after switching collection on downloads what the sync before it did (an
+	// incremental sync re-sends the last 10 minutes of the feed either way).
+	before := host.MustSync(t)
 	ruleCLI(t, "update", "-t", "teamid", "-i", teamGoogle, "--global", "--collect-allowed-events=true")
-	// Santa is not told anything: the next sync downloads no rule.
-	if res := host.MustSync(t); res.RulesReceived != 0 {
-		t.Errorf("the sync after switching collection on downloaded %d rules, want 0", res.RulesReceived)
+	if after := host.MustSync(t); after.RulesReceived != before.RulesReceived || after.SyncType != "NORMAL" {
+		t.Errorf("the sync after switching collection on: %s with %d rules; the one before: %s with %d", after.SyncType, after.RulesReceived, before.SyncType, before.RulesReceived)
 	}
 
 	at := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
