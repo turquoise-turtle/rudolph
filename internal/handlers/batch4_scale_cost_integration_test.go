@@ -180,8 +180,9 @@ func TestCOST2_FirstSyncCapacityBudget(t *testing.T) {
 	if c.ReadUnits > 30 {
 		t.Errorf("first sync consumed %.1f RCU; budget 30: %s", c.ReadUnits, c)
 	}
-	if c.WriteUnits > 110 {
-		t.Errorf("first sync consumed %.1f WCU; budget 110: %s", c.WriteUnits, c)
+	// 112 since the web view's machine list indexes (R4): a Mac's first sensor data row is one write in each.
+	if c.WriteUnits > 112 {
+		t.Errorf("first sync consumed %.1f WCU; budget 112: %s", c.WriteUnits, c)
 	}
 }
 
