@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -37,7 +38,9 @@ func init() {
 
 The configuration replaces the whole stored configuration. For a machine, this also cancels a clean sync requested
 for it that has not been performed yet (which, for a Mac that is offline, can stay pending for weeks), unless
---clean-sync is given again; use "config update" to change settings without touching a requested clean sync.`,
+--clean-sync is given again; use "config update" to change settings without touching a requested clean sync.
+A temporary client mode of the machine that has not ended is kept (see config update --for); end it with
+config update --end-temporary-mode.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validate the flags before connecting to the sync server
@@ -139,15 +142,19 @@ func applyConfig(
 		if err != nil {
 			return fmt.Errorf("failed to get MachineID: %w", err)
 		}
-		if !newConfig.CleanSync {
-			current, eerr := service.GetIntendedConfig(machineID)
-			if eerr != nil {
-				return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
-			}
-			if current.CleanSync {
-				fmt.Println("Warning: the machine has a requested clean sync that has not been performed yet; replacing its configuration without --clean-sync cancels it.")
-				fmt.Println()
-			}
+		current, eerr := service.GetIntendedConfig(machineID)
+		if eerr != nil {
+			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
+		}
+		if !newConfig.CleanSync && current.CleanSync {
+			fmt.Println("Warning: the machine has a requested clean sync that has not been performed yet; replacing its configuration without --clean-sync cancels it.")
+			fmt.Println()
+		}
+		// Replacing the configuration is about the machine's usual settings: a temporary client mode still running
+		// is kept, so it still ends when it was meant to. An ended one is dropped with the old row.
+		if _, active := current.TemporaryClientModeAt(time.Now()); active {
+			newConfig.TemporaryClientMode = current.TemporaryClientMode
+			newConfig.TemporaryClientModeExpiresAt = current.TemporaryClientModeExpiresAt
 		}
 	}
 
@@ -178,7 +185,13 @@ func applyConfig(
 	fmt.Fprintln(writer, "FullSyncInterval:\t", newConfig.FullSyncInterval)
 	fmt.Fprintln(writer, "UploadLogUrl:\t \"", newConfig.UploadLogsURL, "\"")
 	printSantaSettings(writer, newConfig)
+	if !tf.IsGlobal {
+		printTemporaryMode(writer, newConfig, time.Now())
+	}
 	writer.Flush()
+	if newConfig.TemporaryClientMode != 0 {
+		fmt.Printf("\nThe temporary client mode is kept: ClientMode %s applies once it ends. End it now with config update --machine %s --end-temporary-mode.\n", clientModeName(clientMode), machineID)
+	}
 	fmt.Println()
 	fmt.Println(`Apply changes? (Enter: "yes" or "ok")`)
 	fmt.Print("> ")

@@ -197,6 +197,7 @@ func (c ConcreteGlobalConfigurationSetter) setGlobalConfig(config MachineConfigu
 
 	// Construct a MachineConfigRow to represent a GlobalConfig
 	config.CleanSyncRequest = ""
+	config = withoutTemporaryClientMode(config)
 	globalConfigRow := buildConfigRow(globalConfigurationPK, config)
 
 	_, err = c.setter.PutItem(globalConfigRow)

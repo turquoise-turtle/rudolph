@@ -63,7 +63,8 @@ type ConcreteConfigurationFetcher struct {
 // A machine-specific config overrides only the settings stored on it; every other setting follows the current
 // global config. Rows written by `config set --machine` (and by earlier versions) store every base setting, so
 // they keep overriding all of them. The clean sync flag is never taken from the global config (see
-// withoutCleanSyncRequest).
+// withoutCleanSyncRequest), nor is a temporary client mode. A temporary client mode of the machine is returned as
+// stored, whatever the time: preflight applies it while it lasts (ApplyTemporaryClientMode).
 func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
 	machineItem, err := f.machine.getMachineSpecificItem(machineID)
 	if err != nil {
@@ -85,12 +86,13 @@ func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (inten
 		globalConfig = &universal
 	}
 
+	global := withoutTemporaryClientMode(withoutCleanSyncRequest(*globalConfig))
 	if len(machineItem) == 0 {
-		intendedConfig = withoutCleanSyncRequest(*globalConfig)
+		intendedConfig = global
 		return
 	}
 
-	return mergeMachineConfig(withoutCleanSyncRequest(*globalConfig), machineItem)
+	return mergeMachineConfig(global, machineItem)
 }
 
 // withoutCleanSyncRequest returns a global config without its clean sync flag. The flag is refused for the global

@@ -58,6 +58,31 @@ A clean sync of one machine is requested with `rudolph config update --machine <
 
 The flag is refused for the global configuration, where it would make the whole fleet clean sync at once. A global flag stored by an earlier version of Rudolph, which accepted `config set --global --clean-sync`, is ignored (`config get --global` shows it as ignored); remove it with `rudolph config update --global --clean-sync=false`.
 
+#### Temporary client modes
+A machine can be put into another client mode for a limited time, e.g. monitor mode for a developer who needs an afternoon of unblocked builds on a lockdown fleet, or lockdown on a monitor fleet while a Mac is investigated:
+
+```
+rudolph config update --machine <machine-uuid> -c monitor --for 2h
+rudolph config update --machine <machine-uuid> -c lockdown --until 2026-11-07T17:00:00+11:00
+rudolph config update --machine <machine-uuid> --end-temporary-mode
+```
+
+- `--for` takes a Go duration (`90m`, `2h`, `48h`), `--until` an RFC 3339 time. One of them is required with `-c`, and the end must be in the future and at most 30 days ahead. They are refused with `--global`, and together with any other setting (run a separate `config update` for those).
+- Monitor, lockdown and standalone can all be temporary. A temporary lockdown or standalone mode asks for the same confirmation as setting that mode on the machine, because Santa then blocks unknown binaries on that Mac; declining it is an error and stores nothing. A temporary monitor mode, and `--end-temporary-mode`, are applied without asking.
+- The temporary mode never changes the machine's own `ClientMode`. Until it ends, preflight sends it instead of the mode the Mac would otherwise get (its own or the inherited global one); afterwards that mode is sent again, with nothing to clean up. A Mac without a machine-specific configuration gets a row holding only the temporary mode, so it keeps inheriting every other setting (`--end-temporary-mode` leaves such an empty row, which inherits everything, like no row).
+- Both the switch and the return take effect at the Mac's next sync, so up to its sync interval (`FullSyncInterval`, 600 seconds by default) after the command or the end; run `santactl sync` on the Mac to switch at once. The end is checked at every preflight; the machine configuration is never cached, so no Lambda instance keeps sending an ended temporary mode.
+- `config get --machine <uuid>` shows the temporary mode and its end, in local time and in UTC, or that it has ended and is ignored. `--end-temporary-mode` shows the mode the Mac returns to.
+- `config set --machine <uuid>` replaces the machine's configuration but keeps a temporary mode that has not ended (it says so before asking for confirmation): it is about the machine's usual settings, and the exception should still end when it was meant to. The `ClientMode` it sets applies once the temporary mode ends. An ended temporary mode is dropped. `config update --machine <uuid> -c <mode>` without `--for` or `--until` likewise changes only the machine's own mode.
+
+The row stores the temporary mode in two attributes, which tools writing the rows, such as rudolph-web, can set and remove as well:
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `TemporaryClientMode` | Number | `1` monitor, `2` lockdown, `3` standalone, as `ClientMode` |
+| `TemporaryClientModeExpiresAt` | Number | Unix seconds at which the temporary mode ends |
+
+They only ever appear on a machine's row (`PK` `Machine#<uuid>`, `SK` `Config`); on the global row they are ignored. A temporary mode applies only while both are present, the mode is a known one, and the current time is before `TemporaryClientModeExpiresAt`. Values that cannot be decoded (a string instead of a number, an unknown mode, a missing expiry) are ignored like any other mistyped setting: the Mac gets its usual mode. Ended attributes may stay on the row; readers must compare the expiry with the current time rather than treat their presence as an active temporary mode. To end one, remove both attributes.
+
 The path regexes are always sent, because Santa 2026.8 only clears a regex when it receives an empty string; Rudolph requires Santa 2026.8 or later.
 
 Settings are managed with `rudolph config set` / `rudolph config update`. Remount flags (`--remount-usb-mode`) are only accepted when USB mounts are blocked (`--block-usb-mount`, or inherited from the global configuration), because Santa ignores them otherwise.

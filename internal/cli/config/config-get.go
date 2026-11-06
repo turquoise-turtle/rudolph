@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -96,6 +97,9 @@ func getConfig(service machineconfiguration.MachineConfigurationService, tf flag
 	fmt.Fprintln(writer, "Config\t Setting")
 	fmt.Fprintln(writer, "Target:\t", subject)
 	fmt.Fprintln(writer, "ClientMode:\t", config.ClientMode, "--> (", string(clientModeText), ")")
+	if !tf.IsGlobal {
+		printTemporaryMode(writer, config, time.Now())
+	}
 	fmt.Fprintln(writer, "BlockedPathRegex:\t \"", config.BlockedPathRegex, "\"")
 	fmt.Fprintln(writer, "AllowedPathRegex:\t \"", config.AllowedPathRegex, "\"")
 	fmt.Fprintln(writer, "BatchSize:\t", config.BatchSize)
