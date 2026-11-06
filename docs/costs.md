@@ -7,6 +7,12 @@ Suppose you have a fleet with only 1 machine, sync'ing once every 10 minutes.
 We've observed the cost "floor" of Rudolph to be approximately $0.10 per day, plus whatever costs associated with your
 domain name registration (typically like $0.50 a month and $20 a year or something).
 
+That floor leaves out fixed monthly items, which do not grow with the fleet:
+
+* KMS customer managed keys, US$1 a month each: two, the DynamoDB tables' key and the Lambda source bucket's key. When Terraform creates the Firehose event sink (`eventupload_handler` `FIREHOSE` with `eventupload_autocreate_policies`), its bucket's key adds one more. The access-log buckets use SSE-S3 and need no key.
+* The Route 53 hosted zone, US$0.50 a month, when Terraform creates it (`use_existing_route53_zone` false).
+* Point-in-time recovery on the DynamoDB tables, charged per GB stored: tiny for a small fleet.
+
 ## Costs At Scale
 AWS costs **_roughly_** scale linearly to your number of clients * their sync rate.
 
@@ -38,9 +44,9 @@ The alarms are kept few and cheap: seven alarms, or six when no event sink is co
 
 * Four alarm on metrics AWS publishes for free: `api_5xx`, `api_4xx`, `lambda_errors` and `dynamodb_throttles`.
 * Three alarm on metrics that metric filters extract from the Lambda logs: `request_too_large`, `lambda_timeouts` and `event_sink_failures`. The filters are free; each extracted metric is billed as one custom metric (3 in all, US$0.30 each a month).
-* Alarms are billed per metric they evaluate (US$0.10 each a month): 16 in all, as `lambda_errors` sums one metric per Rudolph function (8, the ranker included), `dynamodb_throttles` adds reads and writes (2) and `api_4xx` divides 4xx responses by requests (2).
+* Alarms are billed per metric they evaluate (US$0.10 each a month): 15 in all, as `lambda_errors` sums one metric per Rudolph function (7: the ranker included, the authoriser left out), `dynamodb_throttles` adds reads and writes (2) and `api_4xx` divides 4xx responses by requests (2).
 
-At us-east-1 prices that is about US$2.50 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
+At us-east-1 prices that is about US$2.40 a month in total, independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
 ## Execution Events Table
 Blocked and unknown executions, and those allowed by rules flagged for collection, are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, a few US dollars a month for 1,000 Macs in monitor mode); see [Execution events table](./events-table.md#costs).

@@ -21,6 +21,7 @@ require (
 	github.com/zclconf/go-cty v1.19.0
 	golang.org/x/text v0.31.0
 	google.golang.org/protobuf v1.36.12
+	howett.net/plist v1.0.1
 )
 
 require (

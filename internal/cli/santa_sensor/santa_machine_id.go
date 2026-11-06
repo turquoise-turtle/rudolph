@@ -1,55 +1,50 @@
 package santa_sensor
 
 import (
-	"encoding/xml"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io/fs"
 	"os"
+	"strings"
+
+	"howett.net/plist"
 )
 
-const (
-	// This should match the MachineOwnerPlist file, specified in the Santa configuration profile
-	defaultSantaMachinePlistFile = "/Library/Preferences/com.google.santa.machine-mapping.plist"
-)
-
-type santaPlistXMLDocument struct {
-	XMLName xml.Name            `xml:"plist"`
-	Data    santaPlistKeyValues `xml:"dict"`
+// machinePlistFiles are read in order; the first that exists is used. The example Santa configuration profile names
+// the first one for both MachineIDPlist and MachineOwnerPlist. Macs set up from the older example profile still have
+// the com.google.santa file.
+var machinePlistFiles = []string{
+	"/Library/Preferences/com.northpolesec.santa.machine-mapping.plist",
+	"/Library/Preferences/com.google.santa.machine-mapping.plist",
 }
 
-type santaPlistKeyValues struct {
-	// Annoyingly, because the plist files use <key> and <string> as the respective values in order, =
-	// you have to infer which string maps to which key based upon their array positions.
-	Keys    []string `xml:"key"`
-	Strings []string `xml:"string"`
+func GetMyMachineUUID() (string, error) {
+	return machineUUIDFrom(machinePlistFiles)
 }
 
-func GetMyMachineUUID() (machineUUID string, err error) {
-	xmlFile, err := os.Open(defaultSantaMachinePlistFile)
-	if err != nil {
-		err = fmt.Errorf("could not read this Mac's machine ID from %s (%w); pass --machine <machine-id> or --global", defaultSantaMachinePlistFile, err)
-		return
-	}
-
-	defer xmlFile.Close()
-
-	byteValue, _ := ioutil.ReadAll(xmlFile)
-
-	var doc santaPlistXMLDocument
-	// A plist that is not XML has no MachineUUID either, which is the error below
-	_ = xml.Unmarshal(byteValue, &doc)
-
-	if len(doc.Data.Keys) == len(doc.Data.Strings) {
-		for i, key := range doc.Data.Keys {
-			if key == "MachineUUID" {
-				machineUUID = doc.Data.Strings[i]
-			}
+// machineUUIDFrom reads MachineUUID from the first of paths that exists. The file may be an XML or a binary plist
+// (`defaults write` writes binary). A file that exists without a MachineUUID is reported rather than skipped, so a
+// broken mapping file is not silently masked by an older one.
+func machineUUIDFrom(paths []string) (string, error) {
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
 		}
-	}
+		if err != nil {
+			return "", fmt.Errorf("could not read this Mac's machine ID from %s (%w); pass --machine <machine-id> or --global", path, err)
+		}
 
-	if machineUUID == "" {
-		err = fmt.Errorf("no MachineUUID in %s; pass --machine <machine-id> or --global", defaultSantaMachinePlistFile)
-	}
+		var doc struct {
+			MachineUUID string `plist:"MachineUUID"`
+		}
+		// A file that is not a plist dictionary has no MachineUUID either, which is the error below
+		_, _ = plist.Unmarshal(raw, &doc)
 
-	return
+		if doc.MachineUUID == "" {
+			return "", fmt.Errorf("no MachineUUID in %s; pass --machine <machine-id> or --global", path)
+		}
+		return doc.MachineUUID, nil
+	}
+	return "", fmt.Errorf("could not find this Mac's machine ID: none of %s exists; pass --machine <machine-id> or --global", strings.Join(paths, ", "))
 }

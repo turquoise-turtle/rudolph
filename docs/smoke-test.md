@@ -112,6 +112,7 @@ Set `bucket`, `key` (e.g. `rudolph-smoke.tfstate`), `region`, `kms_key_id` (or r
   "allowed_inbound_ips": [],
   "kms_key_administrators_arns": [],
   "sync_token_sha256": ["<digest from 2.2>"],
+  "authorizer_result_ttl_in_seconds": 300,
   "mtls_truststore_uri": "",
   "mtls_truststore_version": "",
   "disable_execute_api_endpoint": false,
@@ -128,27 +129,15 @@ Set `bucket`, `key` (e.g. `rudolph-smoke.tfstate`), `region`, `kms_key_id` (or r
 - `alarm_sns_topic_arn`: the topic from 0.1, or empty (the alarms then only change state in CloudWatch).
 - `enable_s3_logging` is not in the file and defaults to `true`, which creates the access-log bucket that audit item D3 is about (step 11.2). Leave it on for this test.
 
-### 2.5 Expose the module outputs you will need
+### 2.5 Check the module outputs
 
-The example `_outputs.tf` prints only `sync_base_url` and `events_dynamodb_table_arn`. Append these to the environment's own `_outputs.tf` (gitignored, so this changes nothing in the repository):
+The example `_outputs.tf`, copied by `make init-env`, exports `sync_base_url`, `events_dynamodb_table_arn`, `events_dynamodb_table_name`, `store_kms_key_arn`, `api_gateway_id` and `raw_url`. Check they are all there:
 
-```hcl
-output "events_dynamodb_table_name" {
-  value = module.santa_api.events_dynamodb_table_name
-}
-
-output "store_kms_key_arn" {
-  value = module.santa_api.store_kms_key_arn
-}
-
-output "api_gateway_id" {
-  value = module.santa_api.api_gateway_id
-}
-
-output "raw_url" {
-  value = module.santa_api.raw_url
-}
+```sh
+grep '^output' deployments/environments/$ENV/_outputs.tf
 ```
+
+If the environment was created before they were added to the example, copy them from `deployments/environments/example/_outputs.tf`.
 
 ### 2.6 Test and build
 
@@ -188,11 +177,11 @@ wc -l < "$SMOKE_DIR/03-plan-resources.txt"
 Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. Check that the plan holds, by name:
 
 - **DynamoDB** (`module.rule_store`): `aws_dynamodb_table.store` named `smoke_rudolph_store`, `PAY_PER_REQUEST`, TTL on `ExpiresAfter`, point-in-time recovery on, server-side encryption with the store KMS key, and five global secondary indexes: `SerialNum_DataType_MachineID`, `DataType_MachineID`, `DataType_SerialKey`, `DataType_HostnameKey`, `GlobalRulePolicy_SK`. `aws_dynamodb_table.events` named `smoke_rudolph_events`, same settings, with three indexes: `Fleet_TS`, `Decision_TS`, `TeamID_TS`. The IAM policy `smoke_rudolph_events_write_policy` and its attachment to the eventupload role.
-- **KMS:** three keys, all with rotation on: the tables' key (alias `alias/smoke-santa-rules-tables-sse`), the Lambda source bucket's key and the access-log bucket's key.
-- **Lambda:** `smoke_rudolph_health`, `_xsrf`, `_preflight`, `_eventupload`, `_ruledownload`, `_postflight` and `_authorizer`, each `provided.al2` on `arm64` with an alias named `dev` and a log group with 30 days' retention; `smoke_rudolph_ranker` (256 MB, 300 s timeout) with its own role and policy, log group and `aws_lambda_function_event_invoke_config` with 0 retries. The eventupload function's environment has `EVENTS_DYNAMODB_NAME` and `DYNAMODB_NAME`.
+- **KMS:** two keys, both with rotation on: the tables' key (alias `alias/smoke-santa-rules-tables-sse`) and the Lambda source bucket's key. The access-log bucket has no key of its own.
+- **Lambda:** `smoke_rudolph_health`, `_xsrf`, `_preflight`, `_eventupload`, `_ruledownload`, `_postflight` and `_authorizer`, each `provided.al2023` on `arm64` with an alias named `dev` and a log group with 30 days' retention; `smoke_rudolph_ranker` (256 MB, 300 s timeout) with its own role and policy, log group and `aws_lambda_function_event_invoke_config` with 0 retries. The eventupload function's environment has `EVENTS_DYNAMODB_NAME` and `DYNAMODB_NAME`.
 - **EventBridge:** rule `smoke_rudolph_ranker_hourly` with `rate(1 hour)`, its target and the Lambda permission for `events.amazonaws.com`.
 - **API Gateway:** REST API `smoke_rudolph` with `binary_media_types = ["application/json"]` and `api_key_source = "AUTHORIZER"`; the stage `dev`; a deployment; `aws_api_gateway_method_settings.throttling` (`*/*`, 2000/2000, metrics and logging off); a `REQUEST` authorizer with identity source `method.request.header.Authorization`; `GET /health` and `POST /{preflight,eventupload,ruledownload,postflight,xsrf}/{machine_id}`; the custom domain `smoke-rudolph.<zone>` with `TLS_1_2`, its base path mapping, the ACM certificate and its DNS validation, and two Route 53 records.
-- **S3:** `smoke-<org>-rudolph-source` (versioning, SSE-KMS, SSL-only policy, access logging) with three objects (API, authoriser and ranker zips); `smoke-<org>-rudolph-source-logging` with `aws_s3_bucket_ownership_controls` (`BucketOwnerPreferred`) and `aws_s3_bucket_acl` (`log-delivery-write`).
+- **S3:** `smoke-<org>-rudolph-source` (versioning, SSE-KMS, SSL-only policy, access logging) with three objects (API, authoriser and ranker zips); `smoke-<org>-rudolph-source-logging` with SSE-S3 default encryption (`sse_algorithm = "AES256"`, no KMS key), `aws_s3_bucket_ownership_controls` (`BucketOwnerPreferred`) and `aws_s3_bucket_acl` (`log-delivery-write`).
 - **Alarms:** six, `smoke_rudolph_api_5xx`, `_api_4xx`, `_request_too_large`, `_lambda_errors`, `_lambda_timeouts`, `_dynamodb_throttles`; metric filters `*_request_too_large` on the six handler log groups and `*_timeouts` on all eight log groups.
 
 And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, or an `aws_route53_zone` (with `use_existing_route53_zone = true`).
@@ -215,7 +204,7 @@ Capture: the full apply output, its duration, and the outputs:
 terraform -chdir=deployments/environments/$ENV output | tee "$SMOKE_DIR/03-outputs.txt"
 ```
 
-Watch for, and record if they happen: an error creating Lambda functions with runtime `provided.al2` (see [Doc issues found](#doc-issues-found)), `AccessControlListNotSupported` on `aws_s3_bucket_acl.s3_logging` (audit D3), or the custom domain timing out on certificate validation.
+Watch for, and record if they happen: an error creating Lambda functions with runtime `provided.al2023`, `AccessControlListNotSupported` on `aws_s3_bucket_acl.s3_logging` (audit D3), or the custom domain timing out on certificate validation.
 
 ### 3.4 First requests
 
@@ -225,7 +214,7 @@ curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $TOKEN" "https://$HOST/h
 curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer wrong" "https://$HOST/health"             # 401
 ```
 
-Success: `401`, then `{"status":"healthy"}` with `200`, then `401`. The first is answered by API Gateway without invoking the authoriser; the third invokes it, and the authoriser answers by returning the `Unauthorized` error. Note the time of the third request: step 11.3 checks whether it fired `lambda_errors`.
+Success: `401`, then `{"status":"healthy"}` with `200`, then `401`. The first is answered by API Gateway without invoking the authoriser; the third invokes it, and the authoriser answers by returning the `Unauthorized` error. Note the time of the third request: step 11.3 checks that it did not fire `lambda_errors`.
 
 Capture: the three outputs, and the log lines:
 
@@ -383,10 +372,10 @@ On the main test Mac:
 
 ```sh
 MID="$(uuidgen)"; echo "$MID"
-sudo defaults write /Library/Preferences/com.google.santa.machine-mapping MachineUUID -string "$MID"
+sudo defaults write /Library/Preferences/com.northpolesec.santa.machine-mapping MachineUUID -string "$MID"
 ```
 
-The file name is not a preference domain, so it keeps its `com.google.santa` name; `rudolph info` reads it (step 5.3). Record `$MID` in `$SMOKE_DIR/05-machine-ids.txt` on your admin Mac and `export MID=...` there too.
+This is the file the example profile's `MachineIDPlist` names; `rudolph info` reads it (step 5.3). Record `$MID` in `$SMOKE_DIR/05-machine-ids.txt` on your admin Mac and `export MID=...` there too.
 
 ### 5.2 Configuration profile
 
@@ -418,7 +407,7 @@ Write this outside both repositories (it holds the token), fill in the values, a
         <string>Bearer REPLACE-WITH-TOKEN</string>
       </dict>
       <key>MachineIDPlist</key>
-      <string>/Library/Preferences/com.google.santa.machine-mapping.plist</string>
+      <string>/Library/Preferences/com.northpolesec.santa.machine-mapping.plist</string>
       <key>MachineIDKey</key>
       <string>MachineUUID</string>
       <key>MachineOwnerGroups</key>
@@ -448,7 +437,7 @@ Write this outside both repositories (it holds the token), fill in the values, a
 - Leave out `SyncClientContentEncoding` (deflate, checked in 3.5) and `SyncEnableProtoTransfer`.
 - **`SyncEnableCleanSyncEventUpload`** (the exact key Santa reads) is left out. Santa uploads no events during a clean sync unless it is true, and a Mac that holds no rules is clean synced on every sync. Set it to `<true/>` only for a fleet that will run without any rules; this test adds rules in step 6, after which syncs become incremental and events are uploaded.
 
-The payload above uses the `com.northpolesec.santa` domain that Santa 2026.8 and newer read; `configs/santa-configuration.mobileconfig` in this repository still uses `com.google.santa` and has no `SyncExtraHeaders`, so do not start from it.
+The payload above uses the `com.northpolesec.santa` domain that Santa 2026.8 and newer read. `configs/santa-configuration.mobileconfig` in this repository uses the same domain, token header and machine-mapping path, so it is a usable starting point too; the payload above is trimmed to what this test needs and adds `MachineOwnerGroups`. For a managed Mac, `configs/santa-sysext.mobileconfig` and `configs/santa-tcc.mobileconfig` approve North Pole Security's system extension and full-disk access (team ID `ZMCG7MLDV9`).
 
 Check on the Mac:
 
@@ -698,7 +687,7 @@ aws s3api get-bucket-encryption --bucket "$SRC-logging"
 aws s3api get-public-access-block --bucket "$SRC"
 ```
 
-Success: the apply in 3.3 had no ACL error; ownership `BucketOwnerPreferred`; the ACL grants the log delivery group write; the source bucket logs to `$SRC-logging` with prefix `$SRC/`.
+Success: the apply in 3.3 had no ACL error; ownership `BucketOwnerPreferred`; the ACL grants the log delivery group write; the source bucket logs to `$SRC-logging` with prefix `$SRC/`; the logging bucket's default encryption is `AES256` (SSE-S3).
 
 Then, a few hours after the apply, look for access logs:
 
@@ -706,13 +695,13 @@ Then, a few hours after the apply, look for access logs:
 aws s3 ls "s3://$SRC-logging/$SRC/" | head
 ```
 
-Record whether any arrived. The logging bucket's default encryption is SSE-KMS with a customer managed key, and S3 server access logging is documented by AWS to deliver only to destination buckets with SSE-S3 default encryption; if no logs arrive after a day, that is the likely cause (see [Doc issues found](#doc-issues-found)).
+Success: log objects have arrived (S3 delivers access logs on a best-effort basis, usually within a few hours). The logging bucket uses SSE-S3 because S3 server access logs are only delivered to destination buckets with SSE-S3 default encryption. If none arrive after a day, record it with the output of the commands above.
 
 ### 11.3 Alarm firing paths
 
 List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_rudolph_" --region "$REGION" --query 'MetricAlarms[].[AlarmName,StateValue]' --output table`. Expect six, all `OK` or `INSUFFICIENT_DATA`.
 
-- **`lambda_errors` from a wrong token.** The request in 3.4 with `Bearer wrong` made the authoriser return its `Unauthorized` error, which Lambda counts as a function error. Check the authoriser's `Errors` metric for that minute and whether `lambda_errors` went to `ALARM`. If it did, every scanner request with a made-up bearer token fires this alarm; record it.
+- **No `lambda_errors` from a wrong token.** The request in 3.4 with `Bearer wrong` made the authoriser return its `Unauthorized` error, which Lambda counts as a function error. `lambda_errors` leaves the authoriser out, so it must not fire. Check that the authoriser's `Errors` metric shows the error for that minute, and that `lambda_errors` stayed `OK` or `INSUFFICIENT_DATA` (`aws cloudwatch describe-alarm-history --alarm-name "${PREFIX}_rudolph_lambda_errors" --history-item-type StateUpdate --region "$REGION"` shows no change to `ALARM`). If it did fire, record it.
 - **`request_too_large`**, for real: a body that decompresses to more than 6 MiB.
 
   ```sh
@@ -811,7 +800,7 @@ Compare with the configured memory (preflight and eventupload 256 MB, ruledownlo
 1. In Billing → Cost allocation tags, activate the `Name` tag (it applies from activation onwards, after up to 24 hours).
 2. After 2 to 3 days, Cost Explorer, daily, grouped by service, filtered to the dev account (and to `Name = Rudolph` once active).
 
-Compare with [costs.md](costs.md) (a floor of about US$0.10 a day for one Mac; the alarms about US$2.50 a month), the ranker estimate in [events-table.md](events-table.md#top-binaries) (about US$2 a month at 1,000 Macs, so cents here), and expect fixed items costs.md does not list: three KMS customer managed keys (US$1 a month each), the hosted zone, and point-in-time recovery on both tables.
+Compare with [costs.md](costs.md) (a floor of about US$0.10 a day for one Mac, plus fixed items: two KMS customer managed keys at US$1 a month each, the hosted zone when Terraform creates it, and point-in-time recovery on both tables; the alarms about US$2.40 a month) and the ranker estimate in [events-table.md](events-table.md#top-binaries) (about US$2 a month at 1,000 Macs, so cents here).
 
 Capture: a CSV export of the Cost Explorer view.
 
@@ -870,12 +859,12 @@ parse @message /(?<method>[A-Z]+) (?<route>\S+) machine=(?<machine>\S+) status=(
 Found while writing this runbook, by comparing the docs with the code and with the vendored Santa sources in `testdata/`. Not fixed here.
 
 1. **`EnableCleanSyncEventUpload` is not Santa's key.** [sync.md](sync.md) (and comments in `internal/testutil/fakesanta`) tell admins to set `EnableCleanSyncEventUpload` in the profile. Santa 2025.12, 2026.8 and 2026.9 read `SyncEnableCleanSyncEventUpload` (`kSyncEnableCleanSyncEventUpload` in `SNTConfigurator.mm`); the documented key does nothing. Fixed 2026-11-07.
-2. **The example Santa profile is out of date.** `configs/santa-configuration.mobileconfig`, which [configuring Santa](configuring-santa.md) points to as the example, sets its preferences under `com.google.santa`, while the same page says Santa 2026.8 reads `com.northpolesec.santa` (confirmed in `SNTConfigurator.mm`), and it has no `SyncExtraHeaders`, without which every sync is refused with 401.
-3. **"Received 0 rules" on the first sync.** [configuring Santa](configuring-santa.md) says a working first sync receives 0 rules; on a deployment with no rules, the clean sync sends one rule, the `REMOVE` of the placeholder identifier (`internal/handlers/ruledownload/clean_sync.go`). Verify what Santa prints in 5.3 and correct the doc.
+2. **The example Santa profile is out of date.** `configs/santa-configuration.mobileconfig`, which [configuring Santa](configuring-santa.md) points to as the example, sets its preferences under `com.google.santa`, while the same page says Santa 2026.8 reads `com.northpolesec.santa` (confirmed in `SNTConfigurator.mm`), and it has no `SyncExtraHeaders`, without which every sync is refused with 401. Fixed 2026-11-07.
+3. **"Received 0 rules" on the first sync.** [configuring Santa](configuring-santa.md) says a working first sync receives 0 rules; on a deployment with no rules, the clean sync sends one rule, the `REMOVE` of the placeholder identifier (`internal/handlers/ruledownload/clean_sync.go`). Verify what Santa prints in 5.3 and correct the doc. Fixed 2026-11-07.
 4. **No event count in the eventupload log.** rudolph-web's `docs/data-layer-design.md` says to measure events per Mac per day by counting `events` per upload in the Lambda logs. eventupload logs only the router line (route, machine, status, duration) and `dropped` lines; step 12.1 counts uploads in the logs and stored events in the table instead. Measuring uploaded events with `EnableAllEventUpload` on would need a log line or metric that does not exist.
-5. **Module outputs not exposed by the example environment.** rudolph-web's `docs/deploy.md` refers to Rudolph's `events_dynamodb_table_name` output and the table's KMS key; the `santa_api` module has `events_dynamodb_table_name`, `store_kms_key_arn` and `api_gateway_id` outputs, but `deployments/environments/example/_outputs.tf` exports only `sync_base_url` and `events_dynamodb_table_arn` (step 2.5 adds them locally).
-6. **`lambda_errors` likely fires on a wrong bearer token.** The authoriser rejects a token that does not match by returning the `Unauthorized` error (`internal/handlers/authorizer/authorizer.go`), which Lambda counts as a function error; [deploy.md](deploy.md#alarms) describes `lambda_errors` as firing when a function "returned an error" and only mentions rejected tokens under `api_4xx`. To be confirmed in 11.3; if it fires, scanners with a made-up token page whoever receives the alarms.
-7. **Audit D3 is out of date, and access logging may still not work.** [shortcomings.md](audit/shortcomings.md) D3 describes an ACL on new buckets; the code has since removed the source bucket's ACL and added ownership controls before the logging bucket's ACL. The remaining risk is different: the logging bucket's default encryption is SSE-KMS with a customer managed key, which AWS documents as unsupported for server access log destinations, so logs may never be delivered. To be confirmed in 11.2.
-8. **`provided.al2` runtime.** Rudolph's Lambdas (`modules/lambda/api-handler/lambda.tf`, `ranker.tf`) use `provided.al2`, while rudolph-web uses `provided.al2023`. Amazon Linux 2 reached end of support on 30 June 2026; if AWS has started blocking creation of `provided.al2` functions, the apply in 3.3 fails. No doc mentions the runtime or this risk.
-9. **The costs floor omits fixed monthly items.** [costs.md](costs.md) gives a floor of about US$0.10 a day for one Mac and lists the alarms (about US$2.50 a month), but not the three KMS customer managed keys (US$1 a month each), the hosted zone or point-in-time recovery; the real floor is likely higher. Step 12.4 measures it.
-10. **Example environment placeholders.** `deployments/environments/example/config.auto.tfvars.json` gives `eventupload_handler` as `[KINESIS|FIREHOSE]` with `eventupload_autocreate_policies: true`, although `NONE` is valid and is the simplest start, and it leaves out `authorizer_result_ttl_in_seconds`, which the example's README shows.
+5. **Module outputs not exposed by the example environment.** rudolph-web's `docs/deploy.md` refers to Rudolph's `events_dynamodb_table_name` output and the table's KMS key; the `santa_api` module has `events_dynamodb_table_name`, `store_kms_key_arn` and `api_gateway_id` outputs, but `deployments/environments/example/_outputs.tf` exports only `sync_base_url` and `events_dynamodb_table_arn` (step 2.5 adds them locally). Fixed 2026-11-07.
+6. **`lambda_errors` likely fires on a wrong bearer token.** The authoriser rejects a token that does not match by returning the `Unauthorized` error (`internal/handlers/authorizer/authorizer.go`), which Lambda counts as a function error; [deploy.md](deploy.md#alarms) describes `lambda_errors` as firing when a function "returned an error" and only mentions rejected tokens under `api_4xx`. To be confirmed in 11.3; if it fires, scanners with a made-up token page whoever receives the alarms. Fixed 2026-11-07.
+7. **Audit D3 is out of date, and access logging may still not work.** [shortcomings.md](audit/shortcomings.md) D3 describes an ACL on new buckets; the code has since removed the source bucket's ACL and added ownership controls before the logging bucket's ACL. The remaining risk is different: the logging bucket's default encryption is SSE-KMS with a customer managed key, which AWS documents as unsupported for server access log destinations, so logs may never be delivered. To be confirmed in 11.2. The logging buckets now use SSE-S3 (2026-11-07); the D3 wording in the audit is unchanged.
+8. **`provided.al2` runtime.** Rudolph's Lambdas (`modules/lambda/api-handler/lambda.tf`, `ranker.tf`) use `provided.al2`, while rudolph-web uses `provided.al2023`. Amazon Linux 2 reached end of support on 30 June 2026; if AWS has started blocking creation of `provided.al2` functions, the apply in 3.3 fails. No doc mentions the runtime or this risk. Fixed 2026-11-07.
+9. **The costs floor omits fixed monthly items.** [costs.md](costs.md) gives a floor of about US$0.10 a day for one Mac and lists the alarms (about US$2.50 a month), but not the three KMS customer managed keys (US$1 a month each), the hosted zone or point-in-time recovery; the real floor is likely higher. Step 12.4 measures it. Fixed 2026-11-07.
+10. **Example environment placeholders.** `deployments/environments/example/config.auto.tfvars.json` gives `eventupload_handler` as `[KINESIS|FIREHOSE]` with `eventupload_autocreate_policies: true`, although `NONE` is valid and is the simplest start, and it leaves out `authorizer_result_ttl_in_seconds`, which the example's README shows. Fixed 2026-11-07.

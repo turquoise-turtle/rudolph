@@ -30,6 +30,7 @@ resource "aws_s3_bucket_versioning" "s3_logging" {
   }
 }
 
+# S3 server access logs are only delivered to a destination bucket encrypted with SSE-S3, not SSE-KMS.
 resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logging" {
   count = local.create_s3_logging_bucket ? 1 : 0
 
@@ -37,8 +38,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logging" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.s3_logging[0].key_id
+      sse_algorithm = "AES256"
     }
   }
 }
@@ -61,19 +61,4 @@ resource "aws_s3_bucket_acl" "s3_logging" {
 
   bucket = aws_s3_bucket.s3_logging[0].id
   acl    = "log-delivery-write"
-}
-
-
-// KMS Key for S3 server-side encryption
-resource "aws_kms_key" "s3_logging" {
-  count               = local.create_s3_logging_bucket ? 1 : 0
-  enable_key_rotation = true
-  description         = "S3 Logging S3 Server-Side Encryption"
-}
-
-// KMS Alias for S3 server-side encryption
-resource "aws_kms_alias" "s3_logging" {
-  count         = local.create_s3_logging_bucket ? 1 : 0
-  name          = "alias/${local.s3_logging_bucket_name}-s3-sse"
-  target_key_id = aws_kms_key.s3_logging[0].key_id
 }

@@ -118,7 +118,7 @@ variable "sync_token_sha256" {
 
 variable "authorizer_result_ttl_in_seconds" {
   type        = number
-  description = "How long API Gateway caches the authorizer result for a token, in seconds (1-3600)"
+  description = "How long API Gateway caches the authorizer result for a token, in seconds (0-3600; 0 disables caching)"
   default     = 300
 }
 

@@ -5,48 +5,63 @@
 	<key>PayloadContent</key>
 	<array>
 		<dict>
-			<key>AllowUserOverrides</key>
-			<true/>
-			<key>AllowedTeamIdentifiers</key>
-			<array>
-			  <string>EQHXZ8M8AV</string>
-			</array>
+			<key>AllowedSystemExtensions</key>
+			<dict>
+				<key>ZMCG7MLDV9</key>
+				<array>
+					<string>com.northpolesec.santa.daemon</string>
+				</array>
+			</dict>
+			<key>AllowedSystemExtensionTypes</key>
+			<dict>
+				<key>ZMCG7MLDV9</key>
+				<array>
+					<string>EndpointSecurityExtension</string>
+				</array>
+			</dict>
+			<key>NonRemovableSystemExtensions</key>
+			<dict>
+				<key>ZMCG7MLDV9</key>
+				<array>
+					<string>com.northpolesec.santa.daemon</string>
+				</array>
+			</dict>
 			<key>PayloadDescription</key>
-			<string>Sample System Extension Policy Setting</string>
+			<string>Allow Santa's system extension and prevent its removal</string>
 			<key>PayloadDisplayName</key>
-			<string>Sample System Extension Policy Setting</string>
+			<string>Santa: System Extension</string>
 			<key>PayloadEnabled</key>
 			<true/>
 			<key>PayloadIdentifier</key>
-			<string>com.apple.system-extension-policy.11112222-3333-4444-5555-666677778888</string>
+			<string>com.acme.santa.sysext-policy.B4EB49F1-BF4D-443C-8E66-5F96D0BA3A43</string>
 			<key>PayloadOrganization</key>
 			<string>Acme Inc.</string>
 			<key>PayloadType</key>
 			<string>com.apple.system-extension-policy</string>
 			<key>PayloadUUID</key>
-			<string>11112222-3333-4444-5555-666677778888</string>
+			<string>B4EB49F1-BF4D-443C-8E66-5F96D0BA3A43</string>
 			<key>PayloadVersion</key>
 			<integer>1</integer>
 		</dict>
 	</array>
 	<key>PayloadDescription</key>
-	<string>Sample System Extension Policy Setting</string>
+	<string>Automatically enable Santa's Endpoint Security system extension</string>
 	<key>PayloadDisplayName</key>
-	<string>Sample System Extension Policy Setting</string>
+	<string>Santa: System Extension</string>
 	<key>PayloadEnabled</key>
 	<true/>
 	<key>PayloadIdentifier</key>
-	<string>com.acme.profiles.sysextpolicy</string>
+	<string>com.acme.santa.sysext-policy</string>
 	<key>PayloadOrganization</key>
 	<string>Acme Inc.</string>
 	<key>PayloadRemovalDisallowed</key>
-	<false/>
+	<true/>
 	<key>PayloadScope</key>
 	<string>System</string>
 	<key>PayloadType</key>
 	<string>Configuration</string>
 	<key>PayloadUUID</key>
-	<string>44445555-4444-5555-4444-444455554444</string>
+	<string>A316ABD1-6117-4257-B58C-078FB9071851</string>
 	<key>PayloadVersion</key>
 	<integer>1</integer>
 </dict>

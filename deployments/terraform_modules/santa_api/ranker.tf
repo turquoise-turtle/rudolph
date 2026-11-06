@@ -92,7 +92,7 @@ resource "aws_lambda_function" "ranker" {
   function_name = local.ranker_function_name
   role          = aws_iam_role.ranker.arn
   handler       = "bootstrap"
-  runtime       = "provided.al2"
+  runtime       = "provided.al2023"
   architectures = ["arm64"]
 
   s3_bucket        = aws_s3_bucket_object.ranker_source.bucket

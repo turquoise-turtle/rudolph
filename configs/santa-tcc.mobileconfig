@@ -5,50 +5,35 @@
 	<key>PayloadContent</key>
 	<array>
 		<dict>
-			<key>PayloadDisplayName</key>
-			<string>Sample Privacy Preferences Policy Control</string>
 			<key>PayloadDescription</key>
-			<string>Sample Privacy Preferences Policy Control</string>
+			<string>Allows full-disk access for Santa</string>
+			<key>PayloadDisplayName</key>
+			<string>Santa: TCC</string>
+			<key>PayloadEnabled</key>
+			<true/>
 			<key>PayloadIdentifier</key>
-			<string>com.acme.mdm.com.apple.TCC.configuration-profile-policy</string>
+			<string>com.acme.santa.tcc-policy.C49140DD-3AB1-47E4-842E-1DAFBDF76F42</string>
 			<key>PayloadOrganization</key>
-			<string>Acme</string>
+			<string>Acme Inc.</string>
 			<key>PayloadType</key>
 			<string>com.apple.TCC.configuration-profile-policy</string>
 			<key>PayloadUUID</key>
-			<string>12345678-1234-DDDD-CCCC-66663DE9AAAA</string>
+			<string>C49140DD-3AB1-47E4-842E-1DAFBDF76F42</string>
 			<key>PayloadVersion</key>
 			<integer>1</integer>
 			<key>Services</key>
 			<dict>
-				<key>AppleEvents</key>
-				<array/>
-				<key>Accessibility</key>
-				<array>
-					<dict>
-						<key>Allowed</key>
-						<true/>
-						<key>CodeRequirement</key>
-						<string>identifier "com.google.santa" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = EQHXZ8M8AV</string>
-						<key>Comment</key>
-						<string></string>
-						<key>Identifier</key>
-						<string>com.google.santa</string>
-						<key>IdentifierType</key>
-						<string>bundleID</string>
-					</dict>
-				</array>
 				<key>SystemPolicyAllFiles</key>
 				<array>
 					<dict>
 						<key>Allowed</key>
 						<true/>
 						<key>CodeRequirement</key>
-						<string>identifier "com.google.santa.daemon" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = EQHXZ8M8AV</string>
+						<string>identifier "com.northpolesec.santa.daemon" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = ZMCG7MLDV9</string>
 						<key>Comment</key>
-						<string>Allow SystemPolicyAllFiles control for com.google.santa.daemon</string>
+						<string>Allow full-disk access for com.northpolesec.santa.daemon</string>
 						<key>Identifier</key>
-						<string>com.google.santa.daemon</string>
+						<string>com.northpolesec.santa.daemon</string>
 						<key>IdentifierType</key>
 						<string>bundleID</string>
 						<key>StaticCode</key>
@@ -58,25 +43,11 @@
 						<key>Allowed</key>
 						<true/>
 						<key>CodeRequirement</key>
-						<string>identifier "com.google.santa.bundleservice" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = EQHXZ8M8AV</string>
+						<string>identifier "com.northpolesec.santa.bundleservice" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = ZMCG7MLDV9</string>
 						<key>Comment</key>
-						<string>Allow SystemPolicyAllFiles control for com.google.santa.bundleservice</string>
+						<string>Allow full-disk access for com.northpolesec.santa.bundleservice</string>
 						<key>Identifier</key>
-						<string>com.google.santa.bundleservice</string>
-						<key>IdentifierType</key>
-						<string>bundleID</string>
-						<key>StaticCode</key>
-						<false/>
-					</dict>
-					<dict>
-						<key>Allowed</key>
-						<true/>
-						<key>CodeRequirement</key>
-						<string>identifier "com.google.santa" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = EQHXZ8M8AV</string>
-						<key>Comment</key>
-						<string>Allow SystemPolicyAllFiles control for com.google.santa</string>
-						<key>Identifier</key>
-						<string>com.google.santa</string>
+						<string>com.northpolesec.santa.bundleservice</string>
 						<key>IdentifierType</key>
 						<string>bundleID</string>
 						<key>StaticCode</key>
@@ -86,20 +57,24 @@
 			</dict>
 		</dict>
 	</array>
-	<key>PayloadDisplayName</key>
-	<string>Sample Privacy Preferences Policy Control</string>
 	<key>PayloadDescription</key>
-	<string>Sample Privacy Preferences Policy Control</string>
+	<string>Grant Santa full-disk access</string>
+	<key>PayloadDisplayName</key>
+	<string>Santa: TCC</string>
+	<key>PayloadEnabled</key>
+	<true/>
 	<key>PayloadIdentifier</key>
-	<string>com.acme.mdm.com.apple.TCC.configuration-profile-policy</string>
+	<string>com.acme.santa.tcc-policy</string>
 	<key>PayloadOrganization</key>
-	<string>Acme</string>
+	<string>Acme Inc.</string>
+	<key>PayloadRemovalDisallowed</key>
+	<true/>
 	<key>PayloadScope</key>
 	<string>System</string>
 	<key>PayloadType</key>
 	<string>Configuration</string>
 	<key>PayloadUUID</key>
-	<string>8764321-EEEE-DDDD-CCCC-AAAAEEEE4444</string>
+	<string>09C9866E-868C-4AD4-A80C-F86C080172DF</string>
 	<key>PayloadVersion</key>
 	<integer>1</integer>
 </dict>
