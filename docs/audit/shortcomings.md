@@ -27,7 +27,7 @@ Relevance to our needs: **R** rules (global + per-machine), **V** visibility, **
 | P4 | Med | R | Preflight response never sends `enable_all_event_upload`, `disable_unknown_event_upload`, `override_file_access_action`, `removable_media_policy`, `block_usb_mount`, `remount_usb_mode`, `event_detail_url/text`; `RemountUsbMode` modelled as string (proto: `repeated string`). | preflight contract test decodes response against proto shapes |
 | P5 | Med | R | Rule model lacks `CDHASH` type; `CEL`, `SILENT_GUI_BLOCKLIST`, `SILENT_TTY_BLOCKLIST` policies; `custom_url`, `cel_expr`, `event_detail_button_label`, `notification_app_name`. Non-protocol `ALLOWLIST_TRANSITIVE` policy can be sent to clients. | `pkg/types` + ruledownload contract test |
 | P6 | Med | V | Event upload drops `audit_events`, `file_access_events`, `entitlement_info`, `cs_flags`, `signing_status`, `secure_signing_time`, `signing_time`, `static_rule`. | eventupload round-trip test |
-| P7 | Low | V | Preflight doesn't persist `hostname`, `model_identifier`, `sip_status`, `primary_user_groups`, `rules_hash`, `push_notification_sync`. | preflight sensor-data test |
+| P7 | Low | V | Preflight doesn't persist `hostname`, `model_identifier`, `sip_status`, `primary_user_groups`, `rules_hash`, `push_notification_sync`. (Fixed; since 2026-11-06 the groups are on their own `ReportedGroups` item, written only when they change: COST2.) | preflight sensor-data test |
 | P8 | Low | R | Postflight ignores `sync_type` and `rules_hash`. | postflight contract test |
 
 ## Logic (L)
