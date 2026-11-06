@@ -78,6 +78,12 @@ type Rule struct {
 
 // Host is a simulated Mac running Santa.
 type Host struct {
+	// Version is the Santa release the host runs, one of the vendored ones (testdata/santa-<version>):
+	// "2026.9" (the default when empty), "2026.8" or "2025.12". It is reported in preflight and the User-Agent, and
+	// requests and responses use that release's sync proto: a response field or enum value the release does not know
+	// is dropped, so a rule with a policy it does not know arrives with none and is skipped, as Santa does.
+	Version string
+
 	MachineID    string
 	SerialNumber string // "" is not sent (protobuf JSON omits empty strings), as on a Mac that reports none
 	Hostname     string
@@ -408,6 +414,14 @@ func (h *Host) rulesHash() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// version is the Santa release the host runs.
+func (h *Host) version() string {
+	if h.Version == "" {
+		return santaproto.SantaVersion
+	}
+	return h.Version
+}
+
 func (h *Host) preflightJSON() string {
 	counts := map[string]int{}
 	for k := range h.Rules {
@@ -419,11 +433,11 @@ func (h *Host) preflightJSON() string {
 	}
 	return fmt.Sprintf(`{
 		"serial_number": %q, "hostname": %q, "os_version": "15.6", "os_build": "24G84",
-		"model_identifier": %q, "santa_version": "2026.8.0", "primary_user": %q, "primary_user_groups": %s,
+		"model_identifier": %q, "santa_version": %q, "primary_user": %q, "primary_user_groups": %s,
 		"client_mode": %q, "request_clean_sync": %t, "machine_id": %q, "sip_status": 127, "rules_hash": %q,
 		"binary_rule_count": %d, "certificate_rule_count": %d, "teamid_rule_count": %d,
 		"signingid_rule_count": %d, "cdhash_rule_count": %d
-	}`, h.SerialNumber, h.Hostname, h.ModelID, h.PrimaryUser, groups, h.ClientMode, h.RequestCleanSync, h.MachineID,
+	}`, h.SerialNumber, h.Hostname, h.ModelID, h.version()+".0", h.PrimaryUser, groups, h.ClientMode, h.RequestCleanSync, h.MachineID,
 		h.rulesHash(), counts["BINARY"], counts["CERTIFICATE"], counts["TEAMID"], counts["SIGNINGID"], counts["CDHASH"])
 }
 
@@ -436,7 +450,7 @@ func (h *Host) request(t testing.TB, stage string, body []byte) events.APIGatewa
 		PathParameters: map[string]string{"machine_id": h.MachineID},
 		Headers: map[string]string{
 			"Content-Type": "application/json",
-			"User-Agent":   "santasyncservice/2026.8.0",
+			"User-Agent":   "santasyncservice/" + h.version() + ".0",
 		},
 	}
 	if h.xsrfToken != "" {
@@ -513,7 +527,7 @@ func (h *Host) fetchXSRFToken(t testing.TB, res *SyncResult, fetched *bool) bool
 
 func (h *Host) call(t testing.TB, res *SyncResult, stage, reqMsg, reqFields, respMsg string) (*dynamicpb.Message, error) {
 	t.Helper()
-	body := santaproto.ClientJSON(t, reqMsg, reqFields)
+	body := santaproto.ClientJSONFor(t, h.version(), reqMsg, reqFields)
 
 	attempts := 1
 	if h.Retries {
@@ -559,10 +573,10 @@ func (h *Host) call(t testing.TB, res *SyncResult, stage, reqMsg, reqFields, res
 	respBody = []byte(strings.TrimPrefix(string(respBody), ")]}'\n"))
 	if len(respBody) == 0 {
 		// SNTSyncStage performRequest: an empty body is a success with nothing to parse.
-		msg, _ := santaproto.ParseServerResponse(t, respMsg, []byte("{}"))
+		msg, _ := santaproto.ParseServerResponseFor(t, h.version(), respMsg, []byte("{}"))
 		return msg, nil
 	}
-	msg, err := santaproto.ParseServerResponse(t, respMsg, respBody)
+	msg, err := santaproto.ParseServerResponseFor(t, h.version(), respMsg, respBody)
 	if err != nil {
 		return nil, &StageError{Stage: stage, Status: resp.StatusCode, Body: resp.Body, Reason: "Santa cannot parse response: " + err.Error()}
 	}

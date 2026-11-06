@@ -1,0 +1,2 @@
+Source: northpolesec/santa tag 2026.9 (released 2026-10-27) -> northpolesec/protos commit 11ba7794f3795d4224031e30f73bbbadff92bef3 (sync/v1.proto)
+Client sources (*.mm) are from the santa 2026.9 tag.
