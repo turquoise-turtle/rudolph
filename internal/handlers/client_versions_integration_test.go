@@ -197,3 +197,4 @@ func TestClientVersions_IdentityUnverifiedReachesSinksAndTheEventsTable(t *testi
 		t.Errorf("an ordinary event stores IdentityUnverified %v; leave it out", verified["IdentityUnverified"])
 	}
 }
+
