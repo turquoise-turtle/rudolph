@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/airbnb/rudolph/internal/cli/audit"
 	"github.com/airbnb/rudolph/internal/cli/config"
 	"github.com/airbnb/rudolph/internal/cli/group"
 	"github.com/airbnb/rudolph/internal/cli/info"
@@ -35,6 +36,7 @@ func init() {
 	RootCmd.AddCommand(group.GroupCmd)
 	RootCmd.AddCommand(machine.MachineCmd)
 	RootCmd.AddCommand(machine.MachinesCmd)
+	RootCmd.AddCommand(audit.AuditCmd)
 }
 
 var (

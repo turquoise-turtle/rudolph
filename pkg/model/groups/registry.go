@@ -119,6 +119,9 @@ var (
 	ErrGroupNotFound   = errors.New("no such group")
 	ErrTooManyGroups   = fmt.Errorf("at most %d groups can be registered", MaxGroups)
 	ErrRegistryChanged = errors.New("the group registry changed while it was being updated; run the command again")
+	// ErrDeletedPartly is joined to an error of DeleteGroup after some of the group's rules may have been deleted, so
+	// that callers can tell a partial deletion from one that changed nothing
+	ErrDeletedPartly = errors.New("some of the group's rules may already be deleted")
 )
 
 func names(pairs ...string) map[string]string {
@@ -237,16 +240,27 @@ func DeleteGroup(client RegistryWriter, name string, force bool) error {
 		// Rules first: a registry entry left behind by a failure here still shows the group, and running the command
 		// again finishes the job
 		if err := client.BatchWriteItems(nil, keys); err != nil {
+			// They are deleted 25 at a time: a failure after the first batch leaves some deleted
+			if len(keys) > 25 {
+				return fmt.Errorf("failed to delete the group's rules: %w (%w)", err, ErrDeletedPartly)
+			}
 			return fmt.Errorf("failed to delete the group's rules: %w", err)
 		}
 	}
+	rulesDeleted := len(keys) > 0
 	_, err = client.UpdateItemExpression(registryKey(), "REMOVE #g.#n ADD #m :one", "attribute_exists(#g.#n)",
 		names("#g", "Groups", "#n", name, "#m", "MembershipVersion"),
 		map[string]types.AttributeValue{":one": number(1)})
 	if dynamodb.IsConditionalCheckFailed(err) {
+		if rulesDeleted {
+			return fmt.Errorf("%w (%w)", ErrGroupNotFound, ErrDeletedPartly)
+		}
 		return ErrGroupNotFound
 	}
 	if err != nil {
+		if rulesDeleted {
+			return fmt.Errorf("failed to delete the group: %w (%w)", err, ErrDeletedPartly)
+		}
 		return fmt.Errorf("failed to delete the group: %w", err)
 	}
 	return nil

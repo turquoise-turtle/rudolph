@@ -202,7 +202,24 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		indexMachineID = machineID
 	}
 	forgetCollectedRule(client, indexMachineID, rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType))
-	return nil
+	if tf.IsGlobal {
+		return flags.Record(client, "rule.add", flags.GlobalTarget, ruleSummary(ruleType, identifier, policy, ""))
+	}
+	return flags.Record(client, "rule.add", flags.MachineTarget(machineID), ruleSummary(ruleType, identifier, policy, "expires "+expiryText(expires)))
+}
+
+// ruleSummary describes a rule for the audit trail, e.g. "BINARY rule ab12... BLOCKLIST"; extra is appended after a
+// comma
+func ruleSummary(ruleType types.RuleType, identifier string, policy types.Policy, extra string) string {
+	policyName, err := policy.MarshalText()
+	if err != nil {
+		policyName = []byte(fmt.Sprint(policy))
+	}
+	summary := fmt.Sprintf("%s rule %s %s", ruleTypeName(ruleType), identifier, policyName)
+	if extra != "" {
+		summary += ", " + extra
+	}
+	return summary
 }
 
 // expiryText formats when a machine rule expires; the zero time is never
@@ -261,21 +278,28 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
+	createdUngrouped := false
 	if _, ok := registry.Groups[group]; !ok {
 		// The reserved group exists as soon as it has a rule; only operators' own groups need creating
-		if err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false); err != nil && !errors.Is(err, groups.ErrGroupExists) {
+		err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false)
+		if err != nil && !errors.Is(err, groups.ErrGroupExists) {
 			return err
 		}
+		createdUngrouped = err == nil
 	}
 	if err := groups.PutRule(writer, group, rule, description); err != nil {
-		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+		err = fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+		if createdUngrouped {
+			return flags.RecordPartial(client, "rule.add", flags.GroupTarget(group), ruleSummary(ruleType, identifier, policy, "registered the reserved group of Macs in no group"), err)
+		}
+		return err
 	}
 	target := fmt.Sprintf("group %s", group)
 	if group == groups.Ungrouped {
 		target = "the Macs in no group"
 	}
 	fmt.Printf("Added %s %s rule %s for %s\n", policyDescription, ruleTypeDescription, identifier, target)
-	return nil
+	return flags.Record(client, "rule.add", flags.GroupTarget(group), ruleSummary(ruleType, identifier, policy, ""))
 }
 
 // warnIfMachineNeverSynced warns when nothing is known about a machine ID, which means no sensor has ever

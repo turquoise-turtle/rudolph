@@ -10,6 +10,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/spf13/cobra"
 )
@@ -90,6 +91,7 @@ config update --end-temporary-mode.`,
 
 			return applyConfig(
 				service,
+				dynamodbClient,
 				tf,
 				newConfig,
 				confirmGlobalLockdown,
@@ -132,6 +134,7 @@ config update --end-temporary-mode.`,
 
 func applyConfig(
 	service machineconfiguration.MachineConfigurationService,
+	recorder audit.Writer,
 	tf flags.TargetFlags,
 	newConfig machineconfiguration.MachineConfiguration,
 	confirmGlobalLockdown bool,
@@ -234,6 +237,6 @@ func applyConfig(
 	} else {
 		fmt.Printf("Replaced the configuration of %s\n", configTarget(tf, machineID))
 	}
-	return
+	return flags.Record(recorder, "config.set", auditTarget(tf, machineID), "replaced the configuration: client mode "+clientModeName(clientMode))
 
 }

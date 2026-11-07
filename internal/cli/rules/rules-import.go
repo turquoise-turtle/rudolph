@@ -166,7 +166,14 @@ func runImportFormat(
 	close(buffer)
 	wg.Wait()
 
-	return result.report()
+	reportErr := result.report()
+	if result.written == 0 {
+		return reportErr
+	}
+	// Recorded even when some rules failed: the others were written
+	summary := fmt.Sprintf("%d global rules written from %s (%d unchanged, %d skipped, %d failed)",
+		result.written, filepath.Base(filename), result.unchanged, result.skipped, len(result.errors))
+	return flags.RecordOutcome(client, "rules.import", flags.GlobalTarget, summary, reportErr)
 }
 
 // confirmImport shows how many rules the file creates or replaces and removes, and asks before they are written. A dry
@@ -296,6 +303,8 @@ type importResult struct {
 	total     uint64
 	skipped   uint64
 	unchanged uint64
+	// written counts the rules created, replaced or removed, including those whose follow-up write then failed
+	written uint64
 
 	mu     sync.Mutex
 	errors []error
@@ -409,6 +418,7 @@ func ddbWriter(
 				"",
 			)
 			if err == nil {
+				atomic.AddUint64(&result.written, 1)
 				// A removed rule's allowed executions are no longer collected, also if it is imported again later
 				err = forgetCollectedRule(client, sortkey)
 			}
@@ -434,6 +444,9 @@ func ddbWriter(
 				rule.Description,
 				rule.options()...,
 			)
+			if err == nil {
+				atomic.AddUint64(&result.written, 1)
+			}
 			if err == nil && current != nil && current.CollectAllowedEvents {
 				// The new row replaced the old one: keep collecting the rule's allowed executions
 				err = keepCollectingRule(client, current.PrimaryKey, timeProvider)

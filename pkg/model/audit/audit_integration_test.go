@@ -64,3 +64,19 @@ func TestRecordAndList(t *testing.T) {
 		t.Error("Record accepted an entry without an actor")
 	}
 }
+
+// A writer whose clock runs ahead past UTC midnight puts its entry in tomorrow's partition; readers with a correct
+// clock still list it (review of feat/audit-trail).
+func TestList_SeesAnEntryFromAClockAheadPastMidnight(t *testing.T) {
+	ddblocal.Reset(t)
+	client := ddblocal.Client(t)
+	now := time.Now().UTC()
+	tomorrow := now.Truncate(24 * time.Hour).Add(24*time.Hour + 30*time.Minute)
+	if err := audit.Record(fixedClock{tomorrow}, client, audit.Entry{Actor: "cli:fast@clock", Action: "group.create", Target: "group:x", Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := audit.List(client, now.Add(-time.Hour), 10)
+	if err != nil || len(got) != 1 {
+		t.Errorf("List from a correct clock: %+v, %v; want the entry written by a clock ahead past midnight", got, err)
+	}
+}

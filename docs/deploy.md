@@ -191,6 +191,9 @@ Without a valid `authorization` header the API answers `401`. `GET /health` also
 
 ---
 
+### CLI permissions
+The `rudolph` CLI uses the operator's own AWS credentials, not a Rudolph role (see [cli.md](cli.md)). Besides the reads and writes of the items it manages, every command that writes also records an [audit entry](cli.md#the-audit-trail), and `rudolph audit` reads them. If you restrict the CLI's IAM policy by partition key (`dynamodb:LeadingKeys`), allow `dynamodb:PutItem` and `dynamodb:Query` on the `Audit#*` partitions of the store table. Without `PutItem` every change is still written, but the command warns that it was not audited and exits non-zero. The Lambdas never read or write audit entries, so their policies do not change.
+
 ## Future Deployments
 Deploying code and making any infrastructure changes is easy:
 
@@ -412,3 +415,6 @@ This applies to every deployment with `enable_s3_logging` on (the default) and n
 3. `make deploy` again: the ownership controls now change to `BucketOwnerEnforced`.
 
 Logs keep arriving throughout, granted first by both, then by the policy alone. Check with [smoke-test.md](smoke-test.md) step 11.2. With `existing_logging_bucket_name` set, Terraform does not manage that bucket's policy or ACL: its owner must grant `logging.s3.amazonaws.com` `s3:PutObject` on the prefixes `PREFIX-ORG-rudolph-source/` and `PREFIX-ORG-rudolph-events/`, as above.
+
+### 13. Audit trail
+This applies to every existing deployment, and needs no Terraform change. From this release every change the CLI writes is also recorded in the store table under `Audit#<YYYY-MM-DD>` partitions (see [The audit trail](cli.md#the-audit-trail)). If the CLI's credentials are restricted by partition key, allow `dynamodb:PutItem` and `dynamodb:Query` on `Audit#*` before upgrading the CLI (see [CLI permissions](#cli-permissions)); otherwise each change is written but the command exits non-zero, warning that it was not audited.

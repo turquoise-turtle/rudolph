@@ -59,11 +59,18 @@ Mac Rudolph has never seen.`,
 			if err != nil || !apply {
 				return err
 			}
-			if err := plan.apply(w); err != nil {
-				return err
+			serial := ""
+			if plan.sensor != nil && plan.sensor.SerialNum != "" {
+				serial = ", serial " + plan.sensor.SerialNum
+			}
+			if changed, err := plan.apply(w); err != nil {
+				if !changed {
+					return err
+				}
+				return flags.RecordPartial(client, "machine.forget", flags.MachineTarget(id), "forgetting the machine"+serial, err)
 			}
 			fmt.Printf("Forgot %s: deleted %d items. If the Mac syncs again, it starts afresh.\n", id, len(plan.keys()))
-			return nil
+			return flags.Record(client, "machine.forget", flags.MachineTarget(id), fmt.Sprintf("forgot the machine: deleted %d items%s", len(plan.keys()), serial))
 		},
 	}
 	forgetCmd.Flags().StringVarP(&machineID, "machine", "m", "", "The Mac's machine UUID")
@@ -220,20 +227,25 @@ func items(n int) string {
 // apply deletes what the plan lists. Assigned groups are removed with the writer `rudolph group remove` uses, which
 // records the membership change for readers that cache membership. A run that fails part-way can be run again: it
 // lists what is left.
-func (p *forgetPlan) apply(client writer) error {
+// apply deletes what the plan lists. On an error, changed says whether anything may have been changed before it.
+func (p *forgetPlan) apply(client writer) (changed bool, err error) {
 	timeProvider := clock.ConcreteTimeProvider{}
 	for _, group := range p.assigned {
 		if err := groups.RemoveAssigned(timeProvider, client, p.machineID, group); err != nil {
-			return fmt.Errorf("group %q: %w", group, err)
+			return changed, fmt.Errorf("group %q: %w", group, err)
 		}
+		changed = true
 	}
 	if p.collected > 0 {
 		if err := eventcollection.ForgetMachine(client, p.machineID); err != nil {
-			return err
+			return changed, err
 		}
+		changed = true
 	}
-	if err := client.BatchWriteItems(nil, p.keys()); err != nil {
-		return fmt.Errorf("failed to delete the machine's items: %w", err)
+	keys := p.keys()
+	if err := client.BatchWriteItems(nil, keys); err != nil {
+		// The deletes are sent 25 at a time, so a failure after the first batch leaves some items deleted
+		return changed || len(keys) > 25, fmt.Errorf("failed to delete the machine's items: %w", err)
 	}
-	return nil
+	return true, nil
 }
