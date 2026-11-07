@@ -3,9 +3,10 @@ package kinesis
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
-	awssession "github.com/aws/aws-sdk-go/aws/session"
-	awskinesis "github.com/aws/aws-sdk-go/service/kinesis"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	awskinesis "github.com/aws/aws-sdk-go-v2/service/kinesis"
 )
 
 // KinesisEventUploadEvent is a single event entry that appends the MachineID with the EventUploadEvent details
@@ -24,15 +25,19 @@ type ContextClient interface {
 }
 
 func GetClient(kinesisStreamName string, awsregion string) KinesisClient {
-	sess := awssession.Must(awssession.NewSession())
+	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(awsregion))
+	if err != nil {
+		// The Lambda cannot forward events without credentials or a region; fail at start-up, as the v1 session did.
+		panic(fmt.Sprintf("unable to load the AWS configuration for Kinesis: %v", err))
+	}
 
 	return client{
 		kinesisStream:  kinesisStreamName,
-		kinesisService: awskinesis.New(sess, aws.NewConfig().WithRegion(awsregion)),
+		kinesisService: awskinesis.NewFromConfig(cfg),
 	}
 }
 
 type client struct {
 	kinesisStream  string
-	kinesisService *awskinesis.Kinesis
+	kinesisService *awskinesis.Client
 }

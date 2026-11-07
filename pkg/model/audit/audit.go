@@ -8,16 +8,21 @@
 //
 // Entries never expire (they carry no ExpiresAfter), are written with a conditional put so one is never overwritten,
 // and are read with List, which queries day partitions from tomorrow (for writers whose clock runs ahead) back and never scans
-// the table. RecordContext and ListContext do the same with a client of the AWS SDK, for programs such as rudolph-web
-// that do not use pkg/dynamodb.
+// the table, or ListPage, which does the same one page at a time with an opaque cursor. RecordContext, ListContext and
+// ListPageContext do the same with a client of the AWS SDK, for programs such as rudolph-web that do not use
+// pkg/dynamodb.
 package audit
 
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -165,52 +170,163 @@ func RecordContext(ctx context.Context, timeProvider clock.TimeProvider, client 
 	return nil
 }
 
+// ErrInvalidCursor is returned by ListPage for a cursor it did not make
+var ErrInvalidCursor = errors.New("invalid audit cursor")
+
 // List returns at most limit entries recorded at or after since, newest first. It queries one partition per UTC day,
 // from tomorrow (so that entries from a writer whose clock runs ahead past midnight are not missed) back to the day
 // of since.
 func List(client Reader, since time.Time, limit int) ([]Entry, error) {
-	return list(client.Query, since, limit)
+	rows, err := list(client.Query, since, limit, position{})
+	return entries(rows), err
 }
 
 // ListContext is List with a client of the AWS SDK and the table's name
 func ListContext(ctx context.Context, client SDKReader, table string, since time.Time, limit int) ([]Entry, error) {
-	return list(func(in *awsdynamodb.QueryInput) (*awsdynamodb.QueryOutput, error) {
-		in.TableName = aws.String(table)
-		return client.Query(ctx, in)
-	}, since, limit)
+	rows, err := list(sdkQuery(ctx, client, table), since, limit, position{})
+	return entries(rows), err
+}
+
+// ListPage is List one page at a time. cursor is "" for the first page, then the next returned by the previous page;
+// next is "" once there are no more entries. Paging with the same since returns every entry once, newest first, across
+// day partitions. The cursor is opaque but not signed: it names the last entry returned, and ListPage refuses one it
+// could not have made with ErrInvalidCursor.
+func ListPage(client Reader, since time.Time, limit int, cursor string) (page []Entry, next string, err error) {
+	return listPage(client.Query, since, limit, cursor)
+}
+
+// ListPageContext is ListPage with a client of the AWS SDK and the table's name
+func ListPageContext(ctx context.Context, client SDKReader, table string, since time.Time, limit int, cursor string) (page []Entry, next string, err error) {
+	return listPage(sdkQuery(ctx, client, table), since, limit, cursor)
 }
 
 type queryFunc func(*awsdynamodb.QueryInput) (*awsdynamodb.QueryOutput, error)
 
-func list(query queryFunc, since time.Time, limit int) ([]Entry, error) {
+func sdkQuery(ctx context.Context, client SDKReader, table string) queryFunc {
+	return func(in *awsdynamodb.QueryInput) (*awsdynamodb.QueryOutput, error) {
+		in.TableName = aws.String(table)
+		return client.Query(ctx, in)
+	}
+}
+
+// position is the key of the last entry a page returned: the next page starts after it. The zero position starts at
+// the newest entry.
+type position struct {
+	day time.Time
+	sk  string
+}
+
+func (p position) isZero() bool { return p.sk == "" }
+
+// sortKeyFormat is what sortKey makes: 19 digits of Unix nanoseconds, '#', 12 hex digits
+var sortKeyFormat = regexp.MustCompile(`^[0-9]{19}#[0-9a-f]{12}$`)
+
+func encodeCursor(p position) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(p.day.Format(dayLayout) + "|" + p.sk))
+}
+
+func decodeCursor(cursor string) (position, error) {
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(cursor)
+	if err != nil {
+		return position{}, ErrInvalidCursor
+	}
+	dayText, sk, ok := strings.Cut(string(raw), "|")
+	if !ok || !sortKeyFormat.MatchString(sk) {
+		return position{}, ErrInvalidCursor
+	}
+	day, err := time.Parse(dayLayout, dayText)
+	if err != nil || day.Format(dayLayout) != dayText {
+		return position{}, ErrInvalidCursor
+	}
+	nanos, err := strconv.ParseInt(sk[:19], 10, 64)
+	if err != nil || partitionKey(time.Unix(0, nanos)) != partitionKey(day) {
+		// An entry is stored in the partition of the day of its own time.
+		return position{}, ErrInvalidCursor
+	}
+	return position{day: day, sk: sk}, nil
+}
+
+func listPage(query queryFunc, since time.Time, limit int, cursor string) ([]Entry, string, error) {
+	var after position
+	if cursor != "" {
+		var err error
+		if after, err = decodeCursor(cursor); err != nil {
+			return nil, "", err
+		}
+	}
+	if limit <= 0 {
+		return nil, "", nil
+	}
+	// One entry more than the page tells whether there is another page, so the last page has no next.
+	rows, err := list(query, since, limit+1, after)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(rows) <= limit {
+		return entries(rows), "", nil
+	}
+	rows = rows[:limit]
+	last := rows[limit-1]
+	return entries(rows), encodeCursor(position{day: last.Time, sk: last.SK}), nil
+}
+
+func entries(rows []item) []Entry {
+	if rows == nil {
+		return nil
+	}
+	out := make([]Entry, len(rows))
+	for i, row := range rows {
+		out[i] = row.Entry
+	}
+	return out
+}
+
+// list returns at most limit rows at or after since, newest first, starting after the position after
+func list(query queryFunc, since time.Time, limit int, after position) ([]item, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	since = since.UTC()
-	var entries []Entry
+	sinceKey := fmt.Sprintf("%019d", since.UnixNano())
 	firstDay := since.Truncate(24 * time.Hour)
-	for day := time.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour); !day.Before(firstDay) && len(entries) < limit; day = day.Add(-24 * time.Hour) {
-		dayEntries, err := listDay(query, partitionKey(day), since, limit-len(entries))
+	day := time.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)
+	if !after.isZero() {
+		day = after.day.UTC().Truncate(24 * time.Hour)
+	}
+	var rows []item
+	for ; !day.Before(firstDay) && len(rows) < limit; day = day.Add(-24 * time.Hour) {
+		var start map[string]types.AttributeValue
+		if !after.isZero() && day.Equal(after.day.UTC().Truncate(24*time.Hour)) {
+			if after.sk < sinceKey {
+				// The cursor is from a page with an earlier since: nothing in this day is both after it and at or
+				// after since (and DynamoDB refuses a start key outside the key condition).
+				continue
+			}
+			start = map[string]types.AttributeValue{
+				"PK": &types.AttributeValueMemberS{Value: partitionKey(day)},
+				"SK": &types.AttributeValueMemberS{Value: after.sk},
+			}
+		}
+		dayRows, err := listDay(query, partitionKey(day), sinceKey, limit-len(rows), start)
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, dayEntries...)
+		rows = append(rows, dayRows...)
 	}
-	return entries, nil
+	return rows, nil
 }
 
-func listDay(query queryFunc, pk string, since time.Time, limit int) ([]Entry, error) {
-	var entries []Entry
-	var start map[string]types.AttributeValue
+func listDay(query queryFunc, pk string, sinceKey string, limit int, start map[string]types.AttributeValue) ([]item, error) {
+	var rows []item
 	for {
 		out, err := query(&awsdynamodb.QueryInput{
 			KeyConditionExpression: aws.String("PK = :pk AND SK >= :since"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":pk":    &types.AttributeValueMemberS{Value: pk},
-				":since": &types.AttributeValueMemberS{Value: fmt.Sprintf("%019d", since.UnixNano())},
+				":since": &types.AttributeValueMemberS{Value: sinceKey},
 			},
 			ScanIndexForward:  aws.Bool(false),
-			Limit:             aws.Int32(int32(min(limit-len(entries), maxPage))),
+			Limit:             aws.Int32(int32(min(limit-len(rows), maxPage))),
 			ExclusiveStartKey: start,
 		})
 		if err != nil {
@@ -221,15 +337,14 @@ func listDay(query queryFunc, pk string, since time.Time, limit int) ([]Entry, e
 			if err := attributevalue.UnmarshalMap(raw, &row); err != nil {
 				return nil, fmt.Errorf("failed to read an audit entry: %w", err)
 			}
-			entry := row.Entry
-			if entry.Time, err = time.Parse(time.RFC3339Nano, row.RecordedAt); err != nil {
+			if row.Time, err = time.Parse(time.RFC3339Nano, row.RecordedAt); err != nil {
 				return nil, fmt.Errorf("audit entry %s %s has no valid time: %w", row.PK, row.SK, err)
 			}
-			entries = append(entries, entry)
+			rows = append(rows, row)
 		}
 		start = out.LastEvaluatedKey
-		if len(start) == 0 || len(entries) >= limit {
-			return entries, nil
+		if len(start) == 0 || len(rows) >= limit {
+			return rows, nil
 		}
 	}
 }

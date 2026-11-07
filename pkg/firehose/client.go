@@ -3,9 +3,10 @@ package firehose
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/firehose"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
 )
 
 type FirehoseClient interface {
@@ -20,14 +21,18 @@ type ContextClient interface {
 
 type client struct {
 	firehoseStreamName string
-	firehoseService    *firehose.Firehose
+	firehoseService    *firehose.Client
 }
 
 func GetClient(firehoseStreamName string, awsregion string) FirehoseClient {
-	sess := session.Must(session.NewSession())
+	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(awsregion))
+	if err != nil {
+		// The Lambda cannot forward events without credentials or a region; fail at start-up, as the v1 session did.
+		panic(fmt.Sprintf("unable to load the AWS configuration for Firehose: %v", err))
+	}
 
 	return client{
 		firehoseStreamName: firehoseStreamName,
-		firehoseService:    firehose.New(sess, aws.NewConfig().WithRegion(awsregion)),
+		firehoseService:    firehose.NewFromConfig(cfg),
 	}
 }

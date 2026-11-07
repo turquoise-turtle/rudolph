@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/aws/aws-sdk-go/aws"
 )
 
 // GetPaginatedFeedRules returns zero or more rules on the feed, up to the limit

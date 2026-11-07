@@ -7,8 +7,9 @@ import (
 	"log"
 
 	"github.com/airbnb/rudolph/pkg/eventsink"
-	"github.com/aws/aws-sdk-go/aws"
-	awsfirehose "github.com/aws/aws-sdk-go/service/firehose"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsfirehose "github.com/aws/aws-sdk-go-v2/service/firehose"
+	firehosetypes "github.com/aws/aws-sdk-go-v2/service/firehose/types"
 )
 
 // PutRecordBatch limits (https://docs.aws.amazon.com/firehose/latest/dev/limits.html).
@@ -127,11 +128,11 @@ type failedRecord struct {
 }
 
 func (c client) putRecordBatch(ctx context.Context, batch [][]byte) ([]failedRecord, error) {
-	records := make([]*awsfirehose.Record, len(batch))
+	records := make([]firehosetypes.Record, len(batch))
 	for i, data := range batch {
-		records[i] = &awsfirehose.Record{Data: data}
+		records[i] = firehosetypes.Record{Data: data}
 	}
-	response, err := c.firehoseService.PutRecordBatchWithContext(ctx, &awsfirehose.PutRecordBatchInput{
+	response, err := c.firehoseService.PutRecordBatch(ctx, &awsfirehose.PutRecordBatchInput{
 		DeliveryStreamName: aws.String(c.firehoseStreamName),
 		Records:            records,
 	})
@@ -146,8 +147,8 @@ func (c client) putRecordBatch(ctx context.Context, batch [][]byte) ([]failedRec
 	}
 	var failed []failedRecord
 	for i, r := range response.RequestResponses {
-		if r.ErrorCode != nil && *r.ErrorCode != "" {
-			failed = append(failed, failedRecord{index: i, code: *r.ErrorCode})
+		if code := aws.ToString(r.ErrorCode); code != "" {
+			failed = append(failed, failedRecord{index: i, code: code})
 		}
 	}
 	if len(failed) == 0 {
