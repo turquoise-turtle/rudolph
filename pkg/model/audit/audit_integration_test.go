@@ -6,6 +6,7 @@ package audit_test
 // first, across days, honouring since and limit.
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -78,5 +79,49 @@ func TestList_SeesAnEntryFromAClockAheadPastMidnight(t *testing.T) {
 	got, err := audit.List(client, now.Add(-time.Hour), 10)
 	if err != nil || len(got) != 1 {
 		t.Errorf("List from a correct clock: %+v, %v; want the entry written by a clock ahead past midnight", got, err)
+	}
+}
+
+// Paging (for rudolph-web's audit page): ListPage returns at most limit entries newest first and an opaque cursor for
+// the next page, "" after the last; pages never repeat or skip an entry, across days.
+func TestListPage(t *testing.T) {
+	ddblocal.Reset(t)
+	client := ddblocal.Client(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	var want []time.Time
+	for _, at := range []time.Time{base.Add(-50 * time.Hour), base.Add(-26 * time.Hour), base.Add(-25 * time.Hour), base.Add(-2 * time.Hour), base.Add(-time.Hour)} {
+		if err := audit.Record(fixedClock{at}, client, audit.Entry{Actor: "cli:a@b", Action: "group.create", Target: "group:x", Summary: at.String()}); err != nil {
+			t.Fatal(err)
+		}
+		want = append([]time.Time{at}, want...)
+	}
+	var got []time.Time
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		entries, next, err := audit.ListPage(client, base.Add(-72*time.Hour), 2, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) > 2 {
+			t.Fatalf("page of %d entries, limit 2", len(entries))
+		}
+		for _, e := range entries {
+			got = append(got, e.Time)
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if len(got) != len(want) {
+		t.Fatalf("paged through %d entries, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if !got[i].Equal(want[i]) {
+			t.Errorf("entry %d at %v, want %v (newest first, no repeats)", i, got[i], want[i])
+		}
+	}
+	if _, _, err := audit.ListPage(client, base.Add(-72*time.Hour), 2, "garbage"); !errors.Is(err, audit.ErrInvalidCursor) {
+		t.Errorf("a garbage cursor: %v, want ErrInvalidCursor", err)
 	}
 }
