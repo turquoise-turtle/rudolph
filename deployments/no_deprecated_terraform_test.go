@@ -12,7 +12,7 @@ import (
 func TestNoDeprecatedTerraform(t *testing.T) {
 	files := loadTerraform(t, ".")
 	if n := len(blocks(files, "resource", "aws_s3_bucket_object")); n != 0 {
-		t.Errorf("%d aws_s3_bucket_object resources; use aws_s3_object (with moved blocks so nothing is recreated)", n)
+		t.Errorf("%d aws_s3_bucket_object resources; use aws_s3_object (with removed blocks that keep the objects)", n)
 	}
 	for _, tb := range blocks(files, "resource", "aws_dynamodb_table") {
 		// The table's own hash_key/range_key are not deprecated (provider 6.72 has no table-level key_schema); only
