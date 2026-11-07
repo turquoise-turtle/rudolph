@@ -9,7 +9,7 @@ For the first deployment to a real AWS account, follow the [first production dep
 You will only need to do this stuff once.
 
 ### Golang
-You will need a recent golang version (see `go.mod`) installed. Go get it from [the golang website](https://golang.org/dl/).
+You will need Go 1.27 or later (the `go` directive in `go.mod`; `go.mod` also names the `toolchain` the builds were tested with, which `go` downloads if yours is older) installed. Go get it from [the golang website](https://golang.org/dl/).
 
 ### Amazon Web Services
 You will need an AWS account handy, as well as an IAM role with sufficient privileges.
@@ -17,8 +17,8 @@ You will need an AWS account handy, as well as an IAM role with sufficient privi
 The account does not need to be empty: Terraform manages only the resources in its own state, all named after your `prefix`. The role that runs Terraform needs to create IAM roles and policies, Lambda, API Gateway, DynamoDB, KMS keys, S3 buckets, ACM certificates, Route 53 records, CloudWatch alarms, log groups and metric filters, and EventBridge Scheduler schedules (`scheduler:CreateSchedule`, `scheduler:GetSchedule`, `scheduler:UpdateSchedule` and `scheduler:DeleteSchedule`, plus `iam:PassRole` on the ranker's scheduler role, `arn:aws:iam::ACCOUNT_ID:role/rudolph/PREFIX_rudolph_ranker_scheduler_role`); with a [cost budget](#cost-budget), also AWS Budgets: `budgets:ViewBudget`, `budgets:ModifyBudget`, `budgets:TagResource`, `budgets:UntagResource` and `budgets:ListTagsForResource` (the provider's default tags apply to the budget). Only these deployer credentials need the Budgets permissions; no Rudolph Lambda does.
 
 ### Terraform
-You will need Terraform v1.5+ installed (tested with 1.16). We recommend using [tfenv](https://github.com/tfutils/tfenv).
-Rudolph uses the `hashicorp/aws` provider `~> 6.0`.
+You will need Terraform v1.10+ installed (tested with 1.17). We recommend using [tfenv](https://github.com/tfutils/tfenv).
+Rudolph uses the `hashicorp/aws` provider `~> 6.72`.
 
 ### Registered Domain
 You will need a registered DNS domain name for Rudolph's API server.
@@ -155,6 +155,8 @@ Download and install all golang dependencies with:
 make deps
 ```
 
+`make deps-check` checks them: it runs [govulncheck](https://go.dev/doc/security/vuln/) (pinned in the `Makefile`), which fails if a known vulnerability affects Rudolph's code, then lists every module in the build graph that has a newer version or is deprecated. That list is for information: it includes modules that only appear in other modules' `go.mod` files and are never built (for example `github.com/golang/protobuf`, which `google.golang.org/protobuf` names for its own tests). Run it before a release and after updating dependencies (`go get -u ./...`, `go get -u -t ./...`, `go mod tidy`).
+
 ### First Build and Deploy
 You can deploy your entire application now. Luckily, this step is super easy! Do not forget to authenticate with aws-cli.
 
@@ -282,7 +284,7 @@ If your `main.tf` sourced `github.com/airbnb/rudolph//deployments/terraform_modu
 `../../terraform_modules/santa_api` so you deploy the code in your checkout. Copy the example's `versions.tf` as well.
 
 ### 3. Upgrade the AWS provider
-The AWS provider moved from `5.15.0` (or `~> 3.76.1`) to `~> 6.0`. Update the dependency lock file:
+The AWS provider moved from `5.15.0` (or `~> 3.76.1`) to `~> 6.72`, and Terraform itself must be 1.10 or later (`required_version`). Update `versions.tf` in your environment directory to match the example (see step 2), then update the dependency lock file:
 
 ```
 terraform -chdir=deployments/environments/$ENV init -upgrade
@@ -418,3 +420,10 @@ Logs keep arriving throughout, granted first by both, then by the policy alone. 
 
 ### 13. Audit trail
 This applies to every existing deployment, and needs no Terraform change. From this release every change the CLI writes is also recorded in the store table under `Audit#<YYYY-MM-DD>` partitions (see [The audit trail](cli.md#the-audit-trail)). If the CLI's credentials are restricted by partition key, allow `dynamodb:PutItem` and `dynamodb:Query` on `Audit#*` before upgrading the CLI (see [CLI permissions](#cli-permissions)); otherwise each change is written but the command exits non-zero, warning that it was not audited.
+
+### 14. No deprecated Terraform
+This applies to every existing deployment. The module no longer uses the deprecated `aws_s3_bucket_object` resource. Update `versions.tf` as in step 3 (Terraform `>= 1.10.0`, provider `~> 6.72`) and run `terraform init -upgrade`. The first `plan` then shows:
+
+- **Lambda source zips: forgotten, then uploaded again.** The three source zips (`santa_api_source`, `santa_api_authorizer_source`, `ranker_source`) were `aws_s3_bucket_object` resources and are now `aws_s3_object`. The AWS provider cannot move state between these two types (a `moved` block fails with "Move Resource State Not Supported"), and `import` blocks only work in a root module, so the module has `removed` blocks with `destroy = false`. The plan lists each `module.santa_api.aws_s3_bucket_object.*` as "will no longer be managed by Terraform, but will not be destroyed" and each `module.santa_api.aws_s3_object.*` as created. The keys are content-addressed (`rudolph-source-<MD5 of the zip>.zip`), so with the same build the new resources upload the same bytes to the same keys and no Lambda function changes. If the build changed, the Lambda functions update as on any deploy, and the previous zips stay in the source bucket instead of being deleted; they are a few MB each, and you can delete `rudolph-source-*.zip` objects that no function uses.
+
+Nothing is replaced. If the plan shows a Lambda function being replaced, stop and check that the provider is 6.72 or later.

@@ -61,6 +61,14 @@ deps:
 	go mod download
 	go mod tidy
 
+# Checks the Go dependencies: known vulnerabilities that affect the code (fails if any), then every module in the
+# build graph that has a newer version or is deprecated (for information; it does not fail).
+#
+GOVULNCHECK_VERSION = v1.9.0
+deps-check:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+	go list -m -u -f '{{if or .Update .Deprecated}}{{.Path}} {{.Version}}{{with .Update}} (newer: {{.Version}}){{end}}{{with .Deprecated}} (deprecated: {{.}}){{end}}{{end}}' all
+
 # Compiles golang source into binaries
 # We use linux amd64 binaries so AWS Lambda can run them
 #
@@ -89,4 +97,4 @@ init-env: .check-args
 #
 #
 #
-.PHONY: .check-args deploy tf-init plan destroy deps build test force-api-redeploy
+.PHONY: .check-args deploy tf-init plan destroy deps deps-check build test force-api-redeploy

@@ -10,7 +10,7 @@ locals {
   lambda_ranker_hash   = filebase64sha256(var.lambda_ranker_zip)
 }
 
-resource "aws_s3_bucket_object" "ranker_source" {
+resource "aws_s3_object" "ranker_source" {
   bucket = local.lambda_source_bucket
   key    = "rudolph-source-ranker-${filemd5(var.lambda_ranker_zip)}.zip"
   source = var.lambda_ranker_zip
@@ -96,8 +96,8 @@ resource "aws_lambda_function" "ranker" {
   runtime       = "provided.al2023"
   architectures = ["arm64"]
 
-  s3_bucket        = aws_s3_bucket_object.ranker_source.bucket
-  s3_key           = aws_s3_bucket_object.ranker_source.key
+  s3_bucket        = aws_s3_object.ranker_source.bucket
+  s3_key           = aws_s3_object.ranker_source.key
   source_code_hash = local.lambda_ranker_hash
   # A run holds one small total per binary seen in 90 days (about 300 bytes each, so ~30 MB for 100,000 binaries),
   # never the counter rows or the markers themselves.
