@@ -48,7 +48,13 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			dynamodbClient := dynamodb.GetClient(table, region)
+			dynamodbClient, err := dynamodb.GetClient(table, region)
+
+			if err != nil {
+
+				return err
+
+			}
 			scanService := scan.GetScanService(dynamodbClient)
 
 			return repair(scanService, dynamodbClient, deleteFound)

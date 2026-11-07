@@ -19,7 +19,9 @@ type fakeStore struct {
 	putErr error
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{items: map[string]map[string]awstypes.AttributeValue{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{items: map[string]map[string]awstypes.AttributeValue{}}
+}
 
 func (s *fakeStore) GetItem(key dynamodb.PrimaryKey, _ bool) (*awsdynamodb.GetItemOutput, error) {
 	return &awsdynamodb.GetItemOutput{Item: s.items[key.PartitionKey+"|"+key.SortKey]}, nil

@@ -2,7 +2,7 @@ package dynamodb
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -34,15 +34,17 @@ type concreteDynamoDBClient struct {
 	timeout   time.Duration
 }
 
-func GetClient(inputTableName string, region string) DynamoDBClient {
+// GetClient returns a client of the table in the region, or an error when the AWS configuration (profile,
+// credentials source) cannot be loaded.
+func GetClient(inputTableName string, region string) (DynamoDBClient, error) {
 	return GetClientWithTimeout(inputTableName, region, defaultTimeout)
 }
 
-func GetClientWithTimeout(inputTableName string, region string, timeout time.Duration) DynamoDBClient {
-	// Create Amazon S3 API client using path style addressing.
+// GetClientWithTimeout is GetClient with the timeout of each request.
+func GetClientWithTimeout(inputTableName string, region string, timeout time.Duration) (DynamoDBClient, error) {
 	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 	if err != nil {
-		log.Fatalf("unable to load SDK config, %v", err)
+		return nil, fmt.Errorf("unable to load the AWS configuration: %w", err)
 	}
 
 	client := dynamodb.NewFromConfig(cfg)
@@ -50,8 +52,8 @@ func GetClientWithTimeout(inputTableName string, region string, timeout time.Dur
 	return concreteDynamoDBClient{
 		awsclient: *client,
 		tableName: inputTableName,
-		timeout:   defaultTimeout,
-	}
+		timeout:   timeout,
+	}, nil
 }
 
 const (

@@ -6,7 +6,7 @@ locals {
 }
 
 module "firehose" {
-  count = local.create_firehose ? 1 : 0
+  count  = local.create_firehose ? 1 : 0
   source = "./modules/firehose"
 
   prefix         = var.prefix

@@ -18,9 +18,7 @@ func GetCache(timeProvider clock.TimeProvider) Cache {
 	}
 }
 
-//
 // Cache
-//
 type Cache interface {
 	Has(key string) bool
 	Get(key string) *MachineConfiguration

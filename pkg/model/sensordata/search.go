@@ -20,12 +20,10 @@ func GetSensorDataFinder(api dynamodb.QueryAPI) SensorDataFinder {
 	}
 }
 
-//
 // SensorDataFinder is a service that allows you to search the SensorData logs for machineIDs or serial numbers of sensors that have recently
 // checked into Rudolph
 //
 // This service is particularly useful for typeahead and can be re-used for external applications.
-//
 type SensorDataFinder interface {
 	GetMachineIDsStartingWith(prefix string, limit int32) ([]string, error)
 	GetMachineIDsFromSerialNumber(serialNumber string, limit int32) ([]string, error)

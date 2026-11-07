@@ -16,7 +16,7 @@ rudolph group delete eng            # refused while the group has rules
 rudolph group delete eng --force    # deletes its rules as well
 ```
 
-Names are trimmed and lower-cased (and Unicode-normalised), so `Eng` and ` eng ` are the same group. A name cannot be empty, contain control characters, be longer than 128 bytes or start with `rudolph:`, which is reserved. At most 64 groups can be registered, with at most 5,000 rules each.
+Names are trimmed and lower-cased (and Unicode-normalised), so `Eng` and ` eng ` are the same group. A name cannot be empty, be `.` or `..` (rudolph-web shows a group at `/groups/<name>`, and browsers resolve those path segments away; names such as `.eng` or `a..b` are fine), contain control characters, be longer than 128 bytes or start with `rudolph:`, which is reserved. At most 64 groups can be registered, with at most 5,000 rules each.
 
 A Mac is in a group in either of two ways, and its groups are the union of both.
 

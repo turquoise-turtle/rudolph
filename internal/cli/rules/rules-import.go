@@ -54,7 +54,13 @@ global rule. The import asks for confirmation first (none with --yes).`,
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			dynamodbClient := dynamodb.GetClient(table, region)
+			dynamodbClient, err := dynamodb.GetClient(table, region)
+
+			if err != nil {
+
+				return err
+
+			}
 			if err := clockcheck.Check(cmd, dynamodbClient); err != nil {
 				return err
 			}

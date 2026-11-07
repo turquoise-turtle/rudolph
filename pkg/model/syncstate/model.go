@@ -204,3 +204,8 @@ func GetSyncStateExpiresAfter(timeProvider clock.TimeProvider) int64 {
 func GetDataType() types.DataType {
 	return types.DataTypeSyncState
 }
+
+// Key is the key of a Mac's sync state item
+func Key(machineID string) dynamodb.PrimaryKey {
+	return dynamodb.PrimaryKey{PartitionKey: syncStatePK(machineID), SortKey: syncStateSK}
+}

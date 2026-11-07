@@ -1,5 +1,5 @@
-// The ranker Lambda, run hourly by EventBridge: it rebuilds the web view's top-blocked and top-allowed lists in the
-// events table named by EVENTS_DYNAMODB_NAME. See internal/ranker.
+// The ranker Lambda, run by an EventBridge Scheduler schedule (hourly by default): it rebuilds the web view's
+// top-blocked and top-allowed lists in the events table named by EVENTS_DYNAMODB_NAME. See internal/ranker.
 package main
 
 import (

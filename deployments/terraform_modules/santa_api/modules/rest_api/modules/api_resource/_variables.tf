@@ -26,11 +26,11 @@ variable "authorizer_id" {
 }
 
 variable "success_response_model" {
-  type = string
+  type    = string
   default = ""
 }
 
 variable "request_model" {
-  type = string
+  type    = string
   default = ""
 }

@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/airbnb/rudolph/internal/cli/config"
 	"github.com/airbnb/rudolph/internal/cli/group"
 	"github.com/airbnb/rudolph/internal/cli/info"
 	"github.com/airbnb/rudolph/internal/cli/lookup"
+	"github.com/airbnb/rudolph/internal/cli/machine"
 	"github.com/airbnb/rudolph/internal/cli/repair"
 	"github.com/airbnb/rudolph/internal/cli/rule"
 	"github.com/airbnb/rudolph/internal/cli/rules"
@@ -23,7 +25,7 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&dynamodbTableName, "dynamodb_table", "", "The DynamoDB table of the deployment; overrides the environment's table (default: <prefix>_rudolph_store, or the DYNAMODB_NAME environment variable)")
 
 	// Add subcommands
-	info.InfoCmd.Annotations = map[string]string{noEnvironment: "true"}
+	info.InfoCmd.Annotations = map[string]string{optionalEnvironment: "true"}
 	RootCmd.AddCommand(info.InfoCmd)
 	RootCmd.AddCommand(rule.RuleCmd)
 	RootCmd.AddCommand(rules.RulesCmd)
@@ -31,6 +33,8 @@ func init() {
 	RootCmd.AddCommand(repair.RepairCmd)
 	RootCmd.AddCommand(lookup.LookupCmd)
 	RootCmd.AddCommand(group.GroupCmd)
+	RootCmd.AddCommand(machine.MachineCmd)
+	RootCmd.AddCommand(machine.MachinesCmd)
 }
 
 var (
@@ -43,6 +47,10 @@ var (
 // noEnvironment is the annotation of commands that do not read or write the sync server's table, so need no
 // environment
 const noEnvironment = "rudolph/no-environment"
+
+// optionalEnvironment is the annotation of commands that read the table when an environment is configured and still
+// work without one (they see empty --region and --dynamodb_table flags)
+const optionalEnvironment = "rudolph/optional-environment"
 
 // RootCmd is the entry point command for the CLI, exported for use elsewhere
 var RootCmd = &cobra.Command{
@@ -57,6 +65,13 @@ See docs/cli.md.`,
 			return nil
 		}
 		_, err := retrieveConfig(cmd)
+		if err != nil && cmd.Annotations[optionalEnvironment] != "" {
+			// Only worth a warning when an environment was asked for: without one, the command says how to set it
+			if flagString(cmd, "ENV") != "" || flagString(cmd, "env") != "" || os.Getenv("ENV") != "" {
+				fmt.Fprintln(os.Stderr, "[WARNING]", err)
+			}
+			return nil
+		}
 		return err
 	},
 }

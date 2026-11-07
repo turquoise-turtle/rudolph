@@ -24,7 +24,9 @@ func (h *GetHealthHandler) Boot() (err error) {
 	dynamodbTableName := os.Getenv("DYNAMODB_NAME")
 	awsRegion := os.Getenv("REGION")
 
-	h.dynamodbClient = dynamodb.GetClient(dynamodbTableName, awsRegion)
+	if h.dynamodbClient, err = dynamodb.GetClient(dynamodbTableName, awsRegion); err != nil {
+		return err
+	}
 
 	h.booted = true
 	return

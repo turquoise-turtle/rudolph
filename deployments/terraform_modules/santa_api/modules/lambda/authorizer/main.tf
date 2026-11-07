@@ -10,7 +10,7 @@ resource "aws_api_gateway_authorizer" "api_authorizer" {
   authorizer_credentials = aws_iam_role.invocation_role.arn
 
   # Options defining how this authorizer operates
-  type                             = "REQUEST" # Validate entire request
+  type = "REQUEST" # Validate entire request
 
   # Santa sends "Authorization: Bearer <token>" through SyncExtraHeaders. Requests without the header are rejected
   # with a 401 by API Gateway without invoking the Lambda, and results are cached per token, so a host's whole sync

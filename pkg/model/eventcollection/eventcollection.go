@@ -213,3 +213,14 @@ func Forget(client Writer, machineID string, ruleSortKey string) error {
 	}
 	return nil
 }
+
+// ForgetMachine takes all of a Mac's machine rules out of the index (rudolph machine forget). It writes nothing when
+// there is no index item.
+func ForgetMachine(client dynamodb.UpdateExpressionAPI, machineID string) error {
+	_, err := client.UpdateItemExpression(IndexKey(), "REMOVE #rules", "attribute_exists(PK)",
+		map[string]string{"#rules": IndexAttribute(machineID)}, nil)
+	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
+		return fmt.Errorf("failed to update the rules whose allowed events are collected: %w", err)
+	}
+	return nil
+}

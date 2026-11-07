@@ -65,3 +65,8 @@ func machineRulePK(machineID string) string {
 func machineRuleSK(identifier string, ruleType types.RuleType) string {
 	return rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType)
 }
+
+// MachineRulesPK is the partition key of a Mac's machine rules
+func MachineRulesPK(machineID string) string {
+	return machineRulePK(machineID)
+}

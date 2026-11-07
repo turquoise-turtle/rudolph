@@ -21,7 +21,11 @@ func addRuleBackfillPolicyIndexCommand() {
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			var client globalrules.PolicyIndexBackfillAPI = dynamodb.GetClient(table, region)
+			ddb, err := dynamodb.GetClient(table, region)
+			if err != nil {
+				return err
+			}
+			var client globalrules.PolicyIndexBackfillAPI = ddb
 			approval := flags.ApprovalOf(cmd)
 			if approval.DryRun {
 				client = dryRunBackfillClient{client}

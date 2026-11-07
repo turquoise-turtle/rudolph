@@ -189,7 +189,11 @@ func Client(t testing.TB) rudolphdynamodb.DynamoDBClient {
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
 	if sharedClient == nil {
-		sharedClient = rudolphdynamodb.GetClient(TableName, Region)
+		c, err := rudolphdynamodb.GetClient(TableName, Region)
+		if err != nil {
+			t.Fatalf("DynamoDB Local client: %v", err)
+		}
+		sharedClient = c
 	}
 	return sharedClient
 }

@@ -44,7 +44,7 @@ data "aws_iam_policy_document" "firehose_assume_role_policy" {
 
 data "aws_iam_policy_document" "firehose_s3_policy" {
   statement {
-    sid = ""
+    sid    = ""
     effect = "Allow"
 
     actions = [
@@ -94,7 +94,7 @@ resource "aws_iam_policy" "eventsupload_firehose_s3_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "eventsupload_firehose_s3_policy_attachment" {
-  role = aws_iam_role.eventsupload_firehose_role.name
+  role       = aws_iam_role.eventsupload_firehose_role.name
   policy_arn = aws_iam_policy.eventsupload_firehose_s3_policy.arn
 }
 
@@ -137,7 +137,7 @@ resource "aws_iam_policy" "eventsupload_firehose_cloudwatch_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "eventsupload_firehose_cloudwatch_policy_attachment" {
-  role = aws_iam_role.eventsupload_firehose_role.name
+  role       = aws_iam_role.eventsupload_firehose_role.name
   policy_arn = aws_iam_policy.eventsupload_firehose_cloudwatch_policy.arn
 }
 
@@ -172,7 +172,7 @@ resource "aws_iam_role_policy_attachment" "rudolph_firehose_eventupload" {
 
 
 resource "aws_iam_role" "eventsupload_firehose_role" {
-  name   = "${var.prefix}_rudolph_eventsupload_firehose_role"
-  path   = "/rudolph/"
+  name               = "${var.prefix}_rudolph_eventsupload_firehose_role"
+  path               = "/rudolph/"
   assume_role_policy = data.aws_iam_policy_document.firehose_assume_role_policy.json
 }

@@ -40,8 +40,10 @@ are not exported. The collect_allowed_events column is for information: "rules i
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			dynamodbClient := dynamodb.GetClient(table, region)
-
+			dynamodbClient, err := dynamodb.GetClient(table, region)
+			if err != nil {
+				return err
+			}
 			return runExport(dynamodbClient, filename, fileFormat)
 		},
 	}

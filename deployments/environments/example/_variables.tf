@@ -169,3 +169,33 @@ variable "api_4xx_alarm_min_requests" {
   description = "Requests in 5 minutes below which the api_4xx alarm does not fire"
   default     = 100
 }
+
+variable "monthly_budget_usd" {
+  type        = number
+  description = "Monthly budget in US dollars for the costs tagged Name = Rudolph; 0 means no budget"
+  default     = 0
+}
+
+variable "budget_alert_emails" {
+  type        = list(string)
+  description = "Email addresses the monthly budget notifies"
+  default     = []
+}
+
+variable "table_deletion_protection" {
+  type        = bool
+  description = "DynamoDB deletion protection on the rule store and events tables; set false and apply before make destroy"
+  default     = true
+}
+
+variable "ranker_schedule_expression" {
+  type        = string
+  description = "When the ranker rebuilds the web view's top lists, e.g. rate(1 hour) or cron(0 8-18 ? * MON-FRI *)"
+  default     = "rate(1 hour)"
+}
+
+variable "ranker_schedule_timezone" {
+  type        = string
+  description = "IANA time zone of ranker_schedule_expression, e.g. America/New_York"
+  default     = "UTC"
+}

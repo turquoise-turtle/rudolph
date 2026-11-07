@@ -189,7 +189,7 @@ The primary user groups (`primary_user_groups`) are not on this row: a directory
 
 `LastSeenDay` is the UTC date of the last preflight (`2006-01-02` form, from the same clock as `Time`). It gives the machine list a last-seen column that, unlike `Time`, changes at most once a day.
 
-The web view lists Macs from two global secondary indexes on these rows; Rudolph itself does not query them:
+The web view lists Macs from two global secondary indexes on these rows (`rudolph machines` reads `DataType_SerialKey` too):
 
 | Index | Partition key | Sort key | Used for |
 |---|---|---|---|
@@ -330,6 +330,8 @@ The HTTP status tells Santa whether to keep the batch:
   upload for such an event would block every later event from that Mac.
 - **500** when the sink is throttled or failing, or records kept failing after the retries. Santa keeps the batch and
   sends it again on the next sync; events of that batch that were already delivered may then arrive twice.
+
+Every upload also logs one line with counts only, never event contents: `eventupload: machine=<id> received=<n> stored=<m>`. `received` is the number of execution events in the request, `stored` the number this upload wrote to the events table (0 without one). An event already stored by an earlier attempt of the same batch is not counted again, so the sum of `stored` over a day is the number of events stored that day; `received` counts a re-sent batch again. [smoke-test.md](smoke-test.md#121-events-per-mac-per-day) step 12.1 has the Logs Insights query for events per Mac per day.
 
 ### Ruledownload
 

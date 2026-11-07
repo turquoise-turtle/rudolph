@@ -32,7 +32,9 @@ func (h *PostPreflightHandler) Boot() (err error) {
 
 	dynamodbTableName := os.Getenv("DYNAMODB_NAME")
 	awsRegion := os.Getenv("REGION")
-	h.rudolphDynamoDBClient = dynamodb.GetClient(dynamodbTableName, awsRegion)
+	if h.rudolphDynamoDBClient, err = dynamodb.GetClient(dynamodbTableName, awsRegion); err != nil {
+		return err
+	}
 	h.timeProvider = clock.ConcreteTimeProvider{}
 
 	h.stateTrackingService = getStateTrackingService(h.rudolphDynamoDBClient, h.timeProvider)

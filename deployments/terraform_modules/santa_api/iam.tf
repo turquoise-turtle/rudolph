@@ -67,7 +67,7 @@ data "aws_iam_policy_document" "api_resource_policy" {
       condition {
         test     = "NotIpAddress"
         variable = "aws:SourceIp"
-        values = var.allowed_inbound_ips
+        values   = var.allowed_inbound_ips
       }
     }
   }

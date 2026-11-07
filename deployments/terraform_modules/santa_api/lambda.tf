@@ -1,11 +1,11 @@
 locals {
-  lambda_source_hash   = filebase64sha256(var.lambda_api_zip)
-  lambda_source_key    = "rudolph-source-${filemd5(var.lambda_api_zip)}.zip"
-  lambda_authorizer_hash = filebase64sha256(var.lambda_authorizer_zip)
-  lambda_authorizer_source_key    = "rudolph-source-authorizer-${filemd5(var.lambda_authorizer_zip)}.zip"
-  lambda_source_bucket = length(module.lambda_source) > 0 ? module.lambda_source[0].bucket_name : var.lambda_source_s3_bucket_name
-  dynamodb_table_name = format("%s_rudolph_store", var.prefix)
-  firehose_name     = var.eventupload_firehose_name == "" ? format("%s_rudolph_eventsupload_firehose", var.prefix) : var.eventupload_firehose_name
+  lambda_source_hash           = filebase64sha256(var.lambda_api_zip)
+  lambda_source_key            = "rudolph-source-${filemd5(var.lambda_api_zip)}.zip"
+  lambda_authorizer_hash       = filebase64sha256(var.lambda_authorizer_zip)
+  lambda_authorizer_source_key = "rudolph-source-authorizer-${filemd5(var.lambda_authorizer_zip)}.zip"
+  lambda_source_bucket         = length(module.lambda_source) > 0 ? module.lambda_source[0].bucket_name : var.lambda_source_s3_bucket_name
+  dynamodb_table_name          = format("%s_rudolph_store", var.prefix)
+  firehose_name                = var.eventupload_firehose_name == "" ? format("%s_rudolph_eventsupload_firehose", var.prefix) : var.eventupload_firehose_name
 }
 
 #
@@ -50,7 +50,7 @@ module "health_function" {
   log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
-    REGION = var.region
+    REGION        = var.region
     DYNAMODB_NAME = local.dynamodb_table_name
   }
 }
@@ -88,7 +88,7 @@ module "preflight_function" {
   log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
-    REGION = var.region
+    REGION        = var.region
     DYNAMODB_NAME = local.dynamodb_table_name
   }
 }
@@ -138,7 +138,7 @@ module "ruledownload_function" {
   log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
-    REGION = var.region
+    REGION        = var.region
     DYNAMODB_NAME = local.dynamodb_table_name
   }
 }
@@ -159,7 +159,7 @@ module "postflight_function" {
   log_retention_in_days     = var.log_retention_in_days
 
   env_vars = {
-    REGION = var.region
+    REGION        = var.region
     DYNAMODB_NAME = local.dynamodb_table_name
   }
 }

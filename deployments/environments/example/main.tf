@@ -41,4 +41,13 @@ module "santa_api" {
   api_throttling_burst_limit = var.api_throttling_burst_limit
   alarm_sns_topic_arn        = var.alarm_sns_topic_arn
   api_4xx_alarm_min_requests = var.api_4xx_alarm_min_requests
+
+  # Cost and data protection
+  monthly_budget_usd        = var.monthly_budget_usd
+  budget_alert_emails       = var.budget_alert_emails
+  table_deletion_protection = var.table_deletion_protection
+
+  # Ranker
+  ranker_schedule_expression = var.ranker_schedule_expression
+  ranker_schedule_timezone   = var.ranker_schedule_timezone
 }

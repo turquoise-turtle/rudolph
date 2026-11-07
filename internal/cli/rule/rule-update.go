@@ -66,7 +66,13 @@ func init() {
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			client := dynamodb.GetClient(table, region)
+			client, err := dynamodb.GetClient(table, region)
+
+			if err != nil {
+
+				return err
+
+			}
 			if err := tf.ResolveMachineID(client); err != nil {
 				return err
 			}

@@ -1,6 +1,6 @@
 #
 # DynamoDB table of execution events, read by the separate web view (rudolph-web's docs/data-layer-design.md, "D+ in
-# detail"). The eventupload Lambda writes it; the hourly ranker (../../ranker.tf) reads its day counters and machine
+# detail"). The eventupload Lambda writes it; the scheduled ranker (../../ranker.tf) reads its day counters and machine
 # markers and writes the top lists. Layout and costs: docs/events-table.md.
 #
 locals {
@@ -84,6 +84,8 @@ resource "aws_dynamodb_table" "events" {
   point_in_time_recovery {
     enabled = true
   }
+
+  deletion_protection_enabled = var.table_deletion_protection
 }
 
 #

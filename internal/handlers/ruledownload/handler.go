@@ -39,8 +39,10 @@ func (h *PostRuledownloadHandler) Boot() (err error) {
 	dynamodbTableName := os.Getenv("DYNAMODB_NAME")
 	awsRegion := os.Getenv("REGION")
 
-	client := dynamodb.GetClient(dynamodbTableName, awsRegion)
-
+	client, err := dynamodb.GetClient(dynamodbTableName, awsRegion)
+	if err != nil {
+		return err
+	}
 	h.cursorService = concreteRuledownloadCursorService{
 		timer:   clock.ConcreteTimeProvider{},
 		updater: client,

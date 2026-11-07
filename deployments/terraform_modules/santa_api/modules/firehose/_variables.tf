@@ -47,7 +47,7 @@ variable "log_retention_in_days" {
 }
 
 variable "kms_key_administrators_arns" {
-  type = list(string)
+  type        = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
-  default = []
+  default     = []
 }

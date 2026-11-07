@@ -17,9 +17,9 @@ module "rudolph_api_authorizer" {
   authorizer_result_ttl_in_seconds = var.authorizer_result_ttl_in_seconds
 
   env_vars = {
-    REGION      = var.region
-    GATEWAY_ID  = aws_api_gateway_rest_api.api_gateway.id
-    ACCOUNT_ID  = var.aws_account_id
+    REGION     = var.region
+    GATEWAY_ID = aws_api_gateway_rest_api.api_gateway.id
+    ACCOUNT_ID = var.aws_account_id
 
     # Digests only; the authorizer denies every request when this is empty
     SYNC_TOKEN_SHA256 = join(",", var.sync_token_sha256)

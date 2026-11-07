@@ -153,3 +153,8 @@ func Effective(registry *Registry, membership *MachineGroups) []string {
 	sort.Strings(effective)
 	return effective
 }
+
+// MachineGroupsKey is the key of a Mac's groups item
+func MachineGroupsKey(machineID string) dynamodb.PrimaryKey {
+	return machineGroupsKey(machineID)
+}

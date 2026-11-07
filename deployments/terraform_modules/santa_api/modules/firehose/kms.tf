@@ -34,9 +34,9 @@ data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
   }
 
   statement {
-    sid       = "Allow access for root user"
-    effect    = "Allow"
-    actions   = [
+    sid    = "Allow access for root user"
+    effect = "Allow"
+    actions = [
       "kms:Create*",
       "kms:Describe*",
       "kms:Enable*",
@@ -60,7 +60,7 @@ data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
     resources = ["*"]
 
     principals {
-      type        = "AWS"
+      type = "AWS"
       identifiers = [
         "arn:aws:iam::${var.aws_account_id}:root",
       ]
@@ -71,9 +71,9 @@ data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
     for_each = length(var.kms_key_administrators_arns) == 0 ? [] : [1]
 
     content {
-      sid       = "Allow access for Key Administrators"
-      effect    = "Allow"
-      actions   = [
+      sid    = "Allow access for Key Administrators"
+      effect = "Allow"
+      actions = [
         "kms:Create*",
         "kms:Describe*",
         "kms:Enable*",

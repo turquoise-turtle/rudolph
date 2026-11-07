@@ -16,3 +16,9 @@ package
 # Claude Code handover notes and hidden tests (never commit)
 .claude/handover/
 /CLAUDE.md
+
+# Real environments hold account IDs, domains and token digests: only the example is tracked
+/deployments/environments/*
+!/deployments/environments/example/
+*.tfstate
+*.tfstate.*

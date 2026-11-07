@@ -12,7 +12,7 @@ data "aws_iam_policy_document" "store_sse_permissions" {
     actions   = ["kms:*"]
     resources = ["*"]
     principals {
-      type        = "AWS"
+      type = "AWS"
       identifiers = [
         "arn:aws:iam::${var.aws_account_id}:root",
       ]
@@ -32,9 +32,9 @@ data "aws_iam_policy_document" "store_sse_permissions" {
       values   = ["dynamodb.${var.region}.amazonaws.com"]
     }
     condition {
-      test = "StringEquals"
+      test     = "StringEquals"
       variable = "kms:CallerAccount"
-      values = [var.aws_account_id]
+      values   = [var.aws_account_id]
     }
 
     actions = [
@@ -71,9 +71,9 @@ data "aws_iam_policy_document" "store_sse_permissions" {
     for_each = length(var.kms_key_administrators_arns) == 0 ? [] : [1]
 
     content {
-      sid       = "Allow access for Key Administrators"
-      effect    = "Allow"
-      actions   = [
+      sid    = "Allow access for Key Administrators"
+      effect = "Allow"
+      actions = [
         "kms:Create*",
         "kms:Describe*",
         "kms:Enable*",

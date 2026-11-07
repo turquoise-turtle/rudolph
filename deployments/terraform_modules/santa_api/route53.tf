@@ -18,7 +18,7 @@ resource "aws_acm_certificate_validation" "api_certificate_validation" {
 data "aws_route53_zone" "existing" {
   count = var.use_existing_route53_zone ? 1 : 0
   name  = var.route53_zone_name
-#  zone_id = var.route53_zone_id
+  #  zone_id = var.route53_zone_id
 }
 
 resource "aws_route53_zone" "new" {

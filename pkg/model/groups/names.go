@@ -34,12 +34,15 @@ const (
 var ErrReservedName = fmt.Errorf("group names starting with %q are reserved", ReservedPrefix)
 
 // Normalise returns the canonical form of a group name: Unicode NFC, trimmed, lower case. It refuses names that are
-// empty, contain control characters, are longer than MaxNameBytes or use the reserved prefix.
+// empty, are "." or "..", contain control characters, are longer than MaxNameBytes or use the reserved prefix.
 func Normalise(name string) (string, error) {
 	n := strings.ToLower(strings.TrimSpace(norm.NFC.String(name)))
 	switch {
 	case n == "":
 		return "", errors.New("a group name cannot be empty")
+	case n == "." || n == "..":
+		// rudolph-web serves a group at /groups/<name>, and browsers and routers resolve these path segments away.
+		return "", errors.New(`a group name cannot be "." or ".."`)
 	case len(n) > MaxNameBytes:
 		return "", fmt.Errorf("a group name is at most %d bytes", MaxNameBytes)
 	case strings.IndexFunc(n, unicode.IsControl) >= 0:

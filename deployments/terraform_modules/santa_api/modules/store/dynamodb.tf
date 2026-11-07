@@ -79,7 +79,7 @@ resource "aws_dynamodb_table" "store" {
   # SerialNum is projected so the list shows the serial as reported. The projection is limited to attributes that
   # rarely change: projecting Time, ExpiresAfter, RulesHash or the rule counts would cost a write to this index on
   # every sync. Each machine list index also projects the other's key (HostnameKey here, SerialKey there), so both
-  # return the same row shape. Rudolph itself does not query these indexes.
+  # return the same row shape. Of Rudolph itself, only `rudolph machines` reads DataType_SerialKey.
   global_secondary_index {
     name               = "DataType_SerialKey"
     hash_key           = "DataType"
@@ -117,4 +117,6 @@ resource "aws_dynamodb_table" "store" {
   point_in_time_recovery {
     enabled = true
   }
+
+  deletion_protection_enabled = var.table_deletion_protection
 }

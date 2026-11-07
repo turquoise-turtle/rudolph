@@ -376,7 +376,11 @@ type client interface {
 func writer(cmd *cobra.Command) (client, error) {
 	region, _ := cmd.Flags().GetString("region")
 	table, _ := cmd.Flags().GetString("dynamodb_table")
-	c, ok := dynamodb.GetClient(table, region).(client)
+	ddb, err := dynamodb.GetClient(table, region)
+	if err != nil {
+		return nil, err
+	}
+	c, ok := ddb.(client)
 	if !ok {
 		return nil, errors.New("this DynamoDB client cannot write groups")
 	}

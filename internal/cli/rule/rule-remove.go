@@ -46,7 +46,13 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 			region, _ := cmd.Flags().GetString("region")
 			table, _ := cmd.Flags().GetString("dynamodb_table")
 
-			dynamodbClient := dynamodb.GetClient(table, region)
+			dynamodbClient, err := dynamodb.GetClient(table, region)
+
+			if err != nil {
+
+				return err
+
+			}
 			if err := tf.ResolveMachineID(dynamodbClient); err != nil {
 				return err
 			}

@@ -6,9 +6,9 @@ Build it with `make build`; the binary is `./rudolph`.
 
 ## Choosing the deployment
 
-Every command except `info` needs the table and region of a deployment:
+Every command except `info` needs the table and region of a deployment (`info` uses one when it is configured):
 
-- `--env <environment>` (or `--ENV`, or the `ENV` environment variable) names the deployment. Its configuration is read from the first of these files that exists, relative to the working directory: `deployments/environments/<env>/config.auto.tfvars.json` (where `scripts/new_env.sh` creates it, so run `rudolph` from the repo root), `terraform/deployments/<env>/config.auto.tfvars.json`, `terraform/environments/<env>/config.auto.tfvars.json`, `~/.rudolph-cli/<env>.json`, `./<env>.json`. The file needs `region` and `prefix`; the table is `<prefix>_rudolph_store`, or `dynamodb_table_name` when the file sets it. A file with an empty `region` is an error.
+- `--env <environment>` (or `--ENV`, or the `ENV` environment variable) names the deployment. Its configuration is read from the first of these files that exists, relative to the working directory: `deployments/environments/<env>/config.auto.tfvars.json` (where `scripts/new_env.sh` creates it, so run `rudolph` from the repo root), `terraform/deployments/<env>/config.auto.tfvars.json`, `terraform/environments/<env>/config.auto.tfvars.json`, `~/.rudolph-cli/<env>.json`, `./<env>.json`. The file needs `region` and `prefix`; the table is `<prefix>_rudolph_store`, or `dynamodb_table_name` when the file sets it (only the CLI reads that key: the deployed Lambdas always use `<prefix>_rudolph_store`, so set it only to point the CLI at another table on purpose). A file with an empty `region` is an error.
 - `--region`, `--dynamodb_table` and `--prefix` override what the environment file says. A typed `--prefix` also sets the table to `<prefix>_rudolph_store` (ignoring the file's `dynamodb_table_name`) unless `--dynamodb_table` is typed too.
 - Without an environment file, `--region` with `--dynamodb_table` (or with `--prefix`) is enough, and the `REGION` and `DYNAMODB_NAME` environment variables (the names the Lambdas use) stand in for them. This is the way in for CI and for DynamoDB Local.
 
@@ -16,8 +16,8 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 
 ## Conventions
 
-- **Confirmation.** The commands that write rules or configurations (`rule`, `rules import`, `config set|update`), `group delete` and `repair --delete` show what they are about to write and ask `Apply changes?`. The other `group` commands and `rules backfill-policy-index` write without asking. `yes` or `ok`, in any case, applies it. Any other answer, or no answer (empty stdin), changes nothing and exits non-zero, so scripts can tell a declined change from an applied one. `--yes` (`-y`, on `rule`, `rules import`, `config`, `group` and `repair`) applies without asking.
-- **Dry run.** `--dry-run` (on `rule`, `rules`, `config`, `group` and `repair`) makes a command that writes do all its reading and checking as usual, then print what it would write (the rule, target, policy and expiry; the configuration changes; the group or membership change; each rule an import would create, replace, remove or leave unchanged), followed by `Dry run: the changes shown are not written.`, and exit 0 without asking or writing. It wins over `--yes`, so a pasted command (such as one copied from rudolph-web) can be checked by adding `--dry-run`. Commands that only read accept it and ignore it.
+- **Confirmation.** The commands that write rules or configurations (`rule`, `rules import`, `config set|update`), `group delete`, `machine forget` and `repair --delete` show what they are about to write and ask `Apply changes?`. The other `group` commands and `rules backfill-policy-index` write without asking. `yes` or `ok`, in any case, applies it. Any other answer, or no answer (empty stdin), changes nothing and exits non-zero, so scripts can tell a declined change from an applied one. `--yes` (`-y`, on `rule`, `rules import`, `config`, `group`, `machine` and `repair`) applies without asking.
+- **Dry run.** `--dry-run` (on `rule`, `rules`, `config`, `group`, `machine` and `repair`) makes a command that writes do all its reading and checking as usual, then print what it would write (the rule, target, policy and expiry; the configuration changes; the group or membership change; what `machine forget` would delete; each rule an import would create, replace, remove or leave unchanged), followed by `Dry run: the changes shown are not written.`, and exit 0 without asking or writing. It wins over `--yes`, so a pasted command (such as one copied from rudolph-web) can be checked by adding `--dry-run`. Commands that only read accept it and ignore it.
 - **Targets.** Commands that write rules (`rule allow|deny|silent|silent-gui|silent-tty|compiler|cel|update|remove`) need exactly one of `--global` (`-g`, every Mac), `--machine <machine-id>` (`-m`, one Mac), `--group <group>` or `--ungrouped` (a [device group](groups.md); not for `rule update`). `rules` and `config get|set|update` take at most one of `--global` and `--machine`; without either they apply to the Mac running the command, whose machine ID is read from `/Library/Preferences/com.northpolesec.santa.machine-mapping.plist`, or, when that file does not exist, from `/Library/Preferences/com.google.santa.machine-mapping.plist`, which Macs set up from the older example profile have.
 - **Machine IDs** are UUIDs in the 8-4-4-4-12 form, typed in any case; see [rules.md](rules.md#global-and-machine-specific-rules) for how the stored spelling is found.
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
@@ -126,12 +126,45 @@ rudolph group show -m <machine-id>
 ## Finding machines
 
 ```sh
+rudolph machines [--limit <n>]
+rudolph machine show -m <machine-id>
+rudolph machine forget -m <machine-id> [--yes|--dry-run]
 rudolph lookup machine-ids [<prefix>] [--limit <n>]
 rudolph lookup serial-number <serial-number> [--limit <n>]
 rudolph info
 ```
 
-`lookup` prints one machine ID per line (`no machine found` when there is none) from the data Macs send when they sync; `--limit` defaults to 10 and 5. `info` prints the machine ID of the Mac running it and needs no environment.
+`machines` lists the Macs that have synced, one per line ordered by serial number: machine ID, hostname, serial number, Santa version and the UTC day of the last sync. It reads the `DataType_SerialKey` index, as rudolph-web's machine list does (one Query, never a Scan; see [Sensor data row](sync.md#sensor-data-row)), so a Mac that reports no serial number is not listed (find it with `lookup machine-ids`). `--limit` defaults to 50 and must be at least 1; when there are more Macs, a last line says to raise it. With none, it prints `no machine found`.
+
+`machine show` prints what Rudolph knows about one Mac:
+
+- what it reported at its last preflight: hostname, serial number, primary user, model, macOS version and build, Santa version, the client mode it was in, and the number of rules it holds, in total and by type;
+- when it last synced (UTC, local time and how long ago), when a sync last completed (postflight) and when its last clean sync started;
+- a legacy client note when its Santa is older than 2026.8, the oldest release Rudolph fully supports (see [Supported Santa releases](sync.md#supported-santa-releases));
+- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with the end time, if any, and whether a clean sync is requested (`config get --machine` shows every setting);
+- its assigned, reported and effective groups, as `group show` prints them.
+
+The machine ID is found in any case, as for `--machine` elsewhere (see [Conventions](#conventions)). A Mac that never synced, or whose data expired (90 days after its last sync), is an error: `no machine with ID … has synced`.
+
+`lookup` prints one machine ID per line (`no machine found` when there is none) from the data Macs send when they sync; `--limit` defaults to 10 and 5.
+
+`info` prints the machine ID of the Mac running it. When a deployment is configured (`--env` or `ENV`, or `--region` with `--dynamodb_table`), it then prints the same block as `machine show` for this Mac: the configuration Rudolph sends it and, once it has synced, what it reported. Without a deployment it prints only the machine ID and a hint to set `ENV`, and exits 0; with an `ENV` whose configuration cannot be read, it warns and does the same. Once a deployment is configured, a failed read of it (for example expired AWS credentials) is an error: `info` prints the machine ID, then the error, and exits 1.
+
+## Forgetting a retired Mac
+
+```sh
+rudolph machine forget -m <machine-id> [--yes|--dry-run]
+```
+
+Deletes everything Rudolph keeps in the store table for one Mac: its sensor data (what it reported at its last sync) and sync state, its configuration, its group membership item, its machine rules and their delivery tracking (every item of the `Machine#<id>`, `MachineRules#<id>` and `MachineRuleDelivery#<id>` partitions), and its entries in the index of rules whose allowed events are collected (see [events-table.md](events-table.md)). The machine ID is found in any case, as for `machine show`.
+
+It first prints what it will delete, with the Mac's hostname and serial number and a count of each kind of item, then asks `Apply changes?` (`--yes` skips the question; `--dry-run` deletes nothing). It reads each partition with a paged Query, never a Scan, and deletes with batch writes. A Mac for which nothing is stored is an error. A run that fails part-way can be run again; it deletes what is left.
+
+- **Groups.** The groups registered with `group create` stay, with their rules; only the Mac's membership goes. Its assigned groups are removed as `group remove` does, so the membership version that readers of group membership watch changes.
+- **Global and group rules** are not changed.
+- **Forget a Mac that has stopped syncing.** Remove its Santa profile (or retire it) first: a sync already under way while `forget` runs can write its sensor data, sync state or delivery rows again straight after the delete, and the Mac then reappears partly forgotten. Running `forget` again once it has stopped syncing cleans up.
+- **Events** in the events table are not deleted: they expire on their own (see [Events from the test binaries](smoke-test.md#135-events-from-the-test-binaries-7-8) for when), and rudolph-web keeps showing them until then.
+- **If the Mac syncs again**, it starts afresh, as a Mac Rudolph has never seen: no configuration of its own (it gets the global one), no machine rules and no assigned groups, and its first sync is a clean sync.
 
 ## Maintenance
 

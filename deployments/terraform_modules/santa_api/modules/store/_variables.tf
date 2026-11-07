@@ -4,9 +4,9 @@ variable "prefix" {
 }
 
 variable "dynamodb_table_name" {
-  type = string
+  type        = string
   description = "OPTIONAL: A DynamoDB table name that overrides the default. Used to import a restored backup."
-  default = ""
+  default     = ""
 }
 
 variable "read_lambda_role_names" {
@@ -25,9 +25,9 @@ variable "region" {
 }
 
 variable "kms_key_administrators_arns" {
-  type = list(string)
+  type        = list(string)
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
-  default = []
+  default     = []
 }
 
 variable "events_dynamodb_table_name" {
@@ -40,4 +40,10 @@ variable "events_write_lambda_role_names" {
   type        = list(string)
   description = "List of IAM Role names that should be allowed to write to the execution events table"
   default     = []
+}
+
+variable "table_deletion_protection" {
+  type        = bool
+  description = "Turn on DynamoDB deletion protection for the store and events tables"
+  default     = true
 }

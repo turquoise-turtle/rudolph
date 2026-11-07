@@ -67,7 +67,7 @@ Relevance to our needs: **R** rules (global + per-machine), **V** visibility, **
 |---|---|---|---|---|
 | D1 | High | — | Provider pin conflict (`~> 3.76.1` vs `5.15.0`) — `terraform init` fails (#43). | `make tf-check` (init + validate example env against local modules) |
 | D2 | High | — | Example env sources the module from GitHub master, unpinned (#56); `new_env.sh`/README out of sync. | `make tf-check` asserts local source |
-| D3 | Med | — | `aws_s3_bucket_acl "log-delivery-write"` on new buckets (ACLs disabled by default since 2023) — likely upstream #54. | verify on first dev `apply` |
+| D3 | Med | — | `aws_s3_bucket_acl "log-delivery-write"` on new buckets (ACLs disabled by default since 2023) — likely upstream #54. Fixed in stages: ownership controls before the ACL; then (2026-11-07) access-log buckets on SSE-S3 (S3 does not deliver access logs to SSE-KMS buckets) and, on branch `fix/forget-and-logs`, AWS's recommended setup: ACLs disabled (`BucketOwnerEnforced`) and a bucket policy granting `logging.s3.amazonaws.com` (`TestLogBuckets_PolicyNotACL`, `TestSmoke_AccessLogDestinationsUseSSES3`). | verify on the first production `apply` (runbook 11.2) |
 
 ## Test map
 

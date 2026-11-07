@@ -39,8 +39,8 @@ resource "aws_s3_bucket_logging" "santa_api_source" {
   target_bucket = local.s3_logging_bucket_name
   target_prefix = "${local.source_bucket_name}/"
 
-  # The ACL that lets S3 deliver logs must exist before logging is enabled
-  depends_on = [aws_s3_bucket_acl.s3_logging]
+  # The bucket policy that lets S3 deliver logs must exist before logging is enabled
+  depends_on = [aws_s3_bucket_policy.s3_logging]
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "santa_api_source" {

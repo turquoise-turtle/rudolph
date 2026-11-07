@@ -124,3 +124,8 @@ func DeliveryDigest(deliveries map[string]Delivery) string {
 	sum := sha256.Sum256([]byte(strings.Join(entries, "\n")))
 	return fmt.Sprintf("%d:%s", len(entries), hex.EncodeToString(sum[:16]))
 }
+
+// DeliveriesPK is the partition key of a Mac's machine rule delivery tracking
+func DeliveriesPK(machineID string) string {
+	return deliveryPK(machineID)
+}

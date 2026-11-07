@@ -1,6 +1,6 @@
 // Package ranker builds the web view's lists of the most blocked and most allowed binaries (R8 of rudolph-web's
 // docs/data-layer-design.md) from the events table's day counters and machine markers, so that a page view reads one
-// pointer and one snapshot instead of up to 90 days of counters. It runs hourly as its own Lambda (cmd/ranker).
+// pointer and one snapshot instead of up to 90 days of counters. It runs on a schedule as its own Lambda (cmd/ranker).
 // Layout and cost: docs/events-table.md.
 package ranker
 
@@ -247,8 +247,8 @@ func Run(ctx context.Context, opts Options) error {
 				"Snapshot":    str(snapshot),
 				"GeneratedAt": str(generatedAt),
 			},
-			// Runs can overlap (EventBridge may deliver twice, an operator may invoke the Lambda by hand); one that
-			// started earlier must not move the pointer back to its older snapshot. IDs sort by time.
+			// Runs can overlap (EventBridge Scheduler may invoke twice, an operator may invoke the Lambda by hand); one
+			// that started earlier must not move the pointer back to its older snapshot. IDs sort by time.
 			ConditionExpression:       aws.String("attribute_not_exists(PK) OR #snapshot < :snapshot"),
 			ExpressionAttributeNames:  map[string]string{"#snapshot": "Snapshot"},
 			ExpressionAttributeValues: map[string]types.AttributeValue{":snapshot": str(snapshot)},

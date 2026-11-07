@@ -3,22 +3,6 @@ variable "prefix" {
   description = "Prefix to all resource names"
 }
 
-# NOTE:
-#   By default, Rudolph creates a base table.
-#
-#   When changing the dynamodb table for a backup, make sure that:
-#   The dynamodb has a hash key of "PK", range key of "SK". If the table schema doesn't match,
-#   after you import it Terraform will try to destroy the table and recreate it with the correct attributes,
-#   which will destroy your table data. Not desirable.
-#
-#   When rotating in a new table that has been created from a backup snapshot under a different table
-#   name, make sure to use "terraform import" to bring the resource in.
-variable "dynamodb_table_name" {
-  type        = string
-  description = "OPTIONAL: A DynamoDB table name that overrides the default. Used to import a restored backup."
-  default     = ""
-}
-
 variable "region" {
   type        = string
   description = "AWS Region"
@@ -216,4 +200,50 @@ variable "alarm_sns_topic_arn" {
   type        = string
   description = "OPTIONAL: ARN of an SNS topic notified when one of Rudolph's CloudWatch alarms changes state. When empty the alarms are still created, and visible in CloudWatch, but notify no one."
   default     = ""
+}
+
+#
+# Cost and data protection
+#
+variable "monthly_budget_usd" {
+  type        = number
+  description = "Monthly AWS Budgets limit, in US dollars, for the costs tagged Name = Rudolph. Emails budget_alert_emails at 80% and 100% of actual spend and when the forecast passes 100%. 0 means no budget. Budgets alert but never stop spending."
+  default     = 0
+
+  validation {
+    condition     = var.monthly_budget_usd >= 0
+    error_message = "monthly_budget_usd must be 0 (no budget) or more."
+  }
+}
+
+variable "budget_alert_emails" {
+  type        = list(string)
+  description = "Email addresses AWS Budgets notifies about the monthly budget. Required when monthly_budget_usd is above 0."
+  default     = []
+}
+
+variable "table_deletion_protection" {
+  type        = bool
+  description = "Turn on DynamoDB deletion protection for the rule store and events tables. While on, nothing (including terraform destroy) can delete them: set it to false and apply before destroying."
+  default     = true
+}
+
+#
+# Ranker
+#
+variable "ranker_schedule_expression" {
+  type        = string
+  description = "When the ranker rebuilds the web view's top-blocked and top-allowed lists: an EventBridge Scheduler rate(), cron() or at() expression, in ranker_schedule_timezone. For example cron(0 8-18 ? * MON-FRI *) runs it hourly from 8am to 6pm on weekdays."
+  default     = "rate(1 hour)"
+
+  validation {
+    condition     = can(regex("^(rate|cron|at)\\(.+\\)$", var.ranker_schedule_expression))
+    error_message = "ranker_schedule_expression must be a rate(...), cron(...) or at(...) expression."
+  }
+}
+
+variable "ranker_schedule_timezone" {
+  type        = string
+  description = "IANA time zone for ranker_schedule_expression, for example America/New_York. EventBridge Scheduler follows its daylight saving."
+  default     = "UTC"
 }

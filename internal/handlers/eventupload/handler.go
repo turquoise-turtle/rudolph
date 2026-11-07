@@ -3,6 +3,7 @@ package eventupload
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -98,6 +99,13 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 		return errorResponse, err
 	}
 
+	// Counts only, never event contents: the first deployment measures events per Mac per day from this line
+	// (docs/smoke-test.md step 12.1). stored is what this upload wrote, so a retried upload is not counted twice.
+	var written int
+	defer func() {
+		log.Printf("eventupload: machine=%s received=%d stored=%d", machineID, len(eventsRequest.Events), written)
+	}()
+
 	sinksEnabled := h.enableFirehose || h.enableKinesis || h.enableLambda
 	storeEvents := h.eventStore != nil && len(eventsRequest.Events) > 0
 	// Execution events, file access events and audit events are all forwarded, each record tagged with the
@@ -121,7 +129,7 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 		stored.Add(1)
 		go func() {
 			defer stored.Done()
-			storeErr = h.eventStore.Store(ctx, machineID, eventsRequest.Events)
+			written, storeErr = h.eventStore.Store(ctx, machineID, eventsRequest.Events)
 		}()
 	}
 

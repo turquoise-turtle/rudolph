@@ -1,7 +1,7 @@
 # Deployment
 Ready to build Rudolph? Let's go at it!
 
-For the first deployment to a real AWS account, follow the [smoke test runbook](smoke-test.md): it goes from an empty dev account to a verified deployment of Rudolph and rudolph-web, with what to check and record at each step.
+For the first deployment to a real AWS account, follow the [first production deployment runbook](smoke-test.md): it goes from an AWS account (which may already hold other resources) to a verified production deployment of Rudolph and rudolph-web, cleans up its test data, and moves the fleet onto it in stages, with what to check and record at each step.
 
 ---
 
@@ -13,6 +13,8 @@ You will need a recent golang version (see `go.mod`) installed. Go get it from [
 
 ### Amazon Web Services
 You will need an AWS account handy, as well as an IAM role with sufficient privileges.
+
+The account does not need to be empty: Terraform manages only the resources in its own state, all named after your `prefix`. The role that runs Terraform needs to create IAM roles and policies, Lambda, API Gateway, DynamoDB, KMS keys, S3 buckets, ACM certificates, Route 53 records, CloudWatch alarms, log groups and metric filters, and EventBridge Scheduler schedules (`scheduler:CreateSchedule`, `scheduler:GetSchedule`, `scheduler:UpdateSchedule` and `scheduler:DeleteSchedule`, plus `iam:PassRole` on the ranker's scheduler role, `arn:aws:iam::ACCOUNT_ID:role/rudolph/PREFIX_rudolph_ranker_scheduler_role`); with a [cost budget](#cost-budget), also AWS Budgets: `budgets:ViewBudget`, `budgets:ModifyBudget`, `budgets:TagResource`, `budgets:UntagResource` and `budgets:ListTagsForResource` (the provider's default tags apply to the budget). Only these deployer credentials need the Budgets permissions; no Rudolph Lambda does.
 
 ### Terraform
 You will need Terraform v1.5+ installed (tested with 1.16). We recommend using [tfenv](https://github.com/tfutils/tfenv).
@@ -91,6 +93,11 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `api_throttling_burst_limit` | `2000` | Requests accepted at once on each route before answering HTTP 429 (each method's token bucket size). Keep it at least the rate limit; the account's regional burst limit (5,000 by default) caps all routes together. |
 | `alarm_sns_topic_arn` | `""` | SNS topic notified when an alarm fires or recovers. Without it the alarms exist in CloudWatch but notify no one. |
 | `api_4xx_alarm_min_requests` | `100` | The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. A Mac sends about 2-3 requests every 5 minutes, so the default covers fleets from about 40 Macs; lower it for smaller fleets, at the cost of alarms on a few scanner requests. |
+| `monthly_budget_usd` | `0` | Monthly AWS Budgets limit in US dollars for the costs tagged `Name = Rudolph` (see [Cost budget](#cost-budget)). `0` creates no budget. |
+| `budget_alert_emails` | `[]` | Who the budget emails. Required when `monthly_budget_usd` is above 0. |
+| `table_deletion_protection` | `true` | DynamoDB deletion protection on the rule store and events tables (see [Table deletion protection](#table-deletion-protection)). |
+| `ranker_schedule_expression` | `"rate(1 hour)"` | When the ranker rebuilds the web view's top-blocked and top-allowed lists: an EventBridge Scheduler `rate()`, `cron()` or `at()` expression, in `ranker_schedule_timezone` (see [Ranker schedule](#ranker-schedule)). |
+| `ranker_schedule_timezone` | `"UTC"` | IANA time zone of `ranker_schedule_expression`, such as `America/New_York`. The schedule follows its daylight saving. |
 | `eventupload_lambda_timeout_seconds` | `10` | Timeout of the eventupload Lambda (3-900 seconds); event sinks and the events table stop 1.5 seconds before it (see [Delivery to the event sink](sync.md#delivery-to-the-event-sink)). Raise it for large uploads or busy Kinesis shards. A `santa_api` module variable that the example environment does not pass: add it to your `_variables.tf` and `main.tf` to change it. |
 
 ### Alarms
@@ -101,7 +108,7 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 | `api_5xx` | API Gateway answered 5 or more 5xx responses in 5 minutes. |
 | `api_4xx` | More than 5% of requests were answered 4xx in two 5-minute periods in a row, counting only periods with at least `api_4xx_alarm_min_requests` requests (default 100, so that a few scanner requests in a quiet night do not fire it; fleets below about 40 Macs need a lower value to be covered): the stage is throttling (429; raise `api_throttling_rate_limit`) or the authorizer is rejecting sync tokens (401/403, e.g. after a botched token rotation). Throttled requests never reach Lambda, so this is the only alarm that sees them. |
 | `request_too_large` | A handler refused a request body above 6 MiB with HTTP 413. That host cannot sync or upload those events until the cause is fixed. |
-| `lambda_errors` | Any Rudolph Lambda function except the authoriser, the hourly ranker included, returned an error. The authoriser is left out because it rejects a wrong token by returning an error, so any scanner with a made-up token would fire it; rejected tokens show in `api_4xx`, and an authoriser that really fails (crashes or times out) makes API Gateway answer 500, which `api_5xx` covers. **Gap:** the authoriser also answers 401, not 500, for configuration failures (no valid digests in `sync_token_sha256`, malformed digests, or a request ARN it cannot parse), so a mis-set `sync_token_sha256` refuses every sync but shows only in `api_4xx`, which evaluates only periods with at least `api_4xx_alarm_min_requests` requests (default 100). Small fleets should lower `api_4xx_alarm_min_requests`. |
+| `lambda_errors` | Any Rudolph Lambda function except the authoriser, the ranker included, returned an error. The authoriser is left out because it rejects a wrong token by returning an error, so any scanner with a made-up token would fire it; rejected tokens show in `api_4xx`, and an authoriser that really fails (crashes or times out) makes API Gateway answer 500, which `api_5xx` covers. **Gap:** the authoriser also answers 401, not 500, for configuration failures (no valid digests in `sync_token_sha256`, malformed digests, or a request ARN it cannot parse), so a mis-set `sync_token_sha256` refuses every sync but shows only in `api_4xx`, which evaluates only periods with at least `api_4xx_alarm_min_requests` requests (default 100). Small fleets should lower `api_4xx_alarm_min_requests`. |
 | `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
 | `dynamodb_throttles` | Reads or writes to the table were throttled. |
 | `event_sink_failures` | eventupload could not forward events to Firehose, Kinesis or the output Lambda (only created when a sink is configured). |
@@ -112,6 +119,34 @@ only show up in API Gateway's `4XXError` metric (and so in `api_4xx`).
 
 The filters count the one line the API router logs per request, such as `POST /eventupload/{machine_id} machine=... status=413 duration=...`. The machine ID comes from the request path, so it is logged only when it is a UUID (otherwise `machine=invalid`); a client cannot add text or lines to the log that way. When a handler answers 500, it logs the cause on the line before, as `internal server error: "..."`, and never puts it in the response: `GET /health` answers `{"status":"unhealthy"}` without the AWS error.
 
+
+### Cost budget
+With `monthly_budget_usd` above 0, Rudolph creates an AWS Budgets cost budget, `PREFIX-rudolph-monthly`, that emails `budget_alert_emails` when actual spend passes 80% and 100% of the amount in a calendar month, and when AWS forecasts that the month will end above 100%.
+
+- **Only Rudolph's costs.** The account may hold other resources, so the budget counts only costs tagged `Name = Rudolph`, the provider's default tag in `_backend.tf` (a `TagKeyValue` filter of `user:Name$Rudolph`). Cost Explorer and Budgets only see a tag once it is activated as a cost allocation tag: in the Billing and Cost Management console, Cost allocation tags, activate `Name`. Only the management (payer) account of an AWS Organization can activate cost allocation tags; in a member account, ask whoever runs the management account. Activation takes up to 24 hours and applies from then on; until then the budget sees no spend. Costs that carry no tag are not counted, so consider an account-wide budget in the console as well.
+- **Alerts only.** AWS Budgets never stop or limit spending; exceeding the budget changes nothing in the account.
+- **Cost.** See [costs.md](costs.md#budgets).
+
+### Table deletion protection
+`table_deletion_protection` (default `true`) turns on DynamoDB deletion protection for both tables, `PREFIX_rudolph_store` and `PREFIX_rudolph_events`: nothing can delete them while it is on, `terraform destroy` included. **`make destroy` fails while it is on.** To tear a deployment down, set `"table_deletion_protection": false` in `config.auto.tfvars.json`, run `make justdeploy` from the deployed commit against the existing build in `build/package/`, then `make destroy`. With that build the plan changes only `deletion_protection_enabled` on the two tables. Do not use `make deploy` for this: it rebuilds, and the re-zipped binaries have new hashes, so the plan also replaces the S3 source objects, updates every Lambda's code and creates a new API deployment. If the build is gone and you have to run `make build` (at the deployed commit, never newer code), those changes are expected; anything else is not. Destroying deletes every rule, configuration and event.
+
+### Ranker schedule
+The ranker, `PREFIX_rudolph_ranker`, rebuilds the web view's top-blocked and top-allowed lists (see [Top binaries](events-table.md#top-binaries)). An EventBridge Scheduler schedule, `PREFIX_rudolph_ranker`, runs it at `ranker_schedule_expression` in the time zone `ranker_schedule_timezone`: by default every hour, in UTC. The schedule invokes the function through its own role, `PREFIX_rudolph_ranker_scheduler_role`, which may invoke only the ranker. A failed run is not retried; the next scheduled run rebuilds every list from scratch.
+
+To run it only in working hours, for example hourly from 8am to 6pm on weekdays, New York time:
+
+```json
+"ranker_schedule_expression": "cron(0 8-18 ? * MON-FRI *)",
+"ranker_schedule_timezone": "America/New_York"
+```
+
+Scheduler `cron()` expressions have six fields (minutes, hours, day of month, month, day of week, year) and need `?` in either day of month or day of week. The schedule follows the time zone's daylight saving, so the runs stay at 8am to 6pm local time all year.
+
+The trade-off of fewer runs:
+
+- **Stale-list warning.** rudolph-web warns that a top list was generated more than 3 hours ago and that the ranker normally runs every hour. Outside the scheduled hours (with the example above, every evening, overnight and all weekend) that warning shows on every top-list page, even though the ranker is healthy.
+- **The 1-day list stops at the last run.** Each list covers events up to the run that built it, so outside the scheduled hours the 1-day list shows the day as it stood at the last run, and the longer windows lag by the same amount. The windows are UTC days whatever the schedule's time zone.
+- **Cost.** The ranker costs little either way (see [costs.md](costs.md)); fewer runs cost proportionally less, about a third with the example above (55 runs a week instead of 168).
 
 ### Install Dependencies
 Download and install all golang dependencies with:
@@ -311,7 +346,7 @@ What to expect when you apply:
 - **If `apply` times out.** The provider waits up to 60 minutes for each index (its default `update` timeout). If a backfill takes longer, `apply` fails with a timeout but DynamoDB keeps building the index. Wait until `aws dynamodb describe-table --table-name PREFIX_rudolph_store` shows every index as `ACTIVE`, then run `make deploy` again: it creates any index that is still missing and changes nothing else on the table.
 - **Rows filled in as Macs sync.** The backfill copies existing rows into an index at once, but only rows that already have its sort key. `SerialKey` and `LastSeenDay` are new in this release, so no existing row is in `DataType_SerialKey`, and rows backfilled into `DataType_HostnameKey` (those that already have `HostnameKey`) have no last-seen date. Each Mac's next preflight rewrites its row with both. The machine list is therefore complete within one sync interval of the deploy **for Macs that are syncing**; a Mac that is offline stays out of the serial list and shows no last-seen date until it next syncs, and its row expires 90 days after its last preflight if it never does.
 
-Rudolph does not query these indexes itself, so its IAM policies do not change; whatever reads them for the web view needs `dynamodb:Query` on the two index ARNs (`<table ARN>/index/DataType_SerialKey` and `<table ARN>/index/DataType_HostnameKey`).
+Rudolph's Lambdas do not query these indexes, so their IAM policies do not change (`rudolph machines` reads `DataType_SerialKey` with the operator's own credentials); whatever reads them for the web view needs `dynamodb:Query` on the two index ARNs (`<table ARN>/index/DataType_SerialKey` and `<table ARN>/index/DataType_HostnameKey`).
 
 ### 6. Global rule policy index
 This applies to every existing deployment. The release adds the `GlobalRulePolicy_SK` global secondary index, which the web view uses to filter global rules by policy, and starts writing `GlobalRulePolicy` on global rule rows (see [Global rules and the policy index](rules.md#global-rules-and-the-policy-index)). `make deploy` creates the index; like the machine list indexes, it is built online and one index at a time (see step 5).
@@ -325,10 +360,10 @@ This applies to every existing deployment. The release adds a second DynamoDB ta
 - **Deploy code and infrastructure together** (step 0). An older Lambda ignores `EVENTS_DYNAMODB_NAME` and writes nothing; a new Lambda without the IAM policy answers every upload that holds a blocked or unknown execution with HTTP 500, and Santa keeps re-sending those events until the policy exists.
 - **Failures of the table hold back events.** A throttled or failing events table answers uploads with HTTP 500 like a failing sink, so Santa keeps the events and retries the whole upload at its next sync: Firehose, Kinesis and Lambda sinks then receive those records twice, so their consumers must tolerate duplicates. The `api_5xx` alarm covers this.
 - **Costs** grow with the number of uploaded events; see [Costs](events-table.md#costs).
-- **Restoring a backup.** The store module (`modules/store`) accepts `dynamodb_table_name` and `events_dynamodb_table_name` to use tables restored under other names, but `santa_api` passes neither: its own `dynamodb_table_name` variable is not used, and the Lambdas always use `PREFIX_rudolph_store`. Restoring either table under another name therefore needs a change to the module (`rule_store.tf`, and for the store table `lambda.tf`).
+- **Restoring a backup.** The store module (`modules/store`) accepts `dynamodb_table_name` and `events_dynamodb_table_name` to use tables restored under other names, but `santa_api` passes neither, and the Lambdas always use `PREFIX_rudolph_store` and `PREFIX_rudolph_events`. Restoring either table under another name therefore needs a change to the module (`rule_store.tf`, and for the store table `lambda.tf`). `santa_api` used to declare a `dynamodb_table_name` variable that nothing read, so setting it never changed the table; it has been removed. If your environment's `main.tf` passes `dynamodb_table_name` to the `santa_api` module, delete that line: `terraform plan` otherwise fails with `Unsupported argument`.
 
 ### 8. Top binaries ranker
-This applies to every existing deployment. The release adds a Lambda, `PREFIX_rudolph_ranker`, run every hour by an EventBridge rule, that builds the web view's top-blocked and top-allowed lists in the events table (see [Top binaries](events-table.md#top-binaries)), and the eventupload Lambda starts writing `LastSeenDay` on machine markers.
+This applies to every existing deployment. The release adds a Lambda, `PREFIX_rudolph_ranker`, run every hour by an EventBridge rule (replaced by an EventBridge Scheduler schedule in [step 11](#11-ranker-schedule)), that builds the web view's top-blocked and top-allowed lists in the events table (see [Top binaries](events-table.md#top-binaries)), and the eventupload Lambda starts writing `LastSeenDay` on machine markers.
 
 - **New Terraform variable.** The `santa_api` module needs `lambda_ranker_zip`, the path of `build/package/ranker_deployment.zip`, which `make build` now creates and `make deploy` passes. If your environment directory was copied from `example` before this release, add the variable to its `_variables.tf` and pass it in `main.tf` (`lambda_ranker_zip = var.lambda_ranker_zip`), as `example` now does; `terraform` fails with a missing variable otherwise.
 - **No other manual steps.** `make deploy` creates the function, its role and policy, its log group (with `log_retention_in_days`), the schedule, and adds it to the `lambda_errors` and `lambda_timeouts` alarms. The lists exist from the first run, within an hour of the deploy.
@@ -341,3 +376,39 @@ This applies to every existing deployment. Expect these in the plan; `make deplo
 - **Access-log KMS keys destroyed.** The access-log buckets' KMS keys and aliases (`aws_kms_key.s3_logging` and `aws_kms_alias.s3_logging`, in the Lambda source module and, when Terraform created the Firehose sink, the Firehose module) are destroyed. AWS schedules a destroyed key for deletion after a 30-day waiting period rather than deleting it at once.
 - **Logging buckets switch to SSE-S3 in place.** Their default encryption changes from SSE-KMS to SSE-S3 (`AES256`), because S3 does not deliver server access logs to SSE-KMS buckets. Objects already in a bucket keep their old encryption, but there are almost certainly none, since no access logs were delivered while the bucket used SSE-KMS.
 - **Lambda runtime updated in place.** Every function's runtime changes from `provided.al2` to `provided.al2023` (Amazon Linux 2 reached end of support on 30 June 2026). The functions are updated, not replaced; the binaries are the same `bootstrap` builds for linux/arm64.
+
+### 10. Cost budget and table deletion protection
+This applies to every existing deployment. Expect this in the plan:
+
+- **Deletion protection turned on in place.** `table_deletion_protection` defaults to `true`, so the plan updates both DynamoDB tables in place to set `deletion_protection_enabled = true`; nothing is replaced and syncs are unaffected. From then on `make destroy` fails until you turn it off again (see [Table deletion protection](#table-deletion-protection)). To keep the old behaviour, set `"table_deletion_protection": false`.
+- **No budget unless you ask for one.** `monthly_budget_usd` defaults to `0`, which creates nothing. To add one, see [Cost budget](#cost-budget); the role that runs Terraform then needs the Budgets permissions listed under [Amazon Web Services](#amazon-web-services).
+- **New variables.** If your environment directory was copied from `example` before this release, add `monthly_budget_usd`, `budget_alert_emails` and `table_deletion_protection` to its `_variables.tf`, pass them in `main.tf` and add them to `config.auto.tfvars.json`, as `example` now does. Without that the module defaults apply (deletion protection on, no budget).
+
+### 11. Ranker schedule
+This applies to every existing deployment. The ranker now runs from an EventBridge Scheduler schedule, which takes a time zone, instead of an EventBridge rule, which only knows UTC (see [Ranker schedule](#ranker-schedule)). Expect this in the plan:
+
+- **Rule replaced by a schedule.** The plan destroys `aws_cloudwatch_event_rule.ranker` (`PREFIX_rudolph_ranker_hourly`), `aws_cloudwatch_event_target.ranker` and `aws_lambda_permission.ranker_schedule`, and creates `aws_scheduler_schedule.ranker` (`PREFIX_rudolph_ranker`) with its role `PREFIX_rudolph_ranker_scheduler_role` and that role's policy. With the defaults the ranker keeps running every hour; at most one run is missed or doubled around the apply, which the next run makes good.
+- **Deployer permissions.** The role that runs Terraform now needs `scheduler:CreateSchedule`, `scheduler:GetSchedule`, `scheduler:UpdateSchedule` and `scheduler:DeleteSchedule`, and `iam:PassRole` on `arn:aws:iam::ACCOUNT_ID:role/rudolph/PREFIX_rudolph_ranker_scheduler_role`. Without `iam:PassRole` creating the schedule fails after the rule is already gone; rerun `make deploy` once the permission is added. Keep the role's EventBridge rule permissions (`events:DescribeRule`, `events:ListTargetsByRule`, `events:RemoveTargets`, `events:DeleteRule`) and `lambda:RemovePermission` until this apply has run: Terraform needs them to read and destroy the old rule.
+- **New variables.** If your environment directory was copied from `example` before this release, add `ranker_schedule_expression` and `ranker_schedule_timezone` to its `_variables.tf`, pass them in `main.tf` and add them to `config.auto.tfvars.json`, as `example` now does. Without that the module defaults apply (every hour, UTC).
+
+### 12. S3 access logs granted by bucket policy
+This applies to every deployment with `enable_s3_logging` on (the default) and no `existing_logging_bucket_name`, and, for the events bucket's own ACL (below), to every deployment where Terraform created the Firehose sink, whatever its logging settings. The access-log buckets now let S3 deliver server access logs through their bucket policy, with ACLs disabled, as AWS recommends, instead of the `log-delivery-write` ACL. Expect this in the plan, for the Lambda source module's log bucket (`PREFIX-ORG-rudolph-source-logging`) and, when Terraform created the Firehose sink, the Firehose module's (`PREFIX-ORG-rudolph-events-logging`):
+
+- **ACL resource removed.** `aws_s3_bucket_acl.s3_logging` is destroyed, and in the Firehose module also `aws_s3_bucket_acl.rudolph_eventsupload_firehose` (the events bucket's `private` ACL). Destroying an `aws_s3_bucket_acl` only removes it from the Terraform state: the bucket keeps its ACL.
+- **Bucket policy replaced in place.** `aws_s3_bucket_policy.s3_logging` gains a statement allowing `logging.s3.amazonaws.com` to `s3:PutObject` under the source bucket's log prefix, only for this account (`aws:SourceAccount`) and that source bucket (`aws:SourceArn`). The SSL-only deny stays.
+- **Ownership switched to `BucketOwnerEnforced`.** `aws_s3_bucket_ownership_controls.s3_logging` (and the events bucket's) changes from `BucketOwnerPreferred` to `BucketOwnerEnforced`, which disables ACLs.
+
+**The upgrade needs two applies.** AWS refuses `BucketOwnerEnforced` (`InvalidBucketAclWithObjectOwnership`) while the bucket's ACL grants access to anyone outside the account, and the old `log-delivery-write` ACL grants the S3 log delivery group; since destroying the ACL resource leaves the ACL in place, Terraform alone cannot get past this. The ownership controls depend on the bucket policy, so the order is safe:
+
+1. `make deploy`. The bucket policy is updated first, so log delivery is already granted by policy; then the log bucket's ownership change fails with `InvalidBucketAclWithObjectOwnership`. Everything else is applied. (The events bucket's `private` ACL grants nothing outside the account, so its change succeeds.)
+2. Reset each access-log bucket's ACL to the default private ACL:
+
+   ```sh
+   aws s3api put-bucket-acl --bucket "${PREFIX}-${ORG}-rudolph-source-logging" --acl private
+   # Only when Terraform created the Firehose sink:
+   aws s3api put-bucket-acl --bucket "${PREFIX}-${ORG}-rudolph-events-logging" --acl private
+   ```
+
+3. `make deploy` again: the ownership controls now change to `BucketOwnerEnforced`.
+
+Logs keep arriving throughout, granted first by both, then by the policy alone. Check with [smoke-test.md](smoke-test.md) step 11.2. With `existing_logging_bucket_name` set, Terraform does not manage that bucket's policy or ACL: its owner must grant `logging.s3.amazonaws.com` `s3:PutObject` on the prefixes `PREFIX-ORG-rudolph-source/` and `PREFIX-ORG-rudolph-events/`, as above.

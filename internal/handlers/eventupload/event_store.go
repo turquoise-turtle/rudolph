@@ -176,7 +176,10 @@ type counterKey struct{ day, sha string }
 // exactly once in its day counter. An event that can never be stored (no SHA-256, an execution time outside the kept
 // window, one DynamoDB rejects, or beyond maxStoredPerUpload) is dropped and logged. Any other failure is returned,
 // so the handler answers 5xx and Santa uploads the events again; events already stored and counted are skipped then.
-func (s *eventStore) Store(ctx context.Context, machineID string, events []EventUploadEvent) error {
+//
+// It returns how many events this call wrote to the table, not counting those an earlier upload had already stored,
+// even when it also returns an error.
+func (s *eventStore) Store(ctx context.Context, machineID string, events []EventUploadEvent) (written int, err error) {
 	now := s.now()
 	earliest := float64(now.Add(-maxEventAge).Unix())
 	latest := float64(now.Add(maxFutureSkew).Unix())
@@ -222,7 +225,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	logDropped(machineID, outside, "execution time more than a day ahead or older than the 90 days kept")
 	logDropped(machineID, overLimit, fmt.Sprintf("more than %d events in one upload", maxStoredPerUpload))
 	if len(candidates) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	eventExpiry := strconv.FormatInt(now.Add(eventTTL).Unix(), 10)
@@ -254,9 +257,10 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 				for k, i := range batch {
 					events[k] = candidates[i]
 				}
-				invalid, err := s.storeBatch(ctx, machineID, events, eventExpiry, counterExpiry)
-				if invalid > 0 {
+				added, invalid, err := s.storeBatch(ctx, machineID, events, eventExpiry, counterExpiry)
+				if added > 0 || invalid > 0 {
 					mu.Lock()
+					written += added
 					rejected += invalid
 					mu.Unlock()
 				}
@@ -312,9 +316,9 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	})
 
 	if err := errors.Join(writeErr, markerErr); err != nil {
-		return fmt.Errorf("events table: %w", err)
+		return written, fmt.Errorf("events table: %w", err)
 	}
-	return nil
+	return written, nil
 }
 
 func logDropped(machineID string, n int, reason string) {
@@ -325,7 +329,8 @@ func logDropped(machineID string, n int, reason string) {
 
 // storeBatch writes events of one day counter and adds them to the counter in one transaction, so an event is never
 // stored without being counted, nor counted twice, whatever happens to a response. It returns nil when every event
-// is stored and counted, by this call or an earlier one.
+// is stored and counted, by this call or an earlier one, and how many of them this call wrote: those of the
+// transaction that succeeded, without the ones an earlier upload had stored.
 //
 // Each event's Put has the condition that the event does not exist yet. When some already exist (Santa re-sent the
 // upload), DynamoDB cancels the transaction and says which Puts failed their condition; the transaction is sent again
@@ -337,7 +342,7 @@ func logDropped(machineID string, n int, reason string) {
 // own retries of one attempt reuse its token, so DynamoDB answers them with the first outcome instead of applying the
 // transaction twice; a new attempt after a cancellation gets a new token, as DynamoDB would otherwise answer it with
 // the cancellation again.
-func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []storableEvent, eventExpiry, counterExpiry string) (invalid int, err error) {
+func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []storableEvent, eventExpiry, counterExpiry string) (written, invalid int, err error) {
 	pending := make([]*storableEvent, len(events))
 	for k := range events {
 		pending[k] = &events[k]
@@ -347,11 +352,11 @@ func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []
 		input := s.batchInput(machineID, pending, eventExpiry, counterExpiry, attempt)
 		_, err := s.api.TransactWriteItems(ctx, input)
 		if err == nil {
-			return invalid, nil
+			return len(pending), invalid, nil
 		}
 		var cancelled *types.TransactionCanceledException
 		if !errors.As(err, &cancelled) {
-			return invalid, err
+			return 0, invalid, err
 		}
 		reasons := cancelled.CancellationReasons
 		var remaining []*storableEvent
@@ -380,28 +385,28 @@ func (s *eventStore) storeBatch(ctx context.Context, machineID string, events []
 			case "TransactionConflict", "ThrottlingError", "ProvisionedThroughputExceeded", "RequestLimitExceeded":
 				retryable = true
 			default:
-				return invalid, err
+				return 0, invalid, err
 			}
 		}
 		if len(remaining) == 0 {
-			return invalid, nil
+			return 0, invalid, nil
 		}
 		if len(remaining) == len(pending) && !retryable {
 			// Cancelled for no reason this code knows how to resolve.
-			return invalid, err
+			return 0, invalid, err
 		}
 		if retryable {
 			retries++
 			if retries >= transientAttempts {
-				return invalid, err
+				return 0, invalid, err
 			}
 			if waitErr := eventsink.Wait(ctx, retries+1, false); waitErr != nil {
-				return invalid, errors.Join(err, waitErr)
+				return 0, invalid, errors.Join(err, waitErr)
 			}
 		}
 		pending = remaining
 	}
-	return invalid, nil
+	return 0, invalid, nil
 }
 
 // transactionChunks splits the events of one day counter (indexes into candidates) into transactions within

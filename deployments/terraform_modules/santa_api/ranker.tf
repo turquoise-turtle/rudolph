@@ -1,6 +1,7 @@
 #
-# Ranker: an hourly Lambda that rebuilds the web view's top-blocked and top-allowed lists (snapshots and pointers in
-# the events table) from the day counters and machine markers. Code: cmd/ranker, internal/ranker. Layout and cost:
+# Ranker: a scheduled Lambda (hourly by default, see ranker_schedule_expression) that rebuilds the web view's
+# top-blocked and top-allowed lists (snapshots and pointers in the events table) from the day counters and machine
+# markers. Code: cmd/ranker, internal/ranker. Layout and cost:
 # docs/events-table.md.
 #
 
@@ -117,26 +118,69 @@ resource "aws_lambda_function" "ranker" {
   depends_on = [aws_cloudwatch_log_group.ranker]
 }
 
-resource "aws_cloudwatch_event_rule" "ranker" {
-  name                = "${var.prefix}_rudolph_ranker_hourly"
-  description         = "Rebuilds Rudolph's top-blocked and top-allowed binary lists for the web view"
-  schedule_expression = "rate(1 hour)"
+# EventBridge Scheduler rather than an EventBridge rule: rules only know UTC, while a schedule takes a time zone and
+# follows its daylight saving, so a run limited to local working hours stays on them all year.
+resource "aws_scheduler_schedule" "ranker" {
+  name                         = "${var.prefix}_rudolph_ranker"
+  description                  = "Rebuilds Rudolph's top-blocked and top-allowed binary lists for the web view"
+  schedule_expression          = var.ranker_schedule_expression
+  schedule_expression_timezone = var.ranker_schedule_timezone
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.ranker.arn
+    role_arn = aws_iam_role.ranker_scheduler.arn
+
+    # The next scheduled run rebuilds every list anyway, so a failed delivery is not retried either.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
 }
 
-resource "aws_cloudwatch_event_target" "ranker" {
-  rule = aws_cloudwatch_event_rule.ranker.name
-  arn  = aws_lambda_function.ranker.arn
+resource "aws_iam_role" "ranker_scheduler" {
+  name               = "${var.prefix}_rudolph_ranker_scheduler_role"
+  path               = "/rudolph/"
+  assume_role_policy = data.aws_iam_policy_document.ranker_scheduler_assume_role.json
 }
 
-resource "aws_lambda_permission" "ranker_schedule" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ranker.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.ranker.arn
+# Only schedules in this account may use the role (confused-deputy guard).
+data "aws_iam_policy_document" "ranker_scheduler_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.aws_account_id]
+    }
+  }
 }
 
-# The next hourly run rebuilds every list anyway, so a failed run is not retried; it still counts in lambda_errors.
+# The schedule invokes the unqualified function, so the unqualified ARN is enough.
+data "aws_iam_policy_document" "ranker_scheduler" {
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.ranker.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ranker_scheduler" {
+  name   = "${var.prefix}_rudolph_ranker_scheduler_policy"
+  role   = aws_iam_role.ranker_scheduler.id
+  policy = data.aws_iam_policy_document.ranker_scheduler.json
+}
+
+# The next scheduled run rebuilds every list anyway, so a failed run is not retried; it still counts in lambda_errors.
 resource "aws_lambda_function_event_invoke_config" "ranker" {
   function_name          = aws_lambda_function.ranker.function_name
   maximum_retry_attempts = 0
