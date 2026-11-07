@@ -86,11 +86,36 @@ func LoadTableSchemaFrom(path, resource string) (TableSchema, error) {
 				if index.Name, err = stringAttr(nested.Body, "name", true); err != nil {
 					return schema, err
 				}
-				if index.HashKey, err = stringAttr(nested.Body, "hash_key", true); err != nil {
-					return schema, err
+				// AWS provider 6.x: an index's keys are key_schema blocks; the older hash_key/range_key attributes are
+				// still read for files that use them.
+				for _, ks := range nested.Body.Blocks {
+					if ks.Type != "key_schema" {
+						continue
+					}
+					name, err := stringAttr(ks.Body, "attribute_name", true)
+					if err != nil {
+						return schema, err
+					}
+					keyType, err := stringAttr(ks.Body, "key_type", true)
+					if err != nil {
+						return schema, err
+					}
+					switch keyType {
+					case "HASH":
+						index.HashKey = name
+					case "RANGE":
+						index.RangeKey = name
+					default:
+						return schema, fmt.Errorf("key_schema of %s: unknown key_type %q", index.Name, keyType)
+					}
 				}
-				if index.RangeKey, err = stringAttr(nested.Body, "range_key", false); err != nil {
-					return schema, err
+				if index.HashKey == "" {
+					if index.HashKey, err = stringAttr(nested.Body, "hash_key", true); err != nil {
+						return schema, err
+					}
+					if index.RangeKey, err = stringAttr(nested.Body, "range_key", false); err != nil {
+						return schema, err
+					}
 				}
 				if index.ProjectionType, err = stringAttr(nested.Body, "projection_type", true); err != nil {
 					return schema, err

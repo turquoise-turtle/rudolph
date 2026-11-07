@@ -290,7 +290,7 @@ Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. **A first plan m
 
 And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, an `aws_route53_zone` (with `use_existing_route53_zone = true`), or any resource that is not in the `module.santa_api` tree.
 
-Capture: the plan file, N, and any warnings at the end of the plan (the `hash_key`/`range_key` deprecation on the tables' global secondary indexes is expected and harmless; record the text of any).
+Capture: the plan file, N, and any warnings at the end of the plan (none are expected; record the text of any).
 
 ### 3.3 Apply
 

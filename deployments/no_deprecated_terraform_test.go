@@ -8,18 +8,15 @@ import (
 )
 
 // No deprecated Terraform before the first production deployment (owner, 2026-11-07): `terraform validate` with the
-// AWS provider 6.x warned about aws_s3_bucket_object and the DynamoDB tables' hash_key/range_key.
+// AWS provider 6.x warned about aws_s3_bucket_object and the DynamoDB indexes' hash_key/range_key.
 func TestNoDeprecatedTerraform(t *testing.T) {
 	files := loadTerraform(t, ".")
 	if n := len(blocks(files, "resource", "aws_s3_bucket_object")); n != 0 {
 		t.Errorf("%d aws_s3_bucket_object resources; use aws_s3_object (with moved blocks so nothing is recreated)", n)
 	}
 	for _, tb := range blocks(files, "resource", "aws_dynamodb_table") {
-		for _, attr := range []string{"hash_key", "range_key"} {
-			if _, ok := tb.Body.Attributes[attr]; ok {
-				t.Errorf("aws_dynamodb_table.%s sets %s; use key_schema", tb.Labels[1], attr)
-			}
-		}
+		// The table's own hash_key/range_key are not deprecated (provider 6.72 has no table-level key_schema); only
+		// the indexes' are.
 		for _, gsi := range nested(tb, "global_secondary_index") {
 			for _, attr := range []string{"hash_key", "range_key"} {
 				if _, ok := gsi.Body.Attributes[attr]; ok {

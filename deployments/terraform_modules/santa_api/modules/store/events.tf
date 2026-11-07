@@ -55,24 +55,42 @@ resource "aws_dynamodb_table" "events" {
   # Every event of the fleet, newest first. Fleet is the same on every event, so this index has one partition; at
   # the event rates in docs/events-table.md that is far below a partition's write limit.
   global_secondary_index {
-    name            = "Fleet_TS"
-    hash_key        = "Fleet"
-    range_key       = "TS"
+    name = "Fleet_TS"
+    key_schema {
+      attribute_name = "Fleet"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "TS"
+      key_type       = "RANGE"
+    }
     projection_type = "ALL"
   }
 
   global_secondary_index {
-    name            = "Decision_TS"
-    hash_key        = "Decision"
-    range_key       = "TS"
+    name = "Decision_TS"
+    key_schema {
+      attribute_name = "Decision"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "TS"
+      key_type       = "RANGE"
+    }
     projection_type = "ALL"
   }
 
   # Sparse: unsigned binaries have no team ID, and the writer leaves the attribute out.
   global_secondary_index {
-    name            = "TeamID_TS"
-    hash_key        = "TeamID"
-    range_key       = "TS"
+    name = "TeamID_TS"
+    key_schema {
+      attribute_name = "TeamID"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "TS"
+      key_type       = "RANGE"
+    }
     projection_type = "ALL"
   }
 
