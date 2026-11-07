@@ -45,11 +45,15 @@ func (h *PostEventuploadHandler) Boot() (err error) {
 	switch handler {
 	case "FIREHOSE":
 		firehoseName := os.Getenv("FIREHOSE_NAME")
-		h.firehoseClient = firehose.GetClient(firehoseName, region)
+		if h.firehoseClient, err = firehose.NewClient(firehoseName, region); err != nil {
+			return fmt.Errorf("firehose client: %w", err)
+		}
 		h.enableFirehose = true
 	case "KINESIS":
 		kinesisName := os.Getenv("KINESIS_NAME")
-		h.kinesisClient = kinesis.GetClient(kinesisName, region)
+		if h.kinesisClient, err = kinesis.NewClient(kinesisName, region); err != nil {
+			return fmt.Errorf("kinesis client: %w", err)
+		}
 		h.enableKinesis = true
 	case "NONE":
 		fallthrough

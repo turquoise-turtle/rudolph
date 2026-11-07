@@ -24,15 +24,25 @@ type client struct {
 	firehoseService    *firehose.Client
 }
 
-func GetClient(firehoseStreamName string, awsregion string) FirehoseClient {
+// NewClient returns a client of the stream, built from the default AWS configuration (so AWS_ENDPOINT_URL_* and the
+// usual credential sources apply), or an error if that configuration cannot be loaded.
+func NewClient(streamName string, awsregion string) (ContextClient, error) {
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(awsregion))
 	if err != nil {
-		// The Lambda cannot forward events without credentials or a region; fail at start-up, as the v1 session did.
-		panic(fmt.Sprintf("unable to load the AWS configuration for Firehose: %v", err))
+		return nil, fmt.Errorf("unable to load the AWS configuration for Firehose: %w", err)
 	}
-
 	return client{
-		firehoseStreamName: firehoseStreamName,
+		firehoseStreamName: streamName,
 		firehoseService:    firehose.NewFromConfig(cfg),
+	}, nil
+}
+
+// GetClient is NewClient for callers that cannot handle the error: it panics if the configuration cannot be loaded.
+// Lambdas use NewClient so that Boot reports the error.
+func GetClient(streamName string, awsregion string) FirehoseClient {
+	c, err := NewClient(streamName, awsregion)
+	if err != nil {
+		panic(err)
 	}
+	return c
 }

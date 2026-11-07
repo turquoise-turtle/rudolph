@@ -38,6 +38,8 @@ const (
 	dataType        = "Audit"
 	dayLayout       = "2006-01-02"
 	maxPage         = 1000
+	// maxPageLimit caps ListPage's limit: a page is for people to read, and it keeps limit+1 from overflowing.
+	maxPageLimit = 1000
 )
 
 // Entry is one change recorded in the audit trail
@@ -189,8 +191,8 @@ func ListContext(ctx context.Context, client SDKReader, table string, since time
 
 // ListPage is List one page at a time. cursor is "" for the first page, then the next returned by the previous page;
 // next is "" once there are no more entries. Paging with the same since returns every entry once, newest first, across
-// day partitions. The cursor is opaque but not signed: it names the last entry returned, and ListPage refuses one it
-// could not have made with ErrInvalidCursor.
+// day partitions. A limit above 1000 is treated as 1000. The cursor is opaque but not signed: it names the last entry
+// returned, and ListPage refuses one it could not have made (malformed, or dated after tomorrow) with ErrInvalidCursor.
 func ListPage(client Reader, since time.Time, limit int, cursor string) (page []Entry, next string, err error) {
 	return listPage(client.Query, since, limit, cursor)
 }
@@ -243,6 +245,10 @@ func decodeCursor(cursor string) (position, error) {
 		// An entry is stored in the partition of the day of its own time.
 		return position{}, ErrInvalidCursor
 	}
+	if day.After(time.Now().UTC().Truncate(24 * time.Hour).Add(24 * time.Hour)) {
+		// No page starts after tomorrow; a forged cursor dated years ahead would make list query every day back.
+		return position{}, ErrInvalidCursor
+	}
 	return position{day: day, sk: sk}, nil
 }
 
@@ -257,6 +263,7 @@ func listPage(query queryFunc, since time.Time, limit int, cursor string) ([]Ent
 	if limit <= 0 {
 		return nil, "", nil
 	}
+	limit = min(limit, maxPageLimit)
 	// One entry more than the page tells whether there is another page, so the last page has no next.
 	rows, err := list(query, since, limit+1, after)
 	if err != nil {
@@ -266,8 +273,23 @@ func listPage(query queryFunc, since time.Time, limit int, cursor string) ([]Ent
 		return entries(rows), "", nil
 	}
 	rows = rows[:limit]
-	last := rows[limit-1]
-	return entries(rows), encodeCursor(position{day: last.Time, sk: last.SK}), nil
+	last, err := positionOf(rows[limit-1])
+	if err != nil {
+		return nil, "", err
+	}
+	return entries(rows), encodeCursor(last), nil
+}
+
+// positionOf returns the position of a row from its sort key, which is what decodeCursor checks the day against
+func positionOf(row item) (position, error) {
+	if !sortKeyFormat.MatchString(row.SK) {
+		return position{}, fmt.Errorf("audit entry %s %s has a malformed sort key", row.PK, row.SK)
+	}
+	nanos, err := strconv.ParseInt(row.SK[:19], 10, 64)
+	if err != nil {
+		return position{}, fmt.Errorf("audit entry %s %s has a malformed sort key: %w", row.PK, row.SK, err)
+	}
+	return position{day: time.Unix(0, nanos).UTC().Truncate(24 * time.Hour), sk: row.SK}, nil
 }
 
 func entries(rows []item) []Entry {
