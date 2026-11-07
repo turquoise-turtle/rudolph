@@ -1,9 +1,11 @@
 package flags
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
+	"strings"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -39,6 +41,35 @@ func Record(client audit.Writer, action, target, summary string) error {
 	}
 	fmt.Fprintf(os.Stderr, "[WARNING] the change was made but not audited (%s on %s: %s): %v\n", action, target, summary, err)
 	return fmt.Errorf("the change was made but not recorded in the audit trail: %w", err)
+}
+
+// RecordPartial records a change that failed part-way: something was written before cause stopped it. The summary
+// says so, with the start of the error. It returns cause, joined with the error of recording the entry if that failed
+// too.
+func RecordPartial(client audit.Writer, action, target, summary string, cause error) error {
+	if err := Record(client, action, target, fmt.Sprintf("%s (failed part-way: %s)", summary, shortError(cause))); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+// RecordOutcome records a change that wrote something: as done when err is nil, otherwise as failed part-way
+// (RecordPartial). It returns err, joined with the error of recording the entry if that failed.
+func RecordOutcome(client audit.Writer, action, target, summary string, err error) error {
+	if err != nil {
+		return RecordPartial(client, action, target, summary, err)
+	}
+	return Record(client, action, target, summary)
+}
+
+// shortError is the first line of err, at most 200 characters: enough to tell what failed, without filling an entry
+// that is kept forever with an SDK error dump
+func shortError(err error) string {
+	text, _, _ := strings.Cut(err.Error(), "\n")
+	if len(text) > 200 {
+		text = text[:200] + "..."
+	}
+	return text
 }
 
 // MachineTarget is the audit target of a machine's rules or configuration

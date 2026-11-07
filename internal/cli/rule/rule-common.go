@@ -278,14 +278,21 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 	if apply, err := approval.Confirm(); !apply {
 		return err
 	}
+	createdUngrouped := false
 	if _, ok := registry.Groups[group]; !ok {
 		// The reserved group exists as soon as it has a rule; only operators' own groups need creating
-		if err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false); err != nil && !errors.Is(err, groups.ErrGroupExists) {
+		err := groups.CreateGroup(clock.ConcreteTimeProvider{}, writer, groups.Ungrouped, "Macs in no group", false)
+		if err != nil && !errors.Is(err, groups.ErrGroupExists) {
 			return err
 		}
+		createdUngrouped = err == nil
 	}
 	if err := groups.PutRule(writer, group, rule, description); err != nil {
-		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+		err = fmt.Errorf("could not upload rule to DynamoDB: %w", err)
+		if createdUngrouped {
+			return flags.RecordPartial(client, "rule.add", flags.GroupTarget(group), ruleSummary(ruleType, identifier, policy, "registered the reserved group of Macs in no group"), err)
+		}
+		return err
 	}
 	target := fmt.Sprintf("group %s", group)
 	if group == groups.Ungrouped {

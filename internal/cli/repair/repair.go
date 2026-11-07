@@ -1,7 +1,6 @@
 package repair
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -59,14 +58,11 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 			scanService := scan.GetScanService(dynamodbClient)
 
 			deleted, err := repair(scanService, dynamodbClient, deleteFound)
-			if !deleteFound || (err != nil && deleted == 0) {
+			if !deleteFound || deleted == 0 {
 				return err
 			}
 			// Recorded even when the repair stopped part way: the items deleted so far are gone
-			if recordErr := flags.Record(dynamodbClient, "repair.delete", flags.GlobalTarget, fmt.Sprintf("deleted %d legacy items (MachineInfo#, MachineConfig#)", deleted)); recordErr != nil {
-				return errors.Join(err, recordErr)
-			}
-			return err
+			return flags.RecordOutcome(dynamodbClient, "repair.delete", flags.GlobalTarget, fmt.Sprintf("deleted %d legacy items (MachineInfo#, MachineConfig#)", deleted), err)
 		},
 	}
 	RepairCmd.Flags().BoolVar(&deleteItems, "delete", false, "Delete the legacy items found")

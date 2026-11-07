@@ -1,7 +1,6 @@
 package rules
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
@@ -39,15 +38,11 @@ func addRuleBackfillPolicyIndexCommand() {
 				approval.Write()
 				return nil
 			}
-			if err != nil && updated == 0 {
+			if updated == 0 {
 				return err
 			}
 			// Recorded even when the backfill stopped part way: the rules updated so far were written
-			summary := fmt.Sprintf("added GlobalRulePolicy to %d global rules", updated)
-			if recordErr := flags.Record(ddb, "rules.backfill-policy-index", flags.GlobalTarget, summary); recordErr != nil {
-				return errors.Join(err, recordErr)
-			}
-			return err
+			return flags.RecordOutcome(ddb, "rules.backfill-policy-index", flags.GlobalTarget, fmt.Sprintf("added GlobalRulePolicy to %d global rules", updated), err)
 		},
 	}
 

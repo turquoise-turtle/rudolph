@@ -176,7 +176,11 @@ func init() {
 				return err
 			}
 			if err := groups.DeleteGroup(client, name, force); err != nil {
-				return fmt.Errorf("group %q: %w", name, err)
+				err = fmt.Errorf("group %q: %w", name, err)
+				if errors.Is(err, groups.ErrDeletedPartly) {
+					return flags.RecordPartial(client, "group.delete", flags.GroupTarget(name), "deleting group "+name+" and its rules", err)
+				}
+				return err
 			}
 			fmt.Printf("Deleted group %q\n", name)
 			summary := "deleted group " + name
