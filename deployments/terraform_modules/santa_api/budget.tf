@@ -47,7 +47,7 @@ resource "aws_budgets_budget" "monthly" {
   }
 
   lifecycle {
-    # A cross-variable validation would need Terraform 1.9; this module supports 1.5.
+    # Kept as a precondition (a cross-variable validation also works since Terraform 1.9, which this module requires).
     precondition {
       condition     = length(var.budget_alert_emails) > 0
       error_message = "budget_alert_emails must list at least one address when monthly_budget_usd is above 0."

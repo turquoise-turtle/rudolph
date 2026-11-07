@@ -32,7 +32,8 @@ func init() {
 its configuration, its group membership, its machine rules and their delivery tracking, and its entries in the index
 of rules whose allowed events are collected. Group registrations, global rules and group rules are not changed.
 Events in the events table are not deleted; they expire on their own. If the Mac syncs again, it starts afresh, as a
-Mac Rudolph has never seen.`,
+Mac Rudolph has never seen. Forget a Mac after it stops syncing: what a sync writes after the list is made is not
+deleted. Running forget again lists and deletes whatever is left.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := Client(cmd)
