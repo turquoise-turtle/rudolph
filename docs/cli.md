@@ -23,6 +23,7 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
 - Rule types: `binary` (`bin`), `certificate` (`cert`), `teamid`, `signingid`, `cdhash`. Policies: `allowlist`, `blocklist`, `silent_blocklist`, `silent_gui_blocklist`, `silent_tty_blocklist`, `cel`, `remove`.
 - Commands that write rules check the local clock against DynamoDB's first (see [rules.md](rules.md)).
+- **Audit trail.** Every change a command writes is also recorded in the [audit trail](#the-audit-trail), after the write succeeds. A dry run or a declined prompt records nothing.
 
 ## Rules
 
@@ -165,6 +166,47 @@ It first prints what it will delete, with the Mac's hostname and serial number a
 - **Forget a Mac that has stopped syncing.** Remove its Santa profile (or retire it) first: a sync already under way while `forget` runs can write its sensor data, sync state or delivery rows again straight after the delete, and the Mac then reappears partly forgotten. Running `forget` again once it has stopped syncing cleans up.
 - **Events** in the events table are not deleted: they expire on their own (see [Events from the test binaries](smoke-test.md#135-events-from-the-test-binaries-7-8) for when), and rudolph-web keeps showing them until then.
 - **If the Mac syncs again**, it starts afresh, as a Mac Rudolph has never seen: no configuration of its own (it gets the global one), no machine rules and no assigned groups, and its first sync is a clean sync.
+
+## The audit trail
+
+```sh
+rudolph audit [--since <duration-or-time>] [--limit <n>]
+```
+
+Every write the CLI makes also records an audit entry in the store table: the time, the actor, the action, the target and a summary. The CLI's actor is `cli:<OS user>@<host name>` (the user and host name of the computer running it; `$USER` or `unknown` when they cannot be read); rudolph-web will record its own changes with the actor `web:<Entra user>`. Entries are never overwritten and never expire. The layout is in [architecture.md](architecture.md#dynamodb).
+
+| Command | Action | Target |
+|---|---|---|
+| `rule allow\|deny\|silent\|silent-gui\|silent-tty\|compiler\|cel` | `rule.add` | `global`, `machine:<machine id>`, `group:<group>` or `ungrouped` |
+| `rule update` | `rule.update` | `global` or `machine:<machine id>` |
+| `rule remove` | `rule.remove` | `global`, `machine:<machine id>`, `group:<group>` or `ungrouped` |
+| `rules import` | `rules.import` (one entry for the import, with the counts) | `global` |
+| `rules backfill-policy-index` | `rules.backfill-policy-index` | `global` |
+| `config set` | `config.set` | `global` or `machine:<machine id>` |
+| `config update` with `--for` or `--until` | `config.temporary-mode` | `machine:<machine id>` |
+| `config update --end-temporary-mode` | `config.end-temporary-mode` | `machine:<machine id>` |
+| any other `config update` | `config.update` | `global` or `machine:<machine id>` |
+| `group create\|update\|delete` | `group.create`, `group.update`, `group.delete` | `group:<group>` |
+| `group add\|remove` | `group.add`, `group.remove` | `machine:<machine id>` (the summary names the group) |
+| `machine forget` | `machine.forget` | `machine:<machine id>` |
+| `repair --delete` | `repair.delete` | `global` |
+
+Machine IDs are the stored spelling (see [rules.md](rules.md#global-and-machine-specific-rules)). Summaries are for people: a rule's type, identifier and policy (`BINARY rule <sha256> BLOCKLIST, expires ...`), a temporary mode's client mode and end, the configuration settings changed, and so on.
+
+The entry is recorded after the change is written, never instead of it. If recording it fails (for example because the credentials lack `dynamodb:PutItem` on the audit partitions; see [deploy.md](deploy.md#cli-permissions)), the command prints `[WARNING] the change was made but not audited ...` on stderr and exits non-zero. The change is not rolled back: record what was done by other means, fix the permission and carry on. An import, backfill or repair that stops part way still records an entry for what it wrote.
+
+`rudolph audit` lists the entries, newest first, with the time in UTC and in local time, the actor, action, target and summary:
+
+```
+TIME (UTC)            LOCAL TIME                ACTOR                     ACTION                 TARGET                                        SUMMARY
+2026-11-07T04:12:09Z  2026-11-07 15:12:09 AEDT  cli:admin@admin-mac       config.temporary-mode  machine:AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA  temporary client mode LOCKDOWN until 2026-11-07T05:12:09Z
+2026-11-07T04:11:52Z  2026-11-07 15:11:52 AEDT  cli:admin@admin-mac       rule.add               global                                        BINARY rule abab...abab BLOCKLIST
+```
+
+- `--since` is how far back to look: a duration back from now (`7d`, `36h`, `90m`) or an RFC 3339 time (`2026-11-01T00:00:00+11:00`). Default `7d`. A time in the future is an error.
+- `--limit` is the most entries to show. Default `100`; when the limit is reached it says so.
+
+It reads one partition per day back to `--since` with Query, never Scan, so a long `--since` costs one small read per day.
 
 ## Maintenance
 

@@ -63,7 +63,11 @@ Mac Rudolph has never seen.`,
 				return err
 			}
 			fmt.Printf("Forgot %s: deleted %d items. If the Mac syncs again, it starts afresh.\n", id, len(plan.keys()))
-			return nil
+			summary := fmt.Sprintf("forgot the machine: deleted %d items", len(plan.keys()))
+			if plan.sensor != nil && plan.sensor.SerialNum != "" {
+				summary += ", serial " + plan.sensor.SerialNum
+			}
+			return flags.Record(client, "machine.forget", flags.MachineTarget(id), summary)
 		},
 	}
 	forgetCmd.Flags().StringVarP(&machineID, "machine", "m", "", "The Mac's machine UUID")

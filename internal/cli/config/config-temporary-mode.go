@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
@@ -92,13 +93,13 @@ func (f *temporaryModeFlags) request(cmd *cobra.Command, tf flags.TargetFlags, c
 // executions asks for the same confirmation as setting that mode on the machine; declining it is an error, so a
 // script does not take it for done. A temporary monitor mode and ending one are applied without asking. A dry run
 // writes neither.
-func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time, approval flags.Approval) error {
+func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, recorder audit.Writer, service machineconfiguration.MachineConfigurationService, tf flags.TargetFlags, request temporaryModeRequest, now time.Time, approval flags.Approval) error {
 	machineID, err := tf.GetMachineID()
 	if err != nil {
 		return fmt.Errorf("failed to get MachineID: %w", err)
 	}
 	if request.end {
-		return endTemporaryMode(store, service, machineID, approval)
+		return endTemporaryMode(store, recorder, service, machineID, approval)
 	}
 
 	modeText := clientModeName(request.mode)
@@ -121,10 +122,10 @@ func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, ser
 		return wrapWriteError(err)
 	}
 	fmt.Println("Success! The temporary client mode was sent to DynamoDB...")
-	return nil
+	return flags.Record(recorder, "config.temporary-mode", flags.MachineTarget(machineID), fmt.Sprintf("temporary client mode %s until %s", modeText, request.expires.UTC().Format(time.RFC3339)))
 }
 
-func endTemporaryMode(store machineconfiguration.TemporaryClientModeStore, service machineconfiguration.MachineConfigurationService, machineID string, approval flags.Approval) error {
+func endTemporaryMode(store machineconfiguration.TemporaryClientModeStore, recorder audit.Writer, service machineconfiguration.MachineConfigurationService, machineID string, approval flags.Approval) error {
 	if approval.DryRun {
 		snapshot, err := machineconfiguration.ReadTemporaryClientModeSnapshot(store, machineID)
 		if err != nil {
@@ -147,6 +148,9 @@ func endTemporaryMode(store machineconfiguration.TemporaryClientModeStore, servi
 		return wrapWriteError(err)
 	}
 	fmt.Printf("Ended the temporary client mode of machine %s.\n", machineID)
+	if err := flags.Record(recorder, "config.end-temporary-mode", flags.MachineTarget(machineID), "ended the temporary client mode"); err != nil {
+		return err
+	}
 	config, err := service.GetIntendedConfig(machineID)
 	if err != nil {
 		return fmt.Errorf("failed to read the machine's usual client mode: %w", err)

@@ -1,6 +1,7 @@
 package repair
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -57,7 +58,15 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 			}
 			scanService := scan.GetScanService(dynamodbClient)
 
-			return repair(scanService, dynamodbClient, deleteFound)
+			deleted, err := repair(scanService, dynamodbClient, deleteFound)
+			if !deleteFound || (err != nil && deleted == 0) {
+				return err
+			}
+			// Recorded even when the repair stopped part way: the items deleted so far are gone
+			if recordErr := flags.Record(dynamodbClient, "repair.delete", flags.GlobalTarget, fmt.Sprintf("deleted %d legacy items (MachineInfo#, MachineConfig#)", deleted)); recordErr != nil {
+				return errors.Join(err, recordErr)
+			}
+			return err
 		},
 	}
 	RepairCmd.Flags().BoolVar(&deleteItems, "delete", false, "Delete the legacy items found")
@@ -65,7 +74,8 @@ nothing. With --delete the items found are deleted, after a confirmation (none w
 	flags.AddDryRunFlag(RepairCmd)
 }
 
-func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete bool) error {
+// repair lists the legacy items, deleting them when delete is set, and returns how many it deleted
+func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete bool) (deleted int, err error) {
 	pageSize := int32(10)
 
 	input := awsdynamodb.ScanInput{
@@ -96,6 +106,7 @@ func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete
 					if err != nil {
 						return fmt.Errorf("failed to delete item: %w", err)
 					}
+					deleted++
 					fmt.Printf("      Item Deleted\n")
 				}
 			}
@@ -110,11 +121,8 @@ func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete
 		return false, nil
 	}
 
-	err := scanService.ScanAll(input, callback, stop)
-	if err != nil {
-		return err
-	}
-	return nil
+	err = scanService.ScanAll(input, callback, stop)
+	return deleted, err
 }
 
 type dynamodbItem struct {

@@ -3,6 +3,7 @@ package rule
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
@@ -286,7 +287,25 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 	} else {
 		fmt.Printf("Updated rule %s of machine %s, expires %s\n", current.key.SortKey, machineID, expiryText(expires))
 	}
-	return nil
+	var changes []string
+	if policyChanged {
+		was, _ := current.rule.Policy.MarshalText()
+		changes = append(changes, fmt.Sprintf("policy was %s", was))
+	}
+	if updated != policyUpdated {
+		changes = append(changes, "rule options changed")
+	}
+	if !expires.Equal(current.expires) {
+		changes = append(changes, "expires "+expiryText(expires))
+	}
+	if collectionChanged {
+		changes = append(changes, fmt.Sprintf("collect allowed events %t", collecting))
+	}
+	target := flags.GlobalTarget
+	if !tf.IsGlobal {
+		target = flags.MachineTarget(machineID)
+	}
+	return flags.Record(rh.dynamodbClient, "rule.update", target, ruleSummary(updated.RuleType, updated.Identifier, updated.Policy, strings.Join(changes, ", ")))
 }
 
 // withPolicy returns rule with the given policy, as a policy update stores it (UpdateGlobalRule,

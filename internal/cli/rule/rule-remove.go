@@ -65,8 +65,16 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 					return err
 				}
 			}
+			// Read before the removal so that the audit trail can say what the rule was
+			summary := ruleName
+			if !approval.DryRun {
+				summary = removedRuleSummary(dynamodbClient, tf, ruleName)
+			}
 			if tf.IsGroup() {
-				return removeGroupRule(dynamodbClient, tf.Group, ruleName, approval)
+				if err := removeGroupRule(dynamodbClient, tf.Group, ruleName, approval); err != nil || approval.DryRun {
+					return err
+				}
+				return flags.Record(dynamodbClient, "rule.remove", flags.GroupTarget(tf.Group), summary)
 			}
 
 			globalRemover := globalrules.ConcreteRuleRemovalService{
@@ -93,7 +101,11 @@ the Mac drops it, or gets the global rule for the same identifier back, at its n
 			if removed, err := ruleRemoved(dynamodbClient, indexMachineID, ruleName); err == nil && removed {
 				forgetCollectedRule(dynamodbClient, indexMachineID, ruleName)
 			}
-			return nil
+			target := flags.GlobalTarget
+			if !tf.IsGlobal {
+				target = flags.MachineTarget(tf.MachineID)
+			}
+			return flags.Record(dynamodbClient, "rule.remove", target, summary)
 		},
 	}
 
@@ -120,6 +132,35 @@ func removalRuleName(args []string, ruleTypeGiven bool, ruleType types.RuleType,
 		return "", errors.New("unknown rule type")
 	}
 	return sortKey, nil
+}
+
+// removedRuleSummary describes the rule about to be removed for the audit trail. When it cannot be read, the rule's
+// name (type and identifier) is enough.
+func removedRuleSummary(client dynamodb.DynamoDBClient, tf flags.TargetFlags, ruleName string) string {
+	var rule *rules.SantaRule
+	switch {
+	case tf.IsGroup():
+		if rows, err := groups.GetRules(client, tf.Group); err == nil {
+			for _, row := range rows {
+				if row.SortKey == ruleName {
+					rule = &row.SantaRule
+					break
+				}
+			}
+		}
+	case tf.IsGlobal:
+		if row, err := globalrules.GetGlobalRuleBySortKey(client, ruleName); err == nil && row != nil {
+			rule = &row.SantaRule
+		}
+	default:
+		if row, err := machinerules.GetMachineRuleConsistently(client, tf.MachineID, ruleName); err == nil && row != nil {
+			rule = &row.SantaRule
+		}
+	}
+	if rule == nil {
+		return ruleName
+	}
+	return ruleSummary(rule.RuleType, rule.Identifier, rule.Policy, "")
 }
 
 // removeGroupRule removes a device group's rule after a confirmation (none with --yes, nothing written with --dry-run)

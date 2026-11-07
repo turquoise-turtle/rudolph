@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
@@ -30,20 +31,30 @@ func addRuleBackfillPolicyIndexCommand() {
 			if approval.DryRun {
 				client = dryRunBackfillClient{client}
 			}
-			if err := runBackfillPolicyIndex(client, approval.DryRun); err != nil {
+			updated, err := runBackfillPolicyIndex(client, approval.DryRun)
+			if approval.DryRun {
+				if err != nil {
+					return err
+				}
+				approval.Write()
+				return nil
+			}
+			if err != nil && updated == 0 {
 				return err
 			}
-			if approval.DryRun {
-				approval.Write()
+			// Recorded even when the backfill stopped part way: the rules updated so far were written
+			summary := fmt.Sprintf("added GlobalRulePolicy to %d global rules", updated)
+			if recordErr := flags.Record(ddb, "rules.backfill-policy-index", flags.GlobalTarget, summary); recordErr != nil {
+				return errors.Join(err, recordErr)
 			}
-			return nil
+			return err
 		},
 	}
 
 	RulesCmd.AddCommand(backfillCmd)
 }
 
-func runBackfillPolicyIndex(client globalrules.PolicyIndexBackfillAPI, dryRun bool) error {
+func runBackfillPolicyIndex(client globalrules.PolicyIndexBackfillAPI, dryRun bool) (int, error) {
 	updated, err := globalrules.BackfillPolicyIndex(client)
 	verb := "Updated"
 	if dryRun {
@@ -53,9 +64,9 @@ func runBackfillPolicyIndex(client globalrules.PolicyIndexBackfillAPI, dryRun bo
 		fmt.Printf("%s %d global rules\n", verb, updated)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to backfill the policy index: %w", err)
+		return updated, fmt.Errorf("failed to backfill the policy index: %w", err)
 	}
-	return nil
+	return updated, nil
 }
 
 // dryRunBackfillClient reads global rules as the backfill does, and counts the updates it would write instead of

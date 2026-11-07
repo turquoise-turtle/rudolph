@@ -10,6 +10,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/spf13/cobra"
 )
@@ -71,7 +72,7 @@ func init() {
 				fmt.Print(" (only Macs assigned with rudolph group add are members)")
 			}
 			fmt.Println()
-			return nil
+			return flags.Record(client, "group.create", flags.GroupTarget(name), fmt.Sprintf("created group %s, description %q, Macs that report it %s", name, description, reportedText(!noReported)))
 		},
 	}
 	createCmd.Flags().StringVar(&description, "description", "", "What the group is for")
@@ -123,7 +124,14 @@ func init() {
 				return fmt.Errorf("group %q: %w", name, err)
 			}
 			fmt.Printf("Updated group %q\n", name)
-			return nil
+			var changes []string
+			if desc != nil {
+				changes = append(changes, fmt.Sprintf("description %q", *desc))
+			}
+			if accept != nil {
+				changes = append(changes, "Macs that report it "+reportedText(*accept))
+			}
+			return flags.Record(client, "group.update", flags.GroupTarget(name), fmt.Sprintf("updated group %s: %s", name, strings.Join(changes, ", ")))
 		},
 	}
 	updateCmd.Flags().StringVar(&description, "description", "", "What the group is for")
@@ -171,7 +179,11 @@ func init() {
 				return fmt.Errorf("group %q: %w", name, err)
 			}
 			fmt.Printf("Deleted group %q\n", name)
-			return nil
+			summary := "deleted group " + name
+			if force {
+				summary += " and its rules"
+			}
+			return flags.Record(client, "group.delete", flags.GroupTarget(name), summary)
 		},
 	}
 	deleteCmd.Flags().BoolVar(&force, "force", false, "Also delete the group's rules")
@@ -338,13 +350,13 @@ func changeMembership(cmd *cobra.Command, machineID, group string, add bool) err
 			return fmt.Errorf("group %q: %w", name, err)
 		}
 		fmt.Printf("Assigned group %q to %s; it applies from the Mac's next sync\n", name, id)
-		return nil
+		return flags.Record(client, "group.add", flags.MachineTarget(id), "assigned group "+name)
 	}
 	if err := groups.RemoveAssigned(timeProvider, client, id, name); err != nil {
 		return fmt.Errorf("group %q: %w", name, err)
 	}
 	fmt.Printf("Removed group %q from %s (if it reports the group, it stays a member)\n", name, id)
-	return nil
+	return flags.Record(client, "group.remove", flags.MachineTarget(id), "removed assigned group "+name)
 }
 
 // requireGroup returns an error unless the group is registered
@@ -371,6 +383,7 @@ func reportedText(accept bool) string {
 type client interface {
 	groups.RegistryWriter
 	flags.MachineIDLookupAPI
+	audit.Writer
 }
 
 func writer(cmd *cobra.Command) (client, error) {

@@ -166,7 +166,14 @@ func runImportFormat(
 	close(buffer)
 	wg.Wait()
 
-	return result.report()
+	reportErr := result.report()
+	// Recorded even when some rules failed: the others were written
+	summary := fmt.Sprintf("%d global rules imported from %s (%d unchanged, %d skipped, %d failed)",
+		len(rules), filepath.Base(filename), result.unchanged, result.skipped, len(result.errors))
+	if err := flags.Record(client, "rules.import", flags.GlobalTarget, summary); err != nil {
+		return errors.Join(reportErr, err)
+	}
+	return reportErr
 }
 
 // confirmImport shows how many rules the file creates or replaces and removes, and asks before they are written. A dry

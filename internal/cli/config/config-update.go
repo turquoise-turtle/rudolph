@@ -12,6 +12,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/spf13/cobra"
 )
@@ -118,11 +119,12 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 			service := machineconfiguration.GetMachineConfigurationService(dynamodbClient, timeProvider)
 
 			if temporaryMode != nil {
-				return applyTemporaryMode(dynamodbClient, service, tf, *temporaryMode, timeProvider.Now(), flags.ApprovalOf(cmd))
+				return applyTemporaryMode(dynamodbClient, dynamodbClient, service, tf, *temporaryMode, timeProvider.Now(), flags.ApprovalOf(cmd))
 			}
 
 			return updateConfig(
 				service,
+				dynamodbClient,
 				tf,
 				updateRequest,
 				confirmGlobalLockdown,
@@ -153,6 +155,7 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 
 func updateConfig(
 	service machineconfiguration.MachineConfigurationService,
+	recorder audit.Writer,
 	tf flags.TargetFlags,
 	updateRequest machineconfiguration.MachineConfigurationUpdateRequest,
 	confirmGlobalLockdown bool,
@@ -290,6 +293,6 @@ func updateConfig(
 	} else {
 		fmt.Printf("Updated the configuration of %s\n", configTarget(tf, machineID))
 	}
-	return
+	return flags.Record(recorder, "config.update", auditTarget(tf, machineID), updateSummary(updateRequest))
 
 }
