@@ -7,8 +7,9 @@ import (
 	"log"
 
 	"github.com/airbnb/rudolph/pkg/eventsink"
-	"github.com/aws/aws-sdk-go/aws"
-	awskinesis "github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awskinesis "github.com/aws/aws-sdk-go-v2/service/kinesis"
+	kinesistypes "github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 )
 
 // Limits. Record sizes count the data blob and the partition key.
@@ -134,9 +135,9 @@ type failedRecord struct {
 }
 
 func (c client) putRecords(ctx context.Context, machineID string, batch [][]byte) ([]failedRecord, error) {
-	entries := make([]*awskinesis.PutRecordsRequestEntry, len(batch))
+	entries := make([]kinesistypes.PutRecordsRequestEntry, len(batch))
 	for i, data := range batch {
-		entries[i] = &awskinesis.PutRecordsRequestEntry{
+		entries[i] = kinesistypes.PutRecordsRequestEntry{
 			Data: data,
 
 			// 2021-05-13 - Using the machineID as a partition key
@@ -149,7 +150,7 @@ func (c client) putRecords(ctx context.Context, machineID string, batch [][]byte
 			PartitionKey: aws.String(machineID),
 		}
 	}
-	response, err := c.kinesisService.PutRecordsWithContext(ctx, &awskinesis.PutRecordsInput{
+	response, err := c.kinesisService.PutRecords(ctx, &awskinesis.PutRecordsInput{
 		Records:    entries,
 		StreamName: aws.String(c.kinesisStream),
 	})
@@ -164,8 +165,8 @@ func (c client) putRecords(ctx context.Context, machineID string, batch [][]byte
 	}
 	var failed []failedRecord
 	for i, r := range response.Records {
-		if r.ErrorCode != nil && *r.ErrorCode != "" {
-			failed = append(failed, failedRecord{index: i, code: *r.ErrorCode})
+		if code := aws.ToString(r.ErrorCode); code != "" {
+			failed = append(failed, failedRecord{index: i, code: code})
 		}
 	}
 	if len(failed) == 0 {

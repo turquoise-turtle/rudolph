@@ -46,8 +46,8 @@ Keep captures in `$CAPTURE_DIR`, outside both repositories. They hold the accoun
 
 | Tool | Version | Check |
 |---|---|---|
-| Go | 1.25+ for Rudolph (`go.mod`), 1.26+ for rudolph-web | `go version` |
-| Terraform | 1.5+ (tested with 1.16), provider `hashicorp/aws ~> 6.0` | `terraform version` |
+| Go | 1.27+ for Rudolph (`go.mod`), 1.26+ for rudolph-web | `go version` |
+| Terraform | 1.10+ (tested with 1.17), provider `hashicorp/aws ~> 6.72` | `terraform version` |
 | AWS CLI | v2 | `aws --version` |
 | Xcode command line tools | for `lipo`, which `scripts/build.sh` uses for the universal CLI | `xcode-select -p` |
 | `zip`, `openssl`, `perl`, `curl` | as shipped with macOS | |
@@ -290,7 +290,7 @@ Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. **A first plan m
 
 And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, an `aws_route53_zone` (with `use_existing_route53_zone = true`), or any resource that is not in the `module.santa_api` tree.
 
-Capture: the plan file, N, and any warnings at the end of the plan (deprecations such as `aws_s3_bucket_object` are expected to be harmless; record their text).
+Capture: the plan file, N, and any warnings at the end of the plan (none are expected; record the text of any).
 
 ### 3.3 Apply
 

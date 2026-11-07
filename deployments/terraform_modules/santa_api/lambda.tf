@@ -21,18 +21,46 @@ module "lambda_source" {
   enable_logging               = var.enable_s3_logging
 }
 
-resource "aws_s3_bucket_object" "santa_api_source" {
+resource "aws_s3_object" "santa_api_source" {
   bucket = local.lambda_source_bucket
   key    = local.lambda_source_key
   source = var.lambda_api_zip
   etag   = filemd5(var.lambda_api_zip)
 }
 
-resource "aws_s3_bucket_object" "santa_api_authorizer_source" {
+resource "aws_s3_object" "santa_api_authorizer_source" {
   bucket = local.lambda_source_bucket
   key    = local.lambda_authorizer_source_key
   source = var.lambda_authorizer_zip
   etag   = filemd5(var.lambda_authorizer_zip)
+}
+
+# The source zips were aws_s3_bucket_object resources (deprecated). The AWS provider cannot move state from that type
+# to aws_s3_object, and import blocks only work in a root module, so the old resources are dropped from the state
+# without deleting the objects, and aws_s3_object uploads each zip again under its content-addressed key: the same
+# bytes at the same key, so no Lambda function changes. See docs/deploy.md, "Upgrading an existing deployment".
+removed {
+  from = aws_s3_bucket_object.santa_api_source
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_s3_bucket_object.santa_api_authorizer_source
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_s3_bucket_object.ranker_source
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 
@@ -42,8 +70,8 @@ module "health_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "health"
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
@@ -62,8 +90,8 @@ module "xsrf_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "xsrf"
   api_gateway_execution_arn = aws_api_gateway_rest_api.api_gateway.execution_arn
@@ -79,8 +107,8 @@ module "preflight_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "preflight"
   lambda_memory_size        = 256
@@ -100,8 +128,8 @@ module "eventupload_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "eventupload"
   lambda_memory_size        = 256
@@ -129,8 +157,8 @@ module "ruledownload_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "ruledownload"
   lambda_memory_size        = 512
@@ -150,8 +178,8 @@ module "postflight_function" {
   prefix                    = var.prefix
   region                    = var.region
   alias_name                = var.stage_name
-  lambda_source_bucket      = aws_s3_bucket_object.santa_api_source.bucket
-  lambda_source_key         = aws_s3_bucket_object.santa_api_source.key
+  lambda_source_bucket      = aws_s3_object.santa_api_source.bucket
+  lambda_source_key         = aws_s3_object.santa_api_source.key
   lambda_source_hash        = local.lambda_source_hash
   endpoint                  = "postflight"
   lambda_memory_size        = 512

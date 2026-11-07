@@ -3,9 +3,10 @@ package firehose
 import (
 	"context"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/firehose"
+	"fmt"
+
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/firehose"
 )
 
 type FirehoseClient interface {
@@ -20,14 +21,28 @@ type ContextClient interface {
 
 type client struct {
 	firehoseStreamName string
-	firehoseService    *firehose.Firehose
+	firehoseService    *firehose.Client
 }
 
-func GetClient(firehoseStreamName string, awsregion string) FirehoseClient {
-	sess := session.Must(session.NewSession())
-
-	return client{
-		firehoseStreamName: firehoseStreamName,
-		firehoseService:    firehose.New(sess, aws.NewConfig().WithRegion(awsregion)),
+// NewClient returns a client of the stream, built from the default AWS configuration (so AWS_ENDPOINT_URL_* and the
+// usual credential sources apply), or an error if that configuration cannot be loaded.
+func NewClient(streamName string, awsregion string) (ContextClient, error) {
+	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(awsregion))
+	if err != nil {
+		return nil, fmt.Errorf("unable to load the AWS configuration for Firehose: %w", err)
 	}
+	return client{
+		firehoseStreamName: streamName,
+		firehoseService:    firehose.NewFromConfig(cfg),
+	}, nil
+}
+
+// GetClient is NewClient for callers that cannot handle the error: it panics if the configuration cannot be loaded.
+// Lambdas use NewClient so that Boot reports the error.
+func GetClient(streamName string, awsregion string) FirehoseClient {
+	c, err := NewClient(streamName, awsregion)
+	if err != nil {
+		panic(err)
+	}
+	return c
 }

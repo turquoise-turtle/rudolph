@@ -98,7 +98,7 @@ func (r RuleType) MarshalDynamoDBAttributeValue() (awstypes.AttributeValue, erro
 	case RuleTypeCDHash:
 		s = "5"
 	default:
-		return nil, fmt.Errorf("unknown rule_type value %q", r)
+		return nil, fmt.Errorf("unknown rule_type value %d", r)
 	}
 	return &awstypes.AttributeValueMemberN{Value: s}, nil
 }

@@ -6,7 +6,9 @@ package audit_test
 // first, across days, honouring since and limit.
 
 import (
+	"encoding/base64"
 	"errors"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -123,5 +125,28 @@ func TestListPage(t *testing.T) {
 	}
 	if _, _, err := audit.ListPage(client, base.Add(-72*time.Hour), 2, "garbage"); !errors.Is(err, audit.ErrInvalidCursor) {
 		t.Errorf("a garbage cursor: %v, want ErrInvalidCursor", err)
+	}
+}
+
+// From the review of fix/sdk-v2-audit-paging: a well-formed cursor dated far in the future is refused rather than
+// walked back day by day, and a huge limit does not overflow into an empty page.
+func TestListPage_RefusesFarFutureCursorsAndHugeLimits(t *testing.T) {
+	ddblocal.Reset(t)
+	client := ddblocal.Client(t)
+	now := time.Now().UTC()
+	if err := audit.Record(fixedClock{now}, client, audit.Entry{Actor: "cli:a@b", Action: "group.create", Target: "group:x", Summary: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	far := base64.RawURLEncoding.EncodeToString([]byte("2262-04-11|9223372036854775807#000000000000"))
+	start := time.Now()
+	if _, _, err := audit.ListPage(client, now.Add(-24*time.Hour), 10, far); !errors.Is(err, audit.ErrInvalidCursor) {
+		t.Errorf("cursor dated 2262: %v, want ErrInvalidCursor", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("refusing a far-future cursor took %v", d)
+	}
+	entries, _, err := audit.ListPage(client, now.Add(-time.Hour), math.MaxInt, "")
+	if err != nil || len(entries) != 1 {
+		t.Errorf("limit MaxInt: %d entries, %v; want the one entry", len(entries), err)
 	}
 }

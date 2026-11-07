@@ -34,12 +34,12 @@ to pick up new settings.
 Pins Terraform and the AWS provider. Use the same constraint as the module (`deployments/terraform_modules/santa_api/_providers.tf`):
 ```
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.10.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 6.0"
+      version = "~> 6.72"
     }
   }
 }
