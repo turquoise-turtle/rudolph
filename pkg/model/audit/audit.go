@@ -182,8 +182,12 @@ var ErrInvalidCursor = errors.New("invalid audit cursor")
 // ErrSinceTooOld is returned by List and ListPage, before any query, for a since earlier than MaxLookback ago
 var ErrSinceTooOld = fmt.Errorf("the audit trail can be listed at most %d days back", int(MaxLookback/(24*time.Hour)))
 
+// lookbackSlack lets a since computed as exactly MaxLookback ago a moment earlier, or across a daylight-saving change
+// (a day back in local time can be 23 or 25 hours), still pass.
+const lookbackSlack = 2 * time.Hour
+
 func checkSince(since time.Time) error {
-	if since.Before(time.Now().Add(-MaxLookback)) {
+	if since.Before(time.Now().Add(-MaxLookback - lookbackSlack)) {
 		return ErrSinceTooOld
 	}
 	return nil
