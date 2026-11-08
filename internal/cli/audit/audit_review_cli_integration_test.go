@@ -52,3 +52,14 @@ func TestAudit_CommandsThatWriteNothingRecordNothing(t *testing.T) {
 		t.Errorf("entries for commands that changed nothing: %+v", got)
 	}
 }
+
+func TestAuditCommand_RefusesASinceBeyondTheLookback(t *testing.T) {
+	ddblocal.Reset(t)
+	out, err := clitest.Run(t, env(), AuditCmd, "", "--since", "3650d")
+	if err == nil {
+		t.Fatalf("--since 3650d accepted:\n%s", out)
+	}
+	if !strings.Contains(err.Error()+out, "days") {
+		t.Errorf("error does not say how far back the audit can be listed: %v\n%s", err, out)
+	}
+}

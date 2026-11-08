@@ -150,3 +150,26 @@ func TestListPage_RefusesFarFutureCursorsAndHugeLimits(t *testing.T) {
 		t.Errorf("limit MaxInt: %d entries, %v; want the one entry", len(entries), err)
 	}
 }
+
+// From the Fable review: a since years in the past would walk one Query per day. List and ListPage refuse a since
+// older than MaxLookback (about 13 months) at once.
+func TestList_RefusesASinceBeyondTheLookback(t *testing.T) {
+	ddblocal.Reset(t)
+	client := ddblocal.Client(t)
+	start := time.Now()
+	if _, err := audit.List(client, time.Now().AddDate(-10, 0, 0), 10); !errors.Is(err, audit.ErrSinceTooOld) {
+		t.Errorf("List since 10 years ago: %v, want ErrSinceTooOld", err)
+	}
+	if _, _, err := audit.ListPage(client, time.Now().AddDate(-10, 0, 0), 10, ""); !errors.Is(err, audit.ErrSinceTooOld) {
+		t.Errorf("ListPage since 10 years ago: %v, want ErrSinceTooOld", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("refusing took %v", d)
+	}
+	if audit.MaxLookback < 365*24*time.Hour {
+		t.Errorf("MaxLookback %v; a year of audit history must stay listable", audit.MaxLookback)
+	}
+	if _, err := audit.List(client, time.Now().Add(-audit.MaxLookback).Add(time.Hour), 10); err != nil {
+		t.Errorf("List just inside the lookback: %v", err)
+	}
+}
