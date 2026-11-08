@@ -7,8 +7,8 @@
 //	SK: <unix nanoseconds, 19 digits>#<random>  sorts by time; the suffix keeps entries of the same instant apart
 //
 // Entries never expire (they carry no ExpiresAfter), are written with a conditional put so one is never overwritten,
-// and are read with List, which queries day partitions from tomorrow (for writers whose clock runs ahead) back and never scans
-// the table, or ListPage, which does the same one page at a time with an opaque cursor. RecordContext, ListContext and
+// and are read with List, which queries day partitions from tomorrow (for writers whose clock runs ahead) back, at most
+// MaxLookback, and never scans the table, or ListPage, which does the same one page at a time with an opaque cursor. RecordContext, ListContext and
 // ListPageContext do the same with a client of the AWS SDK, for programs such as rudolph-web that do not use
 // pkg/dynamodb.
 package audit
@@ -41,6 +41,10 @@ const (
 	// maxPageLimit caps ListPage's limit: a page is for people to read, and it keeps limit+1 from overflowing.
 	maxPageLimit = 1000
 )
+
+// MaxLookback is how far back List and ListPage read. Listing queries one day partition at a time, so a since years
+// ago would cost one Query per day; a little over a year keeps a year of history listable.
+const MaxLookback = 400 * 24 * time.Hour
 
 // Entry is one change recorded in the audit trail
 type Entry struct {
@@ -175,9 +179,23 @@ func RecordContext(ctx context.Context, timeProvider clock.TimeProvider, client 
 // ErrInvalidCursor is returned by ListPage for a cursor it did not make
 var ErrInvalidCursor = errors.New("invalid audit cursor")
 
+// ErrSinceTooOld is returned by List and ListPage, before any query, for a since earlier than MaxLookback ago
+var ErrSinceTooOld = fmt.Errorf("the audit trail can be listed at most %d days back", int(MaxLookback/(24*time.Hour)))
+
+// lookbackSlack lets a since computed as exactly MaxLookback ago a moment earlier, or across a daylight-saving change
+// (a day back in local time can be 23 or 25 hours), still pass.
+const lookbackSlack = 2 * time.Hour
+
+func checkSince(since time.Time) error {
+	if since.Before(time.Now().Add(-MaxLookback - lookbackSlack)) {
+		return ErrSinceTooOld
+	}
+	return nil
+}
+
 // List returns at most limit entries recorded at or after since, newest first. It queries one partition per UTC day,
 // from tomorrow (so that entries from a writer whose clock runs ahead past midnight are not missed) back to the day
-// of since.
+// of since. It refuses a since earlier than MaxLookback ago with ErrSinceTooOld.
 func List(client Reader, since time.Time, limit int) ([]Entry, error) {
 	rows, err := list(client.Query, since, limit, position{})
 	return entries(rows), err
@@ -193,6 +211,7 @@ func ListContext(ctx context.Context, client SDKReader, table string, since time
 // next is "" once there are no more entries. Paging with the same since returns every entry once, newest first, across
 // day partitions. A limit above 1000 is treated as 1000. The cursor is opaque but not signed: it names the last entry
 // returned, and ListPage refuses one it could not have made (malformed, or dated after tomorrow) with ErrInvalidCursor.
+// Like List, it refuses a since earlier than MaxLookback ago with ErrSinceTooOld.
 func ListPage(client Reader, since time.Time, limit int, cursor string) (page []Entry, next string, err error) {
 	return listPage(client.Query, since, limit, cursor)
 }
@@ -253,6 +272,9 @@ func decodeCursor(cursor string) (position, error) {
 }
 
 func listPage(query queryFunc, since time.Time, limit int, cursor string) ([]Entry, string, error) {
+	if err := checkSince(since); err != nil {
+		return nil, "", err
+	}
 	var after position
 	if cursor != "" {
 		var err error
@@ -305,6 +327,9 @@ func entries(rows []item) []Entry {
 
 // list returns at most limit rows at or after since, newest first, starting after the position after
 func list(query queryFunc, since time.Time, limit int, after position) ([]item, error) {
+	if err := checkSince(since); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		return nil, nil
 	}

@@ -266,6 +266,12 @@ func DeleteGroup(client RegistryWriter, name string, force bool) error {
 	return nil
 }
 
+// MembershipChanged records that a Mac's membership changed outside this package, such as when `machine forget` deletes
+// its Groups row, so that readers that cache membership see it. It does nothing when there is no group registry.
+func MembershipChanged(client dynamodb.UpdateExpressionAPI) error {
+	return bumpMembershipVersion(client)
+}
+
 // bumpMembershipVersion records that assigned membership changed
 func bumpMembershipVersion(client dynamodb.UpdateExpressionAPI) error {
 	_, err := client.UpdateItemExpression(registryKey(), "ADD #m :one", "attribute_exists(PK)",

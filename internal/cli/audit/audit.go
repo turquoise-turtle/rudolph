@@ -25,7 +25,8 @@ var AuditCmd = &cobra.Command{
 	Long: `Show the audit trail: every change the CLI (and rudolph-web) made to rules, configuration, groups or machines,
 with its time (UTC and local), actor, action, target and summary, newest first. Entries are kept forever.
 
---since takes a duration back from now ("7d", "36h", "90m") or an RFC 3339 time ("2026-11-01T00:00:00+11:00").`,
+--since takes a duration back from now ("7d", "36h", "90m") or an RFC 3339 time ("2026-11-01T00:00:00+11:00"), at
+most 400 days back.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sinceText, _ := cmd.Flags().GetString("since")
@@ -94,6 +95,9 @@ func parseSince(text string, now time.Time) (time.Time, error) {
 	}
 	if since.After(now) {
 		return time.Time{}, fmt.Errorf("--since %q is in the future", text)
+	}
+	if since.Before(now.Add(-modelaudit.MaxLookback)) {
+		return time.Time{}, fmt.Errorf("--since %q: %w", text, modelaudit.ErrSinceTooOld)
 	}
 	return since, nil
 }

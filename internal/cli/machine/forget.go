@@ -167,6 +167,16 @@ func (p *forgetPlan) keys() []dynamodb.PrimaryKey {
 	return append(keys, p.deliveries...)
 }
 
+func (p *forgetPlan) hasGroupsItem() bool {
+	groupsSK := groups.MachineGroupsKey("").SortKey
+	for _, key := range p.machineItems {
+		if key.SortKey == groupsSK {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *forgetPlan) empty() bool {
 	return len(p.keys()) == 0 && p.collected == 0
 }
@@ -226,9 +236,9 @@ func items(n int) string {
 }
 
 // apply deletes what the plan lists. Assigned groups are removed with the writer `rudolph group remove` uses, which
-// records the membership change for readers that cache membership. A run that fails part-way can be run again: it
-// lists what is left.
-// apply deletes what the plan lists. On an error, changed says whether anything may have been changed before it.
+// records the membership change for readers that cache membership; deleting the Groups row records it too, since
+// reported groups alone also make the Mac a member. A run that fails part-way can be run again: it lists what is
+// left. On an error, changed says whether anything may have been changed before it.
 func (p *forgetPlan) apply(client writer) (changed bool, err error) {
 	timeProvider := clock.ConcreteTimeProvider{}
 	for _, group := range p.assigned {
@@ -247,6 +257,11 @@ func (p *forgetPlan) apply(client writer) (changed bool, err error) {
 	if err := client.BatchWriteItems(nil, keys); err != nil {
 		// The deletes are sent 25 at a time, so a failure after the first batch leaves some items deleted
 		return changed || len(keys) > 25, fmt.Errorf("failed to delete the machine's items: %w", err)
+	}
+	if p.hasGroupsItem() {
+		if err := groups.MembershipChanged(client); err != nil {
+			return true, err
+		}
 	}
 	return true, nil
 }
