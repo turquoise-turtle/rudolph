@@ -205,10 +205,10 @@ TIME (UTC)            LOCAL TIME                ACTOR                     ACTION
 2026-11-07T04:11:52Z  2026-11-07 15:11:52 AEDT  cli:admin@admin-mac       rule.add               global                                        BINARY rule abab...abab BLOCKLIST
 ```
 
-- `--since` is how far back to look: a duration back from now (`7d`, `36h`, `90m`) or an RFC 3339 time (`2026-11-01T00:00:00+11:00`). Default `7d`. A time in the future is an error.
+- `--since` is how far back to look: a duration back from now (`7d`, `36h`, `90m`) or an RFC 3339 time (`2026-11-01T00:00:00+11:00`). Default `7d`. A time in the future is an error, and so is one more than 400 days back (the look-back limit, `audit.MaxLookback`): the error gives the limit in days.
 - `--limit` is the most entries to show. Default `100`; when the limit is reached it says so.
 
-It reads one partition per day back to `--since` with Query, never Scan, so a long `--since` costs one small read per day.
+It reads one partition per day back to `--since` with Query, never Scan, so a long `--since` costs one small read per day; the 400-day limit caps that at about 400 reads.
 
 ## Maintenance
 
