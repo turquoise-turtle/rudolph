@@ -63,3 +63,12 @@ func TestAuditCommand_RefusesASinceBeyondTheLookback(t *testing.T) {
 		t.Errorf("error does not say how far back the audit can be listed: %v\n%s", err, out)
 	}
 }
+
+// The documented limit itself works: --since 400d is accepted (Sonnet review: the library's clock check ran a moment
+// later than the CLI's and refused exactly 400 days).
+func TestAuditCommand_AcceptsTheLimitItself(t *testing.T) {
+	ddblocal.Reset(t)
+	if out, err := clitest.Run(t, env(), AuditCmd, "", "--since", "400d"); err != nil {
+		t.Errorf("--since 400d: %v\n%s", err, out)
+	}
+}
