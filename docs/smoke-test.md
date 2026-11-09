@@ -393,7 +393,7 @@ Success:
 1. to 3. `200`, and a body that starts with `{` and is readable JSON (not base64 such as `eyJ...`), containing `"client_mode":"MONITOR"`, `"sync_type":"clean"` (this machine reports no rules, so every preflight is a clean sync), and `"allowed_path_regex":""` and `"blocked_path_regex":""` (Santa 2026.9 gets empty strings).
 4. `415`.
 
-If 1. answers 400, request bodies are not reaching the handler intact; if 1. to 3. answer 200 with a base64 body, the response direction is wrong and Santa will fail to parse every response. Either one stops the deployment: record it and go to [If something fails](#if-something-fails); if it cannot be fixed, tear down (step 15).
+If 1. answers 400 with `{"error":"Invalid request body"}`, the deployed Rudolph predates the fix for API Gateway decompressing the body itself (2026-11-09: pull, `make build`, `make justdeploy`); if it still answers 400 after that, request bodies are not reaching the handler intact; if 1. to 3. answer 200 with a base64 body, the response direction is wrong and Santa will fail to parse every response. Either one stops the deployment: record it and go to [If something fails](#if-something-fails); if it cannot be fixed, tear down (step 15).
 
 Capture: the four results and the preflight log lines (`aws logs tail "/aws/lambda/${PREFIX}_rudolph_preflight" --since 10m --region "$REGION"`).
 
@@ -929,7 +929,7 @@ Firing alarms on purpose is safe in production: nothing acts on them except the 
 List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_rudolph_" --region "$REGION" --query 'MetricAlarms[].[AlarmName,StateValue]' --output table`. Expect six, all `OK` or `INSUFFICIENT_DATA`.
 
 - **No `lambda_errors` from a wrong token.** The request in 3.4 with `Bearer wrong` made the authoriser return its `Unauthorized` error, which Lambda counts as a function error. `lambda_errors` leaves the authoriser out, so it must not fire. Check that the authoriser's `Errors` metric shows the error for that minute, and that `lambda_errors` stayed `OK` or `INSUFFICIENT_DATA` (`aws cloudwatch describe-alarm-history --alarm-name "${PREFIX}_rudolph_lambda_errors" --history-item-type StateUpdate --region "$REGION"` shows no change to `ALARM`). If it did fire, record it.
-- **`request_too_large`**, for real: a body that decompresses to more than 6 MiB. It is refused before anything is written.
+- **`request_too_large`**: a body that decompresses to more than 6 MiB. Through API Gateway this no longer reaches Rudolph: API Gateway decompresses the body itself, and the result is larger than Lambda's 6 MB invocation payload limit, so AWS refuses it before the handler runs, and Rudolph's `request_too_large` metric filter (which reads the handlers' logs) sees nothing. Run it anyway to record how AWS answers.
 
   ```sh
   head -c 7000000 /dev/zero | tr '\0' ' ' | perl -MCompress::Zlib -0777 -ne 'print compress($_)' |
@@ -937,7 +937,7 @@ List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Content-Encoding: deflate' --data-binary @-
   ```
 
-  Success: `413`; the preflight log has `status=413`; within 5 to 10 minutes `prod_rudolph_request_too_large` is `ALARM` (and emails the topic's subscribers), and returns to `OK` later.
+  Expected: a 4xx or 5xx answered by API Gateway (record the status and body), no `status=` line for it in the preflight log, and nothing written. `prod_rudolph_request_too_large` stays `OK`; the request may count towards `api_4xx` or `api_5xx` instead. To check that the alarm itself notifies, set its state by hand as for the other alarms below.
 - **`api_4xx`**, for real: more than 5% of at least `api_4xx_alarm_min_requests` (10) requests in each of two consecutive 5-minute periods answered 4xx. Requests without a token are answered 401 by API Gateway without invoking Lambda:
 
   ```sh
@@ -1175,7 +1175,8 @@ Capture: the deletion protection apply and both destroy outputs.
 | 401 on every sync | `SyncExtraHeaders` value (exactly `Bearer <token>`), the digest in `sync_token_sha256` (`printf '%s'`, not `echo`); `/aws/lambda/prod_rudolph_authorizer` |
 | 400 on preflight | `/aws/lambda/prod_rudolph_preflight`: `preflight: refusing request: ...` names the field over its limit; a machine ID that is not a UUID is logged as `machine=invalid` |
 | 415 | the request's `Content-Type` is not `application/json` |
-| 413 | the body decompresses to more than 6 MiB; the `request_too_large` alarm |
+| 413 | the body decompresses to more than 6 MiB (through API Gateway, AWS usually refuses such a body before Rudolph sees it) |
+| 400 `Invalid request body` on every sync | a Rudolph from before 2026-11-09 behind API Gateway: API Gateway decompresses the body but keeps the `Content-Encoding` header; pull, `make build`, `make justdeploy` |
 | 500 from any handler | the handler's log group: the line before `status=500` is `internal server error: "..."` with the cause |
 | 502 or 504 | the handler timed out or crashed: `Task timed out` or a panic in its log group; `lambda_timeouts` |
 | Sync succeeds but no events | the sync was clean (no events then), or eventupload answered 500 (events table write failed: IAM `prod_rudolph_events_write_policy`, throttling) |

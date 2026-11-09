@@ -40,7 +40,28 @@ func DecodeBody(request events.APIGatewayProxyRequest) ([]byte, error) {
 		body = decoded
 	}
 
-	return decompressBody(Header(request, "Content-Encoding"), body)
+	encoding := Header(request, "Content-Encoding")
+	if alreadyDecompressed(encoding, body) {
+		// API Gateway (REST API) decompresses a body sent with Content-Encoding deflate or gzip before invoking the
+		// Lambda, but passes the header on unchanged (found in the first production deployment): the body is
+		// already the plain JSON. Checked before decompressing, because a raw deflate decoder fed plain bytes may not
+		// fail. Corrupt compressed data is not valid JSON and still goes to decompressBody, which refuses it.
+		if len(body) > MaxBodySize {
+			return nil, ErrBodyTooLarge
+		}
+		return body, nil
+	}
+	return decompressBody(encoding, body)
+}
+
+// alreadyDecompressed reports whether a body whose header claims a compression encoding is in fact plain JSON. Every
+// sync request is JSON; a zlib, gzip or raw deflate stream is practically never valid JSON.
+func alreadyDecompressed(contentEncoding string, body []byte) bool {
+	switch strings.ToLower(strings.TrimSpace(contentEncoding)) {
+	case "deflate", "gzip", "x-gzip":
+		return json.Valid(body)
+	}
+	return false
 }
 
 // GetBody is DecodeBody with the API response to return when the body cannot be decoded.

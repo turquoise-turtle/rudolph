@@ -170,6 +170,8 @@ Postflight applies the same kind of check to what it stores: `sync_type` must be
 `CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
 limited to 6 MiB after decompression (HTTP 413 above that).
 
+Compressed request bodies: Santa sends `Content-Encoding: deflate` (zlib) by default, or `gzip`. API Gateway (REST API) decompresses such a body itself before invoking the Lambda but passes the `Content-Encoding` header on unchanged, so the handler receives plain JSON (base64 encoded, as `application/json` is a binary media type) under a header that still says it is compressed. `pkg/request.DecodeBody` therefore accepts a body whose header names deflate or gzip but which is valid JSON as it is, and decompresses only a body that is not (which is what a direct invocation, the tests or another front end send). Corrupt compressed data is refused with 400. A body that does not decompress at API Gateway is answered 415 by API Gateway without invoking the Lambda. In practice the 6 MiB check is reached only without API Gateway: through it, a larger body exceeds Lambda's 6 MB invocation payload limit (the base64 event is larger still) and is refused by AWS before the handler runs.
+
 Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
 and media type are matched case-insensitively and parameters are allowed, so `content-type: Application/JSON;
 charset=UTF-8` is accepted.
