@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -122,6 +123,13 @@ func (s *Server) Use(t *testing.T) {
 		"AWS_SECRET_ACCESS_KEY":     "fake",
 		"AWS_REGION":                "us-east-1",
 		"AWS_EC2_METADATA_DISABLED": "true",
+		// Hermetic regardless of the operator's shell (the runbook exports AWS_PROFILE): no profile, no shared
+		// config or credentials file, no session token, so the SDK uses exactly the fake credentials above.
+		"AWS_PROFILE":                 "",
+		"AWS_DEFAULT_PROFILE":         "",
+		"AWS_SESSION_TOKEN":           "",
+		"AWS_CONFIG_FILE":             filepath.Join(t.TempDir(), "config"),
+		"AWS_SHARED_CREDENTIALS_FILE": filepath.Join(t.TempDir(), "credentials"),
 	} {
 		t.Setenv(k, v)
 	}
