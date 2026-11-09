@@ -39,8 +39,12 @@ func outputSource(t *testing.T, files []tfFile, dirSuffix, name string) string {
 	return ""
 }
 
+var hclComment = regexp.MustCompile(`(?m)\s*(#|//).*$`)
+
+// requireAll checks that src, without its comments, mentions every want.
 func requireAll(t *testing.T, what, src string, wants ...string) {
 	t.Helper()
+	src = hclComment.ReplaceAllString(src, "")
 	for _, want := range wants {
 		if !strings.Contains(src, want) {
 			t.Errorf("%s does not include %s, so changing it would not redeploy the API:\n%s", what, want, src)
@@ -68,9 +72,20 @@ func TestAPIGW_RedeploymentTriggersCoverSettingsThatNeedARedeploy(t *testing.T) 
 
 	// Every gateway response, by its configured attributes.
 	for _, b := range blocks(files, "resource", "aws_api_gateway_gateway_response") {
-		requireAll(t, "the deployment's triggers", triggers, "aws_api_gateway_gateway_response."+b.Labels[1]+",")
+		requireAll(t, "the deployment's triggers", triggers, "aws_api_gateway_gateway_response."+b.Labels[1])
 	}
 	requireAll(t, "the deployment's triggers", triggers, "response_type", "status_code", "response_templates")
+
+	// Every model, by its content: the routes refer to models by name, which does not change when the schema does.
+	for _, b := range blocks(files, "resource", "aws_api_gateway_model") {
+		requireAll(t, "the deployment's triggers", triggers, "aws_api_gateway_model."+b.Labels[1])
+	}
+	requireAll(t, "the deployment's triggers", triggers, "content_type", "schema")
+
+	// A route renamed or moved keeps its resource ID (path_part and parent_id are updated in place).
+	requireAll(t, "the route hash (rest_api integration_shas)",
+		outputSource(t, files, "modules/rest_api/_outputs.tf", "integration_shas"),
+		"path_part", "parent_id")
 
 	requireAll(t, "the integration hash (api_resource integration_sha)",
 		outputSource(t, files, "api_resource", "integration_sha"),
