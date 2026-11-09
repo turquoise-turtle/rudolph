@@ -9,7 +9,7 @@ For the first deployment to a real AWS account, follow the [first production dep
 You will only need to do this stuff once.
 
 ### Golang
-You will need Go 1.27 or later (the `go` directive in `go.mod`; `go.mod` also names the `toolchain` the builds were tested with, which `go` downloads if yours is older) installed. Go get it from [the golang website](https://golang.org/dl/).
+You will need Go 1.27 or later (the `go` directive in `go.mod`; `go.mod` also names the `toolchain` the builds were tested with, which `go` downloads if yours is older) installed, for `make plan` as well as `make deploy`: both check the environment with Go before running Terraform. Go get it from [the golang website](https://golang.org/dl/).
 
 ### Amazon Web Services
 You will need an AWS account handy, as well as an IAM role with sufficient privileges.
@@ -443,7 +443,7 @@ This applies to every existing deployment. `make init-env` copies the example en
 - has no `module "santa_api"` block, or its block does not set an argument the example's `main.tf` sets (`source` and `version`, which choose where the module comes from, are not compared);
 - sets a value in `config.auto.tfvars.json`, another `*.auto.tfvars.json` file or `terraform.tfvars.json` that it does not declare.
 
-Variables and module arguments of your own that the example does not have are allowed. `make tf-init` and `make destroy` are not checked. To fix a refused environment, compare it with the example:
+Variables and module arguments of your own that the example does not have are allowed, and module arguments set in override files (`override.tf`, `*_override.tf`, `override.tf.json`, `*_override.tf.json`) count, as Terraform merges them in. Apart from those override files, the check reads `.tf` files only, not `.tf.json`, and only JSON variable files, not `.tfvars` ones. Like Terraform, it skips hidden files (names starting with `.`), backup files ending in `~` and lock files named `#...#`, and the `"//"` comment key in JSON variable files. `make tf-init` and `make destroy` are not checked. The check runs with Go, so `make plan` now needs Go installed, as `make deploy` already did. To fix a refused environment, compare it with the example:
 
 ```
 diff -u deployments/environments/example/main.tf deployments/environments/$ENV/main.tf
