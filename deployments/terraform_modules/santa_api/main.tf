@@ -6,7 +6,7 @@ resource "aws_api_gateway_rest_api" "api_gateway" {
   description = "Rudolph's REST API Gateway"
 
   # If allowed_inbound_ips are set, then use the API IAM resource policy else leave this to a null resource
-  policy = length(var.allowed_inbound_ips) != 0 ? data.aws_iam_policy_document.api_resource_policy.json : null
+  policy = local.rest_api_policy
 
   endpoint_configuration {
     types = ["REGIONAL"] # FIXME (derek.wang) Switch to PRIVATE later and attach some VPCs
@@ -27,6 +27,8 @@ resource "aws_api_gateway_rest_api" "api_gateway" {
 
 locals {
   mtls_enabled = var.mtls_truststore_uri != ""
+
+  rest_api_policy = length(var.allowed_inbound_ips) != 0 ? data.aws_iam_policy_document.api_resource_policy.json : null
 }
 
 ##########################
@@ -46,7 +48,22 @@ resource "aws_api_gateway_deployment" "api_deployment" {
 
   triggers = {
     redeployment = join(",", [
-      sha1(jsonencode(aws_api_gateway_rest_api.api_gateway)),
+      # REST API settings that need a redeployment, from configuration: the whole resource includes attributes AWS
+      # computes after apply, and hashing it replaced the deployment on every apply.
+      sha1(jsonencode([
+        aws_api_gateway_rest_api.api_gateway.binary_media_types,
+        aws_api_gateway_rest_api.api_gateway.api_key_source,
+        aws_api_gateway_rest_api.api_gateway.disable_execute_api_endpoint,
+        local.rest_api_policy,
+      ])),
+      # Gateway responses also only reach clients through a new deployment.
+      sha1(jsonencode([for response in [
+        aws_api_gateway_gateway_response.unauthorized,
+        aws_api_gateway_gateway_response.authorization_configuration_error,
+        aws_api_gateway_gateway_response.access_denied,
+        aws_api_gateway_gateway_response.default_5xx,
+        aws_api_gateway_gateway_response.missing_authentication_token,
+      ] : [response.response_type, response.status_code, response.response_templates]])),
       module.rudolph_api_authorizer.api_gateway_authorizer_sha,
       module.health_api.integration_shas,
       module.ruledownload_api.integration_shas,
