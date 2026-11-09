@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -187,8 +188,9 @@ func updateConfig(
 		if eerr != nil {
 			return fmt.Errorf("failed to read the current configuration of the machine: %w", eerr)
 		}
-		if mode, active := current.TemporaryClientModeAt(time.Now()); active {
-			runningTemporaryMode = fmt.Sprintf("\nWarning: the machine is in temporary %s mode until %s. Its new client mode applies only after that; end the temporary mode now with --%s.\n", clientModeName(mode), formatTemporaryModeEnd(current.TemporaryClientModeEnd()), flagEndTemporaryMode)
+		now := time.Now()
+		if mode, active := current.TemporaryClientModeAt(now); active {
+			runningTemporaryMode = fmt.Sprintf("\nWarning: the machine is in temporary %s mode until %s. Its new client mode applies only after that; end the temporary mode now with --%s.\n", clientModeName(mode), clitime.Expiry(current.TemporaryClientModeEnd(), now), flagEndTemporaryMode)
 		}
 	}
 

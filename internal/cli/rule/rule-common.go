@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
@@ -175,7 +176,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
 	if !tf.IsGlobal {
-		fmt.Println("  Expires:     ", expiryText(expires))
+		fmt.Println("  Expires:     ", clitime.Expiry(expires, timeProvider.Now()))
 	}
 	printRuleOptions(options)
 	fmt.Println("")
@@ -194,7 +195,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	if tf.IsGlobal {
 		fmt.Printf("Added %s %s rule %s for every machine\n", policyDescription, ruleTypeDescription, identifier)
 	} else {
-		fmt.Printf("Added %s %s rule %s for machine %s, expires %s\n", policyDescription, ruleTypeDescription, identifier, machineID, expiryText(expires))
+		fmt.Printf("Added %s %s rule %s for machine %s, expires %s\n", policyDescription, ruleTypeDescription, identifier, machineID, clitime.Expiry(expires, timeProvider.Now()))
 	}
 	// The new row replaced any earlier one without its CollectAllowedEvents flag
 	indexMachineID := ""
@@ -205,7 +206,7 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	if tf.IsGlobal {
 		return flags.Record(client, "rule.add", flags.GlobalTarget, ruleSummary(ruleType, identifier, policy, ""))
 	}
-	return flags.Record(client, "rule.add", flags.MachineTarget(machineID), ruleSummary(ruleType, identifier, policy, "expires "+expiryText(expires)))
+	return flags.Record(client, "rule.add", flags.MachineTarget(machineID), ruleSummary(ruleType, identifier, policy, "expires "+auditExpiryText(expires)))
 }
 
 // ruleSummary describes a rule for the audit trail, e.g. "BINARY rule ab12... BLOCKLIST"; extra is appended after a
@@ -222,8 +223,9 @@ func ruleSummary(ruleType types.RuleType, identifier string, policy types.Policy
 	return summary
 }
 
-// expiryText formats when a machine rule expires; the zero time is never
-func expiryText(expires time.Time) string {
+// auditExpiryText formats when a machine rule expires for an audit record summary: plain UTC, because the summary is
+// stored and read later from anywhere. The zero time is never.
+func auditExpiryText(expires time.Time) string {
 	if expires.IsZero() {
 		return "never"
 	}

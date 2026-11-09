@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
@@ -103,7 +104,7 @@ func applyTemporaryMode(store machineconfiguration.TemporaryClientModeStore, rec
 	}
 
 	modeText := clientModeName(request.mode)
-	fmt.Printf("Temporary client mode for machine %s: %s until %s.\n", machineID, modeText, formatTemporaryModeEnd(request.expires))
+	fmt.Printf("Temporary client mode for machine %s: %s until %s.\n", machineID, modeText, clitime.Expiry(request.expires, now))
 	fmt.Println("The machine's own client mode is left as it is. The Mac switches at its next sync and returns to its usual mode at its first sync after the end (each up to its sync interval later).")
 	if machineconfiguration.RequiresGlobalLockdownConfirmation(request.mode) {
 		fmt.Printf("Warning: in %s mode Santa blocks unknown binaries on this Mac.\n", modeText)
@@ -167,17 +168,12 @@ func printTemporaryMode(writer io.Writer, config machineconfiguration.MachineCon
 	mode := clientModeName(config.TemporaryClientMode)
 	switch _, active := config.TemporaryClientModeAt(now); {
 	case active:
-		fmt.Fprintf(writer, "TemporaryClientMode:\t %s until %s (sent to Santa instead of ClientMode)\n", mode, formatTemporaryModeEnd(config.TemporaryClientModeEnd()))
+		fmt.Fprintf(writer, "TemporaryClientMode:\t %s until %s (sent to Santa instead of ClientMode)\n", mode, clitime.Expiry(config.TemporaryClientModeEnd(), now))
 	case config.TemporaryClientModeExpiresAt <= 0:
 		fmt.Fprintf(writer, "TemporaryClientMode:\t %s without an end (ignored)\n", mode)
 	default:
-		fmt.Fprintf(writer, "TemporaryClientMode:\t %s, ended %s (ignored)\n", mode, formatTemporaryModeEnd(config.TemporaryClientModeEnd()))
+		fmt.Fprintf(writer, "TemporaryClientMode:\t %s, ended %s (ignored)\n", mode, clitime.Since(config.TemporaryClientModeEnd(), now))
 	}
-}
-
-// formatTemporaryModeEnd shows the end of a temporary mode in local time and in UTC
-func formatTemporaryModeEnd(end time.Time) string {
-	return fmt.Sprintf("%s (%s)", end.Local().Format("2006-01-02 15:04:05 MST"), end.UTC().Format(time.RFC3339))
 }
 
 // clientModeName names a client mode, or shows the number of one that is not known

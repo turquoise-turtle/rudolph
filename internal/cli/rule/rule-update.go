@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
@@ -140,7 +141,7 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 	// An update cannot bring back a rule that has expired (and that DynamoDB has not deleted yet): it would look
 	// successful and change nothing on any Mac.
 	if row.ExpiresAfter != 0 && row.ExpiresAfter <= rh.timeProvider.Now().Unix() {
-		return nil, fmt.Errorf("the rule %s of machine %s expired at %s; create it again with --expires or --permanent", sortKey, machineID, time.Unix(row.ExpiresAfter, 0).UTC().Format(time.RFC3339))
+		return nil, fmt.Errorf("the rule %s of machine %s has expired (%s); create it again with --expires or --permanent", sortKey, machineID, clitime.Expiry(time.Unix(row.ExpiresAfter, 0), rh.timeProvider.Now()))
 	}
 	existing := &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents, machineRow: row,
 		removing: row.DeleteOnNextSync || row.Policy == types.RulePolicyRemove}
@@ -150,7 +151,7 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 	return existing, nil
 }
 
-func printRule(heading, machineID, suffix string, rule rules.SantaRule, description string, global bool, expires time.Time, collecting bool) {
+func printRule(heading, machineID, suffix string, rule rules.SantaRule, description string, global bool, expires time.Time, collecting bool, now time.Time) {
 	policyDescription, _ := rule.Policy.MarshalText()
 	ruleTypeDescription, _ := rule.RuleType.MarshalText()
 	fmt.Println(heading)
@@ -160,7 +161,7 @@ func printRule(heading, machineID, suffix string, rule rules.SantaRule, descript
 	fmt.Println("  RuleType:    ", rule.RuleType, "  (", string(ruleTypeDescription), ")")
 	fmt.Println("  Description: ", description)
 	if !global {
-		fmt.Println("  Expires:     ", expiryText(expires))
+		fmt.Println("  Expires:     ", clitime.Expiry(expires, now))
 	}
 	printRuleOptions([]rules.RuleOption{
 		rules.WithCustomMessage(rule.CustomMessage),
@@ -235,9 +236,9 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 		return nil
 	}
 
-	printRule("The current rule:", machineID, suffix, current.rule, current.description, tf.IsGlobal, current.expires, current.collecting)
+	printRule("The current rule:", machineID, suffix, current.rule, current.description, tf.IsGlobal, current.expires, current.collecting, rh.timeProvider.Now())
 	fmt.Println("")
-	printRule("Updating the rule to:", machineID, suffix, updated, current.description, tf.IsGlobal, expires, collecting)
+	printRule("Updating the rule to:", machineID, suffix, updated, current.description, tf.IsGlobal, expires, collecting, rh.timeProvider.Now())
 	if collectionChanged && collecting {
 		warnIfAllEventUploadOff(rh.dynamodbClient)
 	}
@@ -255,7 +256,7 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 		changes = append(changes, "rule options changed")
 	}
 	if !expires.Equal(current.expires) {
-		changes = append(changes, "expires "+expiryText(expires))
+		changes = append(changes, "expires "+auditExpiryText(expires))
 	}
 	if collectionChanged {
 		changes = append(changes, fmt.Sprintf("collect allowed events %t", collecting))
@@ -309,7 +310,7 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 	if tf.IsGlobal {
 		fmt.Printf("Updated global rule %s\n", current.key.SortKey)
 	} else {
-		fmt.Printf("Updated rule %s of machine %s, expires %s\n", current.key.SortKey, machineID, expiryText(expires))
+		fmt.Printf("Updated rule %s of machine %s, expires %s\n", current.key.SortKey, machineID, clitime.Expiry(expires, rh.timeProvider.Now()))
 	}
 	return flags.Record(rh.dynamodbClient, "rule.update", target, summary)
 }
