@@ -22,3 +22,6 @@ ENV=prod rudolph config update --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' 
 ENV=prod rudolph group add --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' 'eng' --yes
 ENV=prod rudolph rule deny -t signingid -i 'EQHXZ8M8AV:com.google.GeminiMacOS' --ungrouped --yes
 ENV=prod rudolph rule deny -t signingid -i 'platform:com.apple.Terminal' --global --yes
+ENV=prod rudolph rule allow -t signingid -i 'EQHXZ8M8AV:com.google.GeminiMacOS' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --expires 24h --yes
+ENV=prod rudolph rule allow -t teamid -i 'ABCDE12345' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --expires 24h --yes
+ENV=prod rudolph rule allow -t cdhash -i 'ffeeddccbbaa99887766554433221100ffeeddcc' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --expires 24h --yes
