@@ -47,14 +47,14 @@ So for a group that grants privilege, or whose blocks must stick, create it with
 
 ### Example: groups from Jamf Pro attributes
 
-Jamf Pro substitutes payload variables (see "Payload Variables for Configuration Profiles" in Jamf Pro's documentation) such as `$DEPARTMENT`, `$ROOM` and `$BUILDINGNAME` into configuration profiles, so a Mac's inventory attributes can become its reported groups. Two ways to do it:
+Jamf Pro substitutes payload variables (see "Payload Variables for Configuration Profiles" in Jamf Pro's documentation) such as `$DEPARTMENTNAME`, `$ROOM` and `$BUILDINGNAME` into configuration profiles, so a Mac's inventory attributes can become its reported groups. Two ways to do it:
 
 **In the Santa profile (recommended).** Add `MachineOwnerGroups` to the `com.northpolesec.santa` payload:
 
 ```xml
 <key>MachineOwnerGroups</key>
 <array>
-	<string>$DEPARTMENT</string>
+	<string>$DEPARTMENTNAME</string>
 	<string>$ROOM</string>
 </array>
 ```
@@ -69,7 +69,7 @@ A local administrator cannot change a configuration profile, so this membership 
 <string>$USERNAME</string>
 <key>Groups</key>
 <array>
-	<string>$DEPARTMENT</string>
+	<string>$DEPARTMENTNAME</string>
 	<string>$ROOM</string>
 </array>
 ```
