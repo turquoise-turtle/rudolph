@@ -23,7 +23,7 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
 - Rule types: `binary` (`bin`), `certificate` (`cert`), `teamid`, `signingid`, `cdhash`. Policies: `allowlist`, `blocklist`, `silent_blocklist`, `silent_gui_blocklist`, `silent_tty_blocklist`, `cel`, `remove`.
 - Commands that write rules check the local clock against DynamoDB's first (see [rules.md](rules.md)).
-- **Times.** Rule expiries, temporary client mode ends and sync times are printed in UTC, in local time and relative to now, e.g. `Expires: 2026-11-09T11:21:42Z (2026-11-09 22:21 AEDT local, in 2h 0m)`; an end that has passed shows as `expired 5m ago`, and a machine rule without an expiry as `never`. Audit summaries are stored, so they keep plain UTC.
+- **Times.** Rule expiries, temporary client mode ends and sync times are printed in UTC, in local time and relative to now, e.g. `Expires: 2026-11-09T11:21:42Z (2026-11-09 20:21 JST local, in 2h 0m)`; an end that has passed shows as `expired 5m ago`, and a machine rule without an expiry as `never`. Audit summaries are stored, so they keep plain UTC.
 - **Audit trail.** Every change a command writes is also recorded in the [audit trail](#the-audit-trail), after the write succeeds. A dry run or a declined prompt records nothing.
 
 ## Rules
@@ -202,8 +202,8 @@ Configuration summaries list the settings changed (`ClientMode=LOCKDOWN, BatchSi
 
 ```
 TIME (UTC)            LOCAL TIME                ACTOR                     ACTION                 TARGET                                        SUMMARY
-2026-11-07T04:12:09Z  2026-11-07 15:12:09 AEDT  cli:admin@admin-mac       config.temporary-mode  machine:AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA  temporary client mode LOCKDOWN until 2026-11-07T05:12:09Z
-2026-11-07T04:11:52Z  2026-11-07 15:11:52 AEDT  cli:admin@admin-mac       rule.add               global                                        BINARY rule abab...abab BLOCKLIST
+2026-11-07T04:12:09Z  2026-11-07 13:12:09 JST   cli:admin@admin-mac       config.temporary-mode  machine:AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA  temporary client mode LOCKDOWN until 2026-11-07T05:12:09Z
+2026-11-07T04:11:52Z  2026-11-07 13:11:52 JST   cli:admin@admin-mac       rule.add               global                                        BINARY rule abab...abab BLOCKLIST
 ```
 
 - `--since` is how far back to look: a duration back from now (`7d`, `36h`, `90m`) or an RFC 3339 time (`2026-11-01T00:00:00+11:00`). Default `7d`. A time in the future is an error, and so is one more than 400 days back (the look-back limit, `audit.MaxLookback`): the error gives the limit in days.

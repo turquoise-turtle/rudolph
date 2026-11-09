@@ -9,7 +9,7 @@ import (
 
 const localLayout = "2006-01-02 15:04 MST"
 
-// Expiry shows when something ends, e.g. "2026-11-09T11:21:42Z (2026-11-09 22:21 AEDT local, in 2h 0m)"; the zero
+// Expiry shows when something ends, e.g. "2026-11-09T11:21:42Z (2026-11-09 20:21 JST local, in 2h 0m)"; the zero
 // time is never. An end at or before now has expired.
 func Expiry(t, now time.Time) string {
 	if t.IsZero() {
@@ -23,7 +23,7 @@ func Expiry(t, now time.Time) string {
 	return fmt.Sprintf("%s (%s local, %s)", t.UTC().Format(time.RFC3339), t.In(time.Local).Format(localLayout), relative)
 }
 
-// Since shows when something happened, e.g. "2026-11-09T06:02:56Z (2026-11-09 17:02 AEDT local, 26s ago)". A time
+// Since shows when something happened, e.g. "2026-11-09T06:02:56Z (2026-11-09 15:02 JST local, 26s ago)". A time
 // after now (a clock ahead of this one) shows as 0s ago.
 func Since(t, now time.Time) string {
 	return fmt.Sprintf("%s (%s local, %s ago)", t.UTC().Format(time.RFC3339), t.In(time.Local).Format(localLayout), Duration(now.Sub(t)))
