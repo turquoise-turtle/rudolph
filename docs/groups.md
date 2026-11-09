@@ -82,7 +82,7 @@ A local administrator cannot change a configuration profile, so this membership 
 <string>Groups</string>
 ```
 
-`MachineOwnerKey` can point at a key of the same file (`Username` above) if Santa should take the primary user from it too. On a test Mac, `sudo defaults read "/Library/Managed Preferences/com.example.jamfprovariables"` shows the values Jamf substituted. The file is root-owned and Jamf rewrites it, but a local administrator can still edit it between check-ins, so the trust caveat above applies.
+`MachineOwnerKey` can point at a key of the same file (`Username` above) if Santa should take the primary user from it too; `MachineOwner`, if set in the Santa profile, wins over it. Keep every element of the `Groups` array a string: Santa ignores the whole array if any element is not. On a test Mac, `sudo defaults read "/Library/Managed Preferences/com.example.jamfprovariables"` shows the values Jamf substituted. The file is root-owned and Jamf rewrites it, but a local administrator can still edit it between check-ins, so the trust caveat above applies.
 
 Either way:
 
