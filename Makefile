@@ -18,21 +18,29 @@ endif
 
 TERRAFORM_DEPLOYMENTS_ENV_DIR = $(TERRAFORM_DEPLOYMENTS_DIR)/$(ENV)
 
+# make init-env copies the example environment once, so an environment created before a release that added a module
+# variable lacks it, and Terraform plans without the setting and only warns about the value in config.auto.tfvars.json.
+# Stops plan and apply until the environment has every variable and module argument the example has and declares every
+# value its .tfvars.json files set.
+#
+.check-env: .check-args
+	go run ./cmd/envcheck $(TERRAFORM_DEPLOYMENTS_ENV_DIR)
+
 # Default target for `make`; Builds all Rudolph infrastructure and deploys the source code.
 #
 #
-deploy: .check-args test build tf-init justdeploy
+deploy: .check-args .check-env test build tf-init justdeploy
 
 # Performs deploy without running tests or rebuilding the application. This is useful if you just
 # recently already did a build but did not make any code changes, and don't want to repeat the whole
 # process, but you should generally AVOID using this make target unless you know what you're doing.
-justdeploy: .check-args
+justdeploy: .check-args .check-env
 	terraform -chdir=$(TERRAFORM_DEPLOYMENTS_ENV_DIR) apply $(TF_DEFAULT_FLAGS)
 
 # Equivalent of `terraform plan` in the desired environment directory.
 #
 #
-plan: .check-args
+plan: .check-args .check-env
 	terraform -chdir=$(TERRAFORM_DEPLOYMENTS_ENV_DIR) plan $(TF_DEFAULT_FLAGS)
 
 # Equivalent to a `terraform init` in the desired environment directory.
@@ -50,7 +58,7 @@ destroy: tf-init
 # When the API Gateway deployment fails to re-deploy (for whatever reason), you can use this
 # command to force a redeployment
 #
-force-api-redeploy: .check-args
+force-api-redeploy: .check-args .check-env
 	terraform -chdir=$(TERRAFORM_DEPLOYMENTS_ENV_DIR) taint module.santa_api.aws_api_gateway_deployment.api_deployment
 	terraform -chdir=$(TERRAFORM_DEPLOYMENTS_ENV_DIR) apply --target=module.santa_api.aws_api_gateway_deployment.api_deployment $(TF_DEFAULT_FLAGS)
 
@@ -100,4 +108,4 @@ init-env: .check-args
 #
 #
 #
-.PHONY: .check-args deploy tf-init plan destroy deps deps-check build test force-api-redeploy
+.PHONY: .check-args .check-env deploy tf-init plan destroy deps deps-check build test force-api-redeploy
