@@ -64,6 +64,12 @@ resource "aws_api_gateway_deployment" "api_deployment" {
         aws_api_gateway_gateway_response.default_5xx,
         aws_api_gateway_gateway_response.missing_authentication_token,
       ] : [response.response_type, response.status_code, response.response_templates]])),
+      # Routes refer to models by name, which stays the same when a model's schema changes.
+      sha1(jsonencode([for model in [
+        aws_api_gateway_model.machine_config,
+        aws_api_gateway_model.ruledownload,
+        aws_api_gateway_model.preflight_request,
+      ] : [model.name, model.content_type, model.schema]])),
       module.rudolph_api_authorizer.api_gateway_authorizer_sha,
       module.health_api.integration_shas,
       module.ruledownload_api.integration_shas,
