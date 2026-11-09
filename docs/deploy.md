@@ -144,7 +144,7 @@ Scheduler `cron()` expressions have six fields (minutes, hours, day of month, mo
 
 The trade-off of fewer runs:
 
-- **Stale-list warning.** rudolph-web warns that a top list was generated more than 3 hours ago and that the ranker normally runs every hour. Outside the scheduled hours (with the example above, every evening, overnight and all weekend) that warning shows on every top-list page, even though the ranker is healthy.
+- **Stale-list warning.** rudolph-web warns when a top list is older than its `top_list_stale_after` setting (whole hours, default `3h`, which suits the hourly default). With a working-hours schedule, raise it to fit, or the warning shows on every top-list page outside the scheduled hours (with the example above, every evening, overnight and all weekend) although the ranker is healthy. rudolph-web's `docs/deploy.md` gives the figures: with hourly runs from 7am to 5pm on weekdays a list is normally up to 14 hours old overnight and about 62 hours old over a weekend, so `15h` still warns every weekend and `63h` never warns on a healthy schedule.
 - **The 1-day list stops at the last run.** Each list covers events up to the run that built it, so outside the scheduled hours the 1-day list shows the day as it stood at the last run, and the longer windows lag by the same amount. The windows are UTC days whatever the schedule's time zone.
 - **Cost.** The ranker costs little either way (see [costs.md](costs.md)); fewer runs cost proportionally less, about a third with the example above (55 runs a week instead of 168).
 
