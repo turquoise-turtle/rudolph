@@ -26,9 +26,9 @@ Always keep the local `source`. Pointing it at a remote repository (for example 
 deploys whatever is on that repository's default branch instead of the code you built and tested.
 
 ### `_variables.tf`
-Declares the variables that `config.auto.tfvars.json` and `make deploy` provide, and passes them to the module in
-`main.tf`. `make init-env` copies both files from this example; when you upgrade Rudolph, compare them with the example
-to pick up new settings.
+Declares the variables that `config.auto.tfvars.json` and `make deploy` provide, and passes them to the module in `main.tf`. `make init-env` copies both files from this example once; when you upgrade Rudolph, compare them with the example to pick up new settings.
+
+`make plan`, `make deploy`, `make justdeploy` and `make force-api-redeploy` check this first (`go run ./cmd/envcheck deployments/environments/$ENV`) and refuse to run Terraform when the environment lacks a variable the example declares or an argument the example's `module "santa_api"` block sets, or when a `*.auto.tfvars.json` or `terraform.tfvars.json` file sets a value the environment does not declare. Without the check, Terraform only warns "Value for undeclared variable" and plans without the setting. To fix it, compare the files (`diff -u deployments/environments/example/main.tf deployments/environments/$ENV/main.tf`, and the same for `_variables.tf`); copy the example's `main.tf` and `_variables.tf` over yours if you have not customised them, otherwise add what is missing. Variables and module arguments the example does not have are allowed, and variables may be declared in any `.tf` file in the environment.
 
 ### `versions.tf`
 Pins Terraform and the AWS provider. Use the same constraint as the module (`deployments/terraform_modules/santa_api/_providers.tf`):

@@ -435,3 +435,19 @@ This applies to every existing deployment, and needs no action. The API Gateway 
 
 ### 16. Lambda source zips no longer re-uploaded on every apply
 This applies to every existing deployment, and needs no action. The three source zips (`santa_api_source`, `santa_api_authorizer_source`, `ranker_source`) set `etag` to the zip's MD5, but S3's ETag is not the MD5 of an object uploaded in parts (the provider does that for files over 5 MB) or encrypted with SSE-KMS (the source bucket is), so every plan showed them "updated in-place" (`etag` and `version_id`) and every apply uploaded the same bytes again as a new object version. They now use `source_hash`, which Terraform keeps in its state and never compares with S3. If the deployment already had `aws_s3_object` source zips (step 14 done earlier), the first plan after upgrading updates each of the three in place, once, which uploads one more version of each zip; no Lambda function changes. If you are upgrading across step 14 too, the zips are created with `source_hash` and there is no extra update. After that, a plan with an unchanged build shows no changes.
+
+### 17. Environment checked against the example before plan and apply
+This applies to every existing deployment. `make init-env` copies the example environment's `main.tf` and `_variables.tf` once, so an environment created before a release that added a module variable (for example `ranker_schedule_timezone`, step 11) lacks its declaration and module argument. Terraform then only warns "Value for undeclared variable" about the value in `config.auto.tfvars.json`, and plans and applies without the setting. `make plan`, `make deploy`, `make justdeploy` and `make force-api-redeploy` now run `go run ./cmd/envcheck deployments/environments/$ENV` first and refuse to go on when the environment:
+
+- does not declare, in any `.tf` file, a variable the example's `_variables.tf` declares;
+- has no `module "santa_api"` block, or its block does not set an argument the example's `main.tf` sets (`source` and `version`, which choose where the module comes from, are not compared);
+- sets a value in `config.auto.tfvars.json`, another `*.auto.tfvars.json` file or `terraform.tfvars.json` that it does not declare.
+
+Variables and module arguments of your own that the example does not have are allowed. `make tf-init` and `make destroy` are not checked. To fix a refused environment, compare it with the example:
+
+```
+diff -u deployments/environments/example/main.tf deployments/environments/$ENV/main.tf
+diff -u deployments/environments/example/_variables.tf deployments/environments/$ENV/_variables.tf
+```
+
+If the environment has no customisations, copy the example's `main.tf` and `_variables.tf` over it (as in step 2); otherwise add the missing declarations and module arguments by hand. Then run `make plan` again and check the plan picks up the settings.
