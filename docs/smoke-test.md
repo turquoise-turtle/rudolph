@@ -17,6 +17,7 @@ Nothing in it has been run yet: where it predicts AWS behaviour that the tests c
 - **Names.** `ENV` (the environment directory) is `prod`: rudolph-web's pages print commands that start with `ENV=prod rudolph`, so the Rudolph environment must have that name. `prefix` (every resource name) can be `prod` too, or another prefix of your choice if `prod` is taken in this account (step 2.9). rudolph-web has its own `prefix` (`WEB_PREFIX` below), which names its Lambda and SSM parameters; it can equal Rudolph's. `prefix` and `org` end up in S3 bucket names (`<prefix>-<org>-rudolph-source`) and a DNS name, so use lower-case letters, digits and dashes only; the bucket name must be globally unique.
 - **Cost budgets.** The monthly amounts, in US dollars, at which you want to hear about Rudolph's and rudolph-web's spend, and who receives the alerts (steps 2.6 and 4.2).
 - **Alarm notifications.** Whether to create an SNS topic with your email subscribed, so the alarms reach you (step 2.4). Recommended for production.
+- **Editing in rudolph-web.** rudolph-web is deployed read-only (step 4.2). Step 10.2 turns its editing on for a test of the forms; decide then whether to leave it on, and who holds `Rudolph.Admin` if you do.
 - **Afterwards.** If the checks pass, migrate the rest of the fleet (step 14). If there are major issues, tear down (step 15). Step 12 needs at least 2 to 3 days of Cost Explorer data, which can overlap with the first migration stage.
 
 ### 0.2 Shell variables
@@ -46,8 +47,8 @@ Keep captures in `$CAPTURE_DIR`, outside both repositories. They hold the accoun
 
 | Tool | Version | Check |
 |---|---|---|
-| Go | 1.27+ for Rudolph (`go.mod`), 1.26+ for rudolph-web | `go version` |
-| Terraform | 1.10+ (tested with 1.17), provider `hashicorp/aws ~> 6.72` | `terraform version` |
+| Go | 1.27.3 or newer, for both repositories: each `go.mod` has `go 1.27` and `toolchain go1.27.3`, which an older `go` command downloads | `go version` |
+| Terraform | 1.10+ (tested with 1.17), provider `hashicorp/aws ~> 6.72` (both repositories' `versions.tf`) | `terraform version` |
 | AWS CLI | v2 | `aws --version` |
 | Xcode command line tools | for `lipo`, which `scripts/build.sh` uses for the universal CLI | `xcode-select -p` |
 | `zip`, `openssl`, `perl`, `curl` | as shipped with macOS | |
@@ -174,7 +175,7 @@ Capture: the topic ARN, whether this runbook created it, and that the subscripti
 - `api_4xx_alarm_min_requests` `10` instead of 100, and keep it there. The `api_4xx` alarm only counts 5-minute periods with at least this many requests, and a Mac sends about 2 to 3 requests every 5 minutes, so the default of 100 leaves the alarm off for fleets below about 40 Macs. That alarm is the only one that sees a broken sync token (every sync refused with 401) or throttling. With 10, a fleet of about 4 Macs or more is covered; the price is that a handful of scanner requests in a quiet period (a few 401s among a few dozen requests) can fire it now and then. For a small fleet, an occasional false alarm is the better trade than not hearing about a fleet that cannot sync. Raise it once the fleet is large enough that 100 requests per 5 minutes is normal.
 - `monthly_budget_usd` and `budget_alert_emails`: see 2.6. `0` means no budget.
 - `table_deletion_protection` `true` (the default): nothing, `terraform destroy` included, can delete the two DynamoDB tables while it is on. Teardown (step 15) turns it off first.
-- `ranker_schedule_expression` `rate(1 hour)` and `ranker_schedule_timezone` `UTC` (the defaults): the ranker runs every hour, which step 9.1 relies on. Keep the defaults for the smoke test; a working-hours schedule such as `cron(0 8-18 ? * MON-FRI *)` in `America/New_York` can follow afterwards (see [Ranker schedule](deploy.md#ranker-schedule)), at the cost of rudolph-web's stale-list warning outside those hours.
+- `ranker_schedule_expression` `rate(1 hour)` and `ranker_schedule_timezone` `UTC` (the defaults): an EventBridge Scheduler schedule runs the ranker every hour, around the clock, in UTC, which steps 9.1 and 10.1 rely on. Keep the defaults for the smoke test. A working-hours schedule such as `cron(0 8-18 ? * MON-FRI *)` in `America/New_York` can follow once the checks have passed (see [Ranker schedule](deploy.md#ranker-schedule)); when you switch, also raise rudolph-web's `top_list_stale_after` (step 4.2) to fit it, or its top list pages warn of a stale list outside those hours.
 - `enable_s3_logging` is not in the file and defaults to `true`, which creates the access-log bucket that audit item D3 is about (step 11.2). Leave it on.
 
 ### 2.6 Cost budget, before the first apply
@@ -199,7 +200,18 @@ grep '^output' deployments/environments/$ENV/_outputs.tf
 
 If the environment was created before they were added to the example, copy them from `deployments/environments/example/_outputs.tf`.
 
-### 2.8 Test and build
+### 2.8 Check dependencies, test and build
+
+Before the first plan, check both repositories' Go dependencies for known vulnerabilities (rudolph-web is built in step 4.4, but its check belongs here, before anything is deployed):
+
+```sh
+make deps-check 2>&1 | tee "$CAPTURE_DIR/02-deps-check.txt"
+make -C /path/to/rudolph-web deps-check 2>&1 | tee "$CAPTURE_DIR/02-web-deps-check.txt"
+```
+
+Each runs `govulncheck` (the version pinned in its `Makefile`), then lists modules that have a newer version or are deprecated. Success: both print `No vulnerabilities found.` and exit 0. The list of newer or deprecated modules after it is for information only (it includes modules that are never built, such as `github.com/golang/protobuf`) and does not fail the target. If `govulncheck` reports a vulnerability, `make` stops with an error: do not deploy that commit; update the affected module (or the Go toolchain, for a standard library finding), run the tests and the check again, and record what you changed.
+
+Then test and build Rudolph:
 
 ```sh
 make test 2>&1 | tee "$CAPTURE_DIR/02-test.txt" | tail -5
@@ -207,7 +219,7 @@ make build 2>&1 | tee "$CAPTURE_DIR/02-build.txt" | tail -12
 ls -l build/package/ ./rudolph
 ```
 
-Success: tests pass; `build/package/` holds `api_deployment.zip`, `api_authorizer_deployment.zip` and `ranker_deployment.zip`; `./rudolph` is a symlink to the universal macOS CLI. `make deploy` would run the same test and build steps; doing them separately lets you look at the plan before applying.
+Success: tests pass; `build/package/` holds `api_deployment.zip`, `api_authorizer_deployment.zip` and `ranker_deployment.zip`; `./rudolph` is a symlink to the universal macOS CLI. `make deploy` would run the same test and build steps (not `deps-check`); doing them separately lets you look at the plan before applying.
 
 Put the CLI on your `PATH` for this shell, so the commands rudolph-web offers to copy (`ENV=prod rudolph ...`) paste as they are:
 
@@ -230,7 +242,7 @@ Before the first plan, check with read-only commands that nothing in the account
   echo "== REST APIs";            aws apigateway get-rest-apis --region "$REGION" --query "items[?starts_with(name, '${PREFIX}_rudolph')].[id,name]"
   echo "== API custom domains";   aws apigateway get-domain-names --region "$REGION" --query "items[?domainName=='${HOST}'].domainName"
   echo "== IAM roles";            aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}_rudolph')].RoleName"
-  echo "== IAM policies";         aws iam list-policies --scope Local --query "Policies[?starts_with(PolicyName, '${PREFIX}_rudolph') || starts_with(PolicyName, '${PREFIX}_AllowApiGateway')].PolicyName"
+  echo "== IAM policies";         aws iam list-policies --scope Local --query "Policies[?starts_with(PolicyName, '${PREFIX}_rudolph')].PolicyName"
   echo "== CloudWatch alarms";    aws cloudwatch describe-alarms --region "$REGION" --alarm-name-prefix "${PREFIX}_rudolph_" --query 'MetricAlarms[].AlarmName'
   echo "== Scheduler schedules";  aws scheduler list-schedules --region "$REGION" --name-prefix "${PREFIX}_rudolph" --query 'Schedules[].Name'
   echo "== Budgets";              aws budgets describe-budgets --account-id "$(aws sts get-caller-identity --query Account --output text)" --query "Budgets[?BudgetName=='${PREFIX}-rudolph-monthly'].BudgetName"
@@ -277,20 +289,38 @@ grep -E '# module.santa_api.*will be created' "$CAPTURE_DIR/03-plan.txt" | sed '
 wc -l < "$CAPTURE_DIR/03-plan-resources.txt"
 ```
 
-Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. **A first plan must not change or destroy anything:** any `to change` or `to destroy` means the state key already held state (step 1.3); stop and check. Check that the plan holds, by name (with `prefix` `prod`):
+Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. **A first plan must not change or destroy anything:** any `to change` or `to destroy` means the state key already held state (step 1.3); stop and check.
 
-- **DynamoDB** (`module.rule_store`): `aws_dynamodb_table.store` named `prod_rudolph_store`, `PAY_PER_REQUEST`, TTL on `ExpiresAfter`, point-in-time recovery on, `deletion_protection_enabled = true`, server-side encryption with the store KMS key, and five global secondary indexes: `SerialNum_DataType_MachineID`, `DataType_MachineID`, `DataType_SerialKey`, `DataType_HostnameKey`, `GlobalRulePolicy_SK`. `aws_dynamodb_table.events` named `prod_rudolph_events`, same settings, with three indexes: `Fleet_TS`, `Decision_TS`, `TeamID_TS`. The IAM policy `prod_rudolph_events_write_policy` and its attachment to the eventupload role.
-- **KMS:** two keys, both with rotation on: the tables' key (alias `alias/prod-santa-rules-tables-sse`) and the Lambda source bucket's key. The access-log bucket has no key of its own.
-- **Lambda:** `prod_rudolph_health`, `_xsrf`, `_preflight`, `_eventupload`, `_ruledownload`, `_postflight` and `_authorizer`, each `provided.al2023` on `arm64` with an alias named after `stage_name` and a log group with 30 days' retention; `prod_rudolph_ranker` (256 MB, 300 s timeout) with its own role and policy, log group and `aws_lambda_function_event_invoke_config` with 0 retries. The eventupload function's environment has `EVENTS_DYNAMODB_NAME` and `DYNAMODB_NAME`.
-- **EventBridge Scheduler:** `aws_scheduler_schedule.ranker` named `prod_rudolph_ranker` with `schedule_expression = "rate(1 hour)"`, `schedule_expression_timezone = "UTC"`, `flexible_time_window` mode `OFF`, and a target of the `prod_rudolph_ranker` function ARN with `maximum_retry_attempts = 0` and the role `prod_rudolph_ranker_scheduler_role` (path `/rudolph/`, trusted by `scheduler.amazonaws.com` for this account only), whose policy `prod_rudolph_ranker_scheduler_policy` allows only `lambda:InvokeFunction` on that function. No EventBridge rule and no `aws_lambda_permission` for the ranker (each API handler still has its own).
-- **API Gateway:** REST API `prod_rudolph` with `binary_media_types = ["application/json"]` and `api_key_source = "AUTHORIZER"`; the stage `prod`; a deployment; `aws_api_gateway_method_settings.throttling` (`*/*`, 2000/2000, metrics and logging off); a `REQUEST` authorizer with identity source `method.request.header.Authorization`; `GET /health` and `POST /{preflight,eventupload,ruledownload,postflight,xsrf}/{machine_id}`; the custom domain `prod-rudolph.<zone>` with `TLS_1_2`, its base path mapping, the ACM certificate and its DNS validation, and two Route 53 records.
-- **S3:** `prod-<org>-rudolph-source` (versioning, SSE-KMS, SSL-only policy, access logging) with three objects (API, authoriser and ranker zips); `prod-<org>-rudolph-source-logging` with SSE-S3 default encryption (`sse_algorithm = "AES256"`, no KMS key), `aws_s3_bucket_ownership_controls` (`BucketOwnerEnforced`, ACLs disabled) and a bucket policy that lets `logging.s3.amazonaws.com` write the access logs; no `aws_s3_bucket_acl`.
+With the settings in 2.5 (`eventupload_handler` `NONE`, S3 access logging on, a budget above 0, an existing zone, no mTLS), reading `deployments/terraform_modules/santa_api/` gives **N = 148**, all under `module.santa_api`. That figure comes from the code, not from a real plan (no plan has been run against AWS): if N differs, compare `03-plan-resources.txt` with this breakdown and record the difference.
+
+| Part of the module | Resources | Count |
+|---|---|---|
+| Six API handlers (`health`, `xsrf`, `preflight`, `eventupload`, `ruledownload`, `postflight`) | per function: `aws_lambda_function`, `aws_lambda_alias`, `aws_lambda_permission` (API Gateway), `aws_cloudwatch_log_group`, `aws_iam_role`, `aws_iam_role_policy_attachment` (basic execution) | 36 |
+| Authoriser | the same six for `prod_rudolph_authorizer`, plus `aws_api_gateway_authorizer`, its invocation role and that role's inline policy | 9 |
+| Ranker (`ranker.tf`) | `aws_s3_object.ranker_source`, function, log group, role, basic execution attachment, role policy, `aws_lambda_function_event_invoke_config`, `aws_scheduler_schedule`, scheduler role and its policy | 10 |
+| API resources and methods | 11 `aws_api_gateway_resource` (5 route roots, 5 `{machine_id}` children, `health`); for each of the 6 methods an `aws_api_gateway_method`, `aws_api_gateway_integration` and `aws_api_gateway_method_response` | 29 |
+| REST API (`main.tf`, `gateway_response.tf`, `models.tf`) | REST API, stage, deployment, method settings, base path mapping; 5 `aws_api_gateway_gateway_response`; 3 `aws_api_gateway_model` | 13 |
+| Domain (`route53.tf`) | ACM certificate, its validation, the validation record, `aws_api_gateway_domain_name`, the `A` alias record | 5 |
+| Store (`module.rule_store`) | the two tables, KMS key and alias, `prod_rudolph_store_policy` with 4 attachments (health, ruledownload, preflight, postflight), `prod_rudolph_events_write_policy` with 1 attachment (eventupload) | 11 |
+| Lambda source buckets (`module.lambda_source[0]`) | source bucket, its policy, versioning, logging, encryption, KMS key and alias; logging bucket, its policy, versioning, encryption and ownership controls | 12 |
+| Lambda zips (`lambda.tf`) | `aws_s3_object.santa_api_source`, `aws_s3_object.santa_api_authorizer_source` | 2 |
+| Monitoring | 6 alarms; 6 `*_request_too_large` and 8 `*_timeouts` metric filters | 20 |
+| Budget | `aws_budgets_budget.monthly[0]` | 1 |
+
+Check that the plan holds, by name (with `prefix` `prod`):
+
+- **DynamoDB** (`module.rule_store`): `aws_dynamodb_table.store` named `prod_rudolph_store`, `PAY_PER_REQUEST`, TTL on `ExpiresAfter`, point-in-time recovery on, `deletion_protection_enabled = true`, server-side encryption with the store KMS key, and five global secondary indexes, each naming its keys in `key_schema` blocks (no `hash_key` or `range_key` inside an index): `SerialNum_DataType_MachineID`, `DataType_MachineID`, `DataType_SerialKey`, `DataType_HostnameKey`, `GlobalRulePolicy_SK`. `aws_dynamodb_table.events` named `prod_rudolph_events`, same settings (deletion protection included), with three indexes, also in `key_schema` blocks: `Fleet_TS`, `Decision_TS`, `TeamID_TS`. The IAM policy `prod_rudolph_events_write_policy` and its attachment to the eventupload role.
+- **KMS:** two keys, both with rotation on: the tables' key (alias `alias/prod-santa-rules-tables-sse`) and the Lambda source bucket's key (alias `alias/prod-<org>-rudolph-source-s3-sse`). The access-log bucket has no key of its own.
+- **Lambda:** `prod_rudolph_health`, `_xsrf`, `_preflight`, `_eventupload`, `_ruledownload`, `_postflight` and `_authorizer`, each `provided.al2023` on `arm64` with an alias named after `stage_name`, an `aws_lambda_permission` for API Gateway on that alias, a role under the path `/rudolph/` and a log group with 30 days' retention; `prod_rudolph_ranker` (256 MB, 300 s timeout) with its own role and policy, log group and `aws_lambda_function_event_invoke_config` with 0 retries. The eventupload function's environment has `EVENTS_DYNAMODB_NAME` and `DYNAMODB_NAME`.
+- **EventBridge Scheduler:** `aws_scheduler_schedule.ranker` named `prod_rudolph_ranker` with `schedule_expression = "rate(1 hour)"`, `schedule_expression_timezone = "UTC"`, `flexible_time_window` mode `OFF`, and a target of the `prod_rudolph_ranker` function ARN with `maximum_retry_attempts = 0` and the role `prod_rudolph_ranker_scheduler_role` (path `/rudolph/`, trusted by `scheduler.amazonaws.com` for this account only), whose policy `prod_rudolph_ranker_scheduler_policy` allows only `lambda:InvokeFunction` on that function. No `aws_cloudwatch_event_rule` or `aws_cloudwatch_event_target`, and no `aws_lambda_permission` for the ranker: the schedule invokes it through its role (each API handler and the authoriser still have their own permission for API Gateway).
+- **API Gateway:** REST API `prod_rudolph` with `binary_media_types = ["application/json"]` and `api_key_source = "AUTHORIZER"`; the stage `prod`; a deployment; `aws_api_gateway_method_settings.throttling` (`*/*`, 2000/2000, metrics and logging off); a `REQUEST` authorizer with identity source `method.request.header.Authorization`; `GET /health` and `POST /{preflight,eventupload,ruledownload,postflight,xsrf}/{machine_id}`; the custom domain `prod-rudolph.<zone>` with `TLS_1_2`, its base path mapping, the ACM certificate and its DNS validation, and two Route 53 records (the validation record and the `A` alias).
+- **S3:** `prod-<org>-rudolph-source` (versioning, SSE-KMS, SSL-only policy, access logging) with three `aws_s3_object` resources (API, authoriser and ranker zips, keys `rudolph-source-<MD5>.zip`); `prod-<org>-rudolph-source-logging` with versioning, SSE-S3 default encryption (`sse_algorithm = "AES256"`, no KMS key), `aws_s3_bucket_ownership_controls` (`BucketOwnerEnforced`, ACLs disabled) and a bucket policy that lets `logging.s3.amazonaws.com` write the access logs. No `aws_s3_bucket_acl` and no `aws_s3_bucket_object` anywhere.
 - **Alarms:** six, `prod_rudolph_api_5xx`, `_api_4xx`, `_request_too_large`, `_lambda_errors`, `_lambda_timeouts`, `_dynamodb_throttles`, each with `alarm_actions` and `ok_actions` set to the topic from 2.4; metric filters `*_request_too_large` on the six handler log groups and `*_timeouts` on all eight log groups.
 - **Budget:** `aws_budgets_budget.monthly[0]` named `prod-rudolph-monthly`, `COST`, `MONTHLY`, the amount from 2.5, a `TagKeyValue` cost filter of `user:Name$Rudolph` and three notifications to `budget_alert_emails`.
 
-And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, an `aws_route53_zone` (with `use_existing_route53_zone = true`), or any resource that is not in the `module.santa_api` tree.
+And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, an `aws_route53_zone` (with `use_existing_route53_zone = true`), or any resource that is not in the `module.santa_api` tree. The module's `removed` blocks for the old `aws_s3_bucket_object` zips only matter to deployments that had them; on a new state they do nothing.
 
-Capture: the plan file, N, and any warnings at the end of the plan (none are expected; record the text of any).
+Capture: the plan file, N, and any warnings at the end of the plan. None are expected: the module uses no deprecated resources or arguments, and `terraform validate` on the example environment prints none. Record the text of any warning.
 
 ### 3.3 Apply
 
@@ -403,11 +433,13 @@ Edit `deployments/environments/prod/_backend.tf` (state bucket, the rudolph-web 
   "post_logout_redirect_url": "",
   "session_ttl": "1h",
   "cli_env": "prod",
+  "top_list_stale_after": "3h",
   "create_ssm_parameters": false,
   "ssm_kms_key_arn": "",
   "dynamodb_table_name": "prod_rudolph_store",
   "dynamodb_kms_key_arn": "",
   "events_dynamodb_table_name": "prod_rudolph_events",
+  "enable_editing": false,
   "lambda_memory_size": 256,
   "lambda_timeout_seconds": 10,
   "log_retention_in_days": 30,
@@ -424,7 +456,11 @@ Edit `deployments/environments/prod/_backend.tf` (state bucket, the rudolph-web 
 ```
 
 - `prefix` is `$WEB_PREFIX`.
+The keys are those of rudolph-web's example `config.auto.tfvars.json`, in the same order; its environment README documents each.
+
 - `cli_env` is the **Rudolph** environment name, `prod`, so the pages' commands start with `ENV=prod rudolph`.
+- `top_list_stale_after` `3h` (the default, whole hours from `1h` to `168h`): the top list pages warn when the list is older than this. It suits the hourly ranker from 2.5; if you move the ranker to a working-hours schedule later, raise it to fit (rudolph-web's `docs/deploy.md` gives figures for a weekday schedule).
+- `enable_editing` `false`: deploy read-only first. The pages only show data and copy-and-paste CLI commands, the write routes do not exist (404), and the role has no write action. Step 10.2 turns editing on to test it.
 - `monthly_budget_usd` and `budget_alert_emails`: rudolph-web's own budget, `<web prefix>_rudolph_web_monthly`, which counts only costs tagged `Name = rudolph-web` (the default tag in rudolph-web's `_backend.tf`; keep it, and do not override `Name` through `tags`). Like Rudolph's (2.6) it needs the `Name` cost allocation tag active, alerts at its thresholds, and never stops spending. `0` creates no budget.
 - `dynamodb_table_name` and `events_dynamodb_table_name` follow Rudolph's prefix: change them if you chose another prefix in 2.9.
 - `dynamodb_kms_key_arn` is left empty on purpose: Rudolph's key policy lets any principal in the account use the key through DynamoDB, so the web role should need no KMS grant. Step 4.5 checks this; if the pages fail with a KMS `AccessDenied`, set it to the `store_kms_key_arn` output from 3.3 and apply again.
@@ -454,7 +490,7 @@ make justdeploy 2>&1 | tee "$CAPTURE_DIR/04-web-apply-1.txt" | tail -12
 
 `make plan` and `make justdeploy` pass `lambda_zip` from `build/package/`, so build and init must come first. (`make deploy` runs test, build, tf-init and justdeploy in one go, but rebuilds the zip, so the plan it shows can differ from the one you reviewed.)
 
-The plan should create `<web prefix>_rudolph_web` (arm64, `provided.al2023`, 256 MB, 10 s), its Function URL (`authorization_type = NONE`), its log group, and a role whose inline policy has `WriteOwnLogs`, `ReadSecrets`, `DecryptSecrets`, `ReadRudolphStore` and `ReadRudolphEvents`, with `dynamodb:GetItem` and `dynamodb:Query` only, on the two tables and their `index/*`. No `dynamodb:Scan`, no write action. With `monthly_budget_usd` above 0 it also creates the budget `<web prefix>_rudolph_web_monthly`. Like Rudolph's, it must add only and change or destroy nothing.
+The plan should create `<web prefix>_rudolph_web` (arm64, `provided.al2023`, 256 MB, 10 s), its Function URL (`authorization_type = NONE`), its log group, and a role whose inline policy has `WriteOwnLogs`, `ReadSecrets`, `DecryptSecrets`, `ReadRudolphStore` and `ReadRudolphEvents`, with `dynamodb:GetItem` and `dynamodb:Query` only, on the two tables and their `index/*`. No `dynamodb:Scan`, no write action, no `WriteRudolphRules` or `AppendRudolphAudit` statement (those come with `enable_editing`, step 10.2). The function's environment has `RUDOLPH_WEB_EDITING` `false`, `RUDOLPH_WEB_TOP_LIST_STALE_AFTER` `3h` and `RUDOLPH_WEB_CLI_ENV` `prod`. With `monthly_budget_usd` above 0 it also creates the budget `<web prefix>_rudolph_web_monthly`. That is 6 resources under `module.rudolph_web` (function, Function URL, log group, role, role policy, budget; reading the module, as in 3.2): nothing CloudFront, ACM, Route 53 or SSM with the settings above. Like Rudolph's, it must add only and change or destroy nothing, and print no warnings.
 
 After the first apply: put the `function_url` output, **without the trailing slash**, into `base_url`, register `<function_url>auth/callback` (the `redirect_url` output after the second apply) as a Web redirect URI on the app registration, and run `make justdeploy` again against the same build (`04-web-apply-2.txt`). Until the second apply every request answers 500 and the log says `config: RUDOLPH_WEB_REDIRECT_URL is required`; that is expected.
 
@@ -574,14 +610,16 @@ Success: both end in a successful sync with no HTTP errors (no 401, 400, 415 or 
 On the admin Mac:
 
 ```sh
-rudolph info                                # only on the test Mac itself: prints its machine ID
+rudolph machines | tee "$CAPTURE_DIR/05-machines.txt"
 rudolph lookup machine-ids | tee "$CAPTURE_DIR/05-lookup.txt"
 rudolph lookup serial-number "<test Mac serial>"
 rudolph machine show -m "$MID" | tee "$CAPTURE_DIR/05-machine-show.txt"
 rudolph config get --machine "$MID" | tee "$CAPTURE_DIR/05-config-get.txt"
 ```
 
-Success: `$MID` and the curl machine are listed; the serial lookup finds `$MID`; `machine show` shows what the test Mac reported (its hostname, serial number, Santa version, client mode `MONITOR`, 0 rules) and a last sync a few minutes ago; `config get` shows built-in or inherited settings (there is no global configuration yet).
+Success: `machines` lists the test Mac and `smoke-curl` by serial number, with hostname, Santa version and today's UTC date as the last sync day; `lookup machine-ids` lists `$MID` and the curl machine; the serial lookup finds `$MID`; `machine show` shows what the test Mac reported (its hostname, serial number, Santa version, client mode `MONITOR`, 0 rules) and a last sync a few minutes ago; `config get` shows built-in or inherited settings (there is no global configuration yet).
+
+`rudolph info` is the same check from the test Mac's side: it reads the Mac's own machine ID from the machine-mapping plist of 5.1, so it only makes sense on the test Mac. If the CLI and AWS credentials for the account are on that Mac, run `ENV=prod rudolph info` there (from a Rudolph checkout, or with `~/.rudolph-cli/prod.json`): it prints `$MID` and the same summary as `machine show`. Without a deployment configured it prints only the machine ID, which is enough to confirm `$MID`.
 
 In the router logs, one sync is a preflight, possibly an eventupload, one or more ruledownload pages and a postflight:
 
@@ -748,7 +786,7 @@ rudolph rule remove -t teamid -i EQHXZ8M8AV --machine "$MID"
 
 ### 9.1 The ranker's first run
 
-Either wait for the schedule (hourly with the defaults from 2.5), or invoke it once:
+Either wait for the EventBridge Scheduler schedule `${PREFIX}_rudolph_ranker` (`rate(1 hour)` in UTC with the defaults from 2.5), or invoke it once:
 
 ```sh
 aws lambda invoke --region "$REGION" --function-name "${PREFIX}_rudolph_ranker" "$CAPTURE_DIR/09-ranker-out.json"
@@ -760,6 +798,8 @@ aws dynamodb get-item --region "$REGION" --table-name "$EVENTS" \
 Success: the invoke answers `"StatusCode": 200` without `FunctionError`; the log has only `START`, `END` and `REPORT` lines (the ranker logs nothing on success); the pointer has `Snapshot` and `GeneratedAt`. rudolph-web `/events/top-blocked?days=1` lists smoke-blocked, smoke-grouped and smoke-unknown with counts and `Machines` 1; `/events/top-allowed` lists smoke-unknown and, after step 8, Google binaries. Then check the next scheduled run happened: `aws scheduler get-schedule --region "$REGION" --name "${PREFIX}_rudolph_ranker"` shows `State` `ENABLED` and the expression from 2.5, and within about an hour of the apply (with `rate(1 hour)`), the ranker log has a second `REPORT` and the page shows a newer generation time.
 
 Capture: `REPORT` lines (duration, max memory used), screenshots of both lists for 1 and 7 days.
+
+Keep the hourly schedule until the checks are done (step 10.1 expects no stale-list warning, and 12.4 compares the cost with the hourly estimate). To change it afterwards, set `ranker_schedule_expression` and `ranker_schedule_timezone` in Rudolph's `config.auto.tfvars.json` and rudolph-web's `top_list_stale_after` to fit, and apply each (see 2.5); the plan updates only `aws_scheduler_schedule.ranker` and, in rudolph-web, the function's environment.
 
 ### 9.2 `rules backfill-policy-index`
 
@@ -773,7 +813,9 @@ Success: `Would update 0 global rules`, then `Updated 0 global rules` twice. On 
 
 ## 10. rudolph-web page walk-through
 
-Signed in as the **viewer**:
+### 10.1 Read-only pages
+
+rudolph-web is still deployed with `enable_editing` `false` (4.2). Signed in as the **viewer**:
 
 | Page | Check |
 |---|---|
@@ -785,16 +827,70 @@ Signed in as the **viewer**:
 | `/rules`, `?type=BINARY`, `?policy=BLOCKLIST`, both | global rules filtered |
 | `/groups`, `/groups/smoke`, and "Macs in no group" | registered group with description and "reported counts", its rule |
 | `/events`, `?machine=<MID>`, `?decision=BLOCK_UNKNOWN`, `?team_id=EQHXZ8M8AV` | newest first, one filter at a time; two filters together answer 400 |
-| `/events/top-blocked?days=1`, `7`, `30`, `90`; `/events/top-allowed` likewise | generation time shown, no "more than 3 hours ago" warning |
+| `/events/top-blocked?days=1`, `7`, `30`, `90`; `/events/top-allowed` likewise | generation time shown, no "more than 3 hours ago" warning (`top_list_stale_after`) |
 | any list with `?cursor=garbage` | 400 |
-| `/admin` | 403 for the viewer |
-| Log out (button) | back to Entra's sign-out, then signed out |
+| `/admin` and `/admin/audit` | 403 for the viewer |
+| `/rules`, `/machines/<MID>`, `/groups/smoke` | no add or remove forms, only the copy-and-paste commands |
+| Sign out (button) | back to Entra's sign-out, then signed out |
 
 Copy one command from an event row (e.g. block a binary) and one from the machine page, paste each with `--dry-run` appended in the Rudolph checkout: each prints what it would write and `Dry run: the changes shown are not written.` This is production: always keep `--dry-run` on these test pastes.
 
-Sign in as the **admin**: `/admin` answers 200 (a placeholder). Sign in with an account that has neither role (if you have one): every page 403.
+Sign in as the **admin**: `/admin` answers 200 and says the deployment is read-only and that editing is turned on with `enable_editing`; `/admin/audit` answers 404 (the route only exists with editing), and no page shows a form. Sign in with an account that has neither role (if you have one): every page 403.
 
 Capture: a screenshot per page, the dry-run outputs, and `aws logs tail "/aws/lambda/${WEB_PREFIX}_rudolph_web" --since 30m` (no secrets, cookies or tokens in it).
+
+### 10.2 Editing from the web view
+
+rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, machine and group rules and set or end a Mac's temporary client mode from the pages, writing through Rudolph's own packages and recording each change in Rudolph's audit trail (rudolph-web's `docs/deploy.md`, "Editing"). This step turns it on, makes one change of each kind on the test Mac, checks that the Mac receives them, that the audit trail names the person, and that a viewer cannot write. Every change is undone within the step.
+
+**What turning it on adds.** `enable_editing = true` sets `RUDOLPH_WEB_EDITING=true` on the function and adds two statements to its role's inline policy, both on the store table only (no index, not the events table):
+
+- `WriteRudolphRules`: `dynamodb:PutItem`, `dynamodb:UpdateItem` and `dynamodb:DeleteItem`, with a `ForAllValues:StringLike` condition on `dynamodb:LeadingKeys` limiting it to `GlobalRules`, `RulesFeed`, `MachineRules#*`, `Machine#*`, `GroupRules#*`, `GroupRegistry` and `EventCollection`.
+- `AppendRudolphAudit`: `dynamodb:PutItem` only, on `Audit#*`, so the role cannot update or delete an audit entry.
+
+`LeadingKeys` matches the partition key only, so `Machine#*` (which the temporary mode needs for a Mac's `Config` row) also lets the role write that Mac's sensor data, sync state and group rows, and `GroupRegistry` lets it create and delete groups; the code writes only the rows it needs. That is the broadest effect the role can have: record that you accept it before leaving editing on.
+
+1. In rudolph-web's `config.auto.tfvars.json`, set `"enable_editing": true`. From the rudolph-web checkout, against the build from 4.4 (do not rebuild: a new zip changes the function's code hash):
+
+   ```sh
+   cd /path/to/rudolph-web && export ENV=prod
+   make plan 2>&1 | tee "$CAPTURE_DIR/10-web-editing-plan.txt" | tail -3
+   make justdeploy 2>&1 | tee "$CAPTURE_DIR/10-web-editing-apply.txt" | tail -5
+   cd /path/to/rudolph && export ENV=prod
+   ```
+
+   Success: the plan shows `0 to add, 2 to change, 0 to destroy`: `aws_iam_role_policy.web` gains `WriteRudolphRules` and `AppendRudolphAudit` as above, and `aws_lambda_function.web` changes only `RUDOLPH_WEB_EDITING` from `false` to `true`. If `build/package/` is gone, run `make build` first; the plan then also updates the function's code, which is expected in that case only. Anything else in the plan: stop and check.
+2. Sign in as the **admin**. `/admin` now says editing is on and links to `/admin/audit`. On `/rules`, with the form "Add a global rule": type `BINARY`, identifier the value of `$SHA_UNKNOWN` (smoke-unknown, from step 6), policy `BLOCKLIST`, custom message `Rudolph test: web global block`, description `Rudolph web editing test`. The page returns to `/rules` and lists the rule.
+3. On `/machines/<MID>`, with "Add a rule for this Mac": type `BINARY`, identifier the value of `$SHA_MACHINE`, policy `ALLOWLIST`, expires `2h`. Then, in the temporary mode form, set `LOCKDOWN` for `30m`. The page shows the machine rule with its expiry and, under "Sync health", the temporary mode and its end.
+4. On the test Mac:
+
+   ```sh
+   sudo santactl sync --debug 2>&1 | tee ~/10-sync-web-1.txt
+   santactl status
+   santactl rule --check --path ~/smoke-bins/smoke-unknown
+   santactl rule --check --path ~/smoke-bins/smoke-machine
+   ~/smoke-bins/smoke-unknown; echo "exit $?"
+   ~/smoke-bins/smoke-machine; echo "exit $?"
+   ```
+
+   Success: the sync is normal (incremental) and succeeds; `santactl status` shows mode Lockdown; smoke-unknown has a blocklist binary rule and is blocked with `Rudolph test: web global block`; smoke-machine has an allowlist binary rule and runs. On the admin Mac, `rudolph rules --global`, `rudolph rules --machine "$MID"` and `rudolph config get --machine "$MID"` show the same rule, rule and temporary mode as the CLI would have written them.
+5. Back on `/machines/<MID>`, end the temporary mode now, and remove the machine rule with its **Remove rule** button; on `/rules`, remove the global rule. Sync the Mac again (`~/10-sync-web-2.txt`): `santactl status` shows Monitor, and `santactl rule --check` shows no rule for either binary. `rudolph rules --machine "$MID"` may still list the machine rule as marked for removal until the Mac has synced (as in 13.3).
+6. As the admin, open `/admin/audit`. Success: the six changes, newest first: `rule.remove` (target `global`), then `rule.remove`, `config.end-temporary-mode`, `config.temporary-mode` and `rule.add` (each target `machine:<MID>`), then `rule.add` (target `global`), each with the actor `web:<Entra user name> (<Entra object ID>)` and a summary, and each target linking to the page it changed (`/rules`, `/machines/<MID>`). The CLI changes of steps 5 to 9 are listed too, with `cli:` actors.
+7. **A viewer cannot write.** In one browser, as the admin, open `/rules` and `/machines/<MID>` in two tabs (both show the forms). In a third tab, sign out and sign in as the **viewer**; then go back to the first two tabs and submit an add-rule form (any value) and the temporary mode form. Both answer 403, because the session cookie is now the viewer's, and nothing is written (the audit page, as the admin later, shows no new entry). Reload the pages as the viewer: no forms are shown, and `/admin/audit` answers 403.
+8. On the admin Mac:
+
+   ```sh
+   rudolph audit --since 1d | tee "$CAPTURE_DIR/10-audit.txt"
+   ```
+
+   Success: the web entries of this step, with `web:` actors, and the CLI entries of steps 5 to 9 (`config.set`, `rule.add`, `rule.remove`, `config.update`, `config.temporary-mode`, `config.end-temporary-mode`, `group.create`, `rule.update` and so on) with the actor `cli:<your user>@<your host>`, newest first, with UTC and local times. If the list ends with `Showing the newest 100 entries`, add `--limit 500`.
+
+Then decide whether to leave editing on:
+
+- **Leave it on** if admins should change rules and temporary modes from the pages. Assign `Rudolph.Admin` only to the people who may do that; removing someone's assignment takes effect only when their session ends (up to `session_ttl`, one hour), or at once if you roll the cookie key (rudolph-web's `docs/deploy.md`, "Rolling the secrets").
+- **Turn it off** to keep the view read-only: set `"enable_editing": false` in rudolph-web's `config.auto.tfvars.json` and run `make plan` and `make justdeploy` again from the rudolph-web checkout, against the same build. The plan changes the same two resources back; afterwards the forms are gone, the write routes and `/admin/audit` answer 404, and the role has no write action. The audit entries stay in Rudolph's table, and `rudolph audit` still lists them.
+
+Capture: the plan and apply outputs, screenshots of the forms, of the machine page with the temporary mode and of `/admin/audit`, the two sync outputs, the 403 pages, `10-audit.txt`, and what you decided about editing.
 
 ## 11. Checks the audit left for the first deploy
 
@@ -946,7 +1042,7 @@ Capture: a CSV export of the Cost Explorer view.
 
 ## 13. Clean up the test data
 
-Once steps 5 to 12 have passed, remove what the checks created, so that production holds only the fleet's real rules and Macs. Every command asks for confirmation; add `--dry-run` first to see what it would change.
+Once steps 5 to 12 have passed, remove what the checks created, so that production holds only the fleet's real rules and Macs. Every command asks for confirmation; add `--dry-run` first to see what it would change. Each cleanup command is itself recorded in the audit trail (13.7).
 
 ### 13.1 Global rules (6.1, and 6.4's optional `silent-gui` rule)
 
@@ -996,9 +1092,21 @@ CURL_MID="$(cat "$CAPTURE_DIR/03-curl-machine-id.txt")"
 rudolph machine forget -m "$CURL_MID"
 ```
 
-Expect the list to show the sensor data and the sync state (and no machine rules, configuration or groups), with the hostname `smoke-curl`. Check the ID and the hostname before answering `yes`: this deletes from the production table. Afterwards `rudolph machine show -m "$CURL_MID"` says no machine with that ID has synced.
+Expect the list to show the sensor data and the sync state (and no machine rules, configuration or groups), with the hostname `smoke-curl`. Check the ID and the hostname before answering `yes`: this deletes from the production table. Afterwards `rudolph machine show -m "$CURL_MID"` says no machine with that ID has synced, and `rudolph machines` no longer lists `SMOKECURL01`.
 
-Capture: the outputs of 13.1 to 13.3 and 13.6.
+Do not forget the test Mac itself: it stays on Rudolph and moves to the fleet profile in step 14.2.
+
+### 13.7 The audit trail stays
+
+Every change the checks made through the CLI (steps 5 to 9 and this step's cleanup, `machine.forget` included) and through rudolph-web (10.2) is recorded in Rudolph's audit trail, in the store table under `Audit#<UTC day>`. Audit entries never expire and there is no command to delete them: they are the record of this test and stay. Check they are complete and keep a copy with the captures:
+
+```sh
+rudolph audit --since 30d --limit 1000 | tee "$CAPTURE_DIR/13-audit.txt"
+```
+
+`--since` takes a duration (`7d`, `36h`) or an RFC 3339 time, at most 400 days back (`rudolph audit --since 400d` is the furthest); older entries are kept but not listed. In rudolph-web, `/admin/audit` (with editing on) shows the last 30 days.
+
+Capture: the outputs of 13.1 to 13.3, 13.6 and 13.7.
 
 ## 14. Migrating the rest of the fleet
 
@@ -1019,17 +1127,18 @@ Before the first stage, load the fleet's real rules (`rudolph rules import`, see
 ### 14.3 What to watch at each stage
 
 - **Alarms** (step 2.4): `api_4xx` (a wrong token in the profile shows as 401s), `api_5xx`, `lambda_errors`, `request_too_large` (a Mac with a large backlog of events after the move).
-- **rudolph-web:** the machine list fills in as Macs sync; each machine page's "Sync health" shows a recent sync and the expected client mode and rule count. A Mac that is in the MDM scope but not in the list has not synced: check `santactl status` and `sudo santactl sync --debug` on it.
+- **rudolph-web:** the machine list fills in as Macs sync; each machine page's "Sync health" shows a recent sync and the expected client mode and rule count. A Mac that is in the MDM scope but not in the list has not synced: check `santactl status` and `sudo santactl sync --debug` on it. From the CLI, `rudolph machines --limit 500` lists the Macs that have synced by serial number with their last sync day, and `rudolph machine show -m <machine ID>` shows one Mac's last sync, configuration and groups.
+- **Audit trail:** `rudolph audit --since 7d` (or `/admin/audit` with editing on) shows every rule and configuration change made during the migration, and by whom.
 - **Events:** `/events?decision=BLOCK_BINARY` and `BLOCK_UNKNOWN`, and the top-blocked list, for anything blocked that should not be (in monitor mode, for what would be blocked in lockdown).
 - **Costs:** the budgets (2.6, 4.2) and Cost Explorer (12.4); costs grow with the number of Macs (see [costs.md](costs.md)).
 
 ### 14.4 Rolling a Mac back
 
-To move a Mac back to its previous sync server, remove the fleet profile from it in your MDM and reinstall its old Santa profile (or scope it back into the old profile's group). At its next sync Santa uses the old server again, which sends that server's rules (a clean sync if the old server asks for one). Santa keeps enforcing the rules and mode it last received until then. Nothing needs to change in Rudolph: the Mac's rows expire 90 days after its last preflight.
+To move a Mac back to its previous sync server, remove the fleet profile from it in your MDM and reinstall its old Santa profile (or scope it back into the old profile's group). At its next sync Santa uses the old server again, which sends that server's rules (a clean sync if the old server asks for one). Santa keeps enforcing the rules and mode it last received until then. Nothing needs to change in Rudolph: the Mac's rows expire 90 days after its last preflight. If the Mac is not coming back, `rudolph machine forget -m <machine ID>` removes them now (as in 13.6), once it has stopped syncing with Rudolph.
 
 ## 15. Teardown (only if there are major issues)
 
-Tear down only if the checks turned up problems that rule out using the deployment. **It deletes every rule, configuration and event in Rudolph**, so do it before any fleet Mac depends on it, and move any Mac already on Rudolph back first (14.4).
+Tear down only if the checks turned up problems that rule out using the deployment. **It deletes every rule, configuration and event in Rudolph, and the audit trail with them** (it is kept in the store table), so do it before any fleet Mac depends on it, and move any Mac already on Rudolph back first (14.4). Keep the record first: `rudolph audit --since 400d --limit 10000 > "$CAPTURE_DIR/15-audit-before-teardown.txt"`.
 
 1. Turn off table deletion protection, which otherwise makes the destroy fail on the tables. In `deployments/environments/$ENV/config.auto.tfvars.json`, set `"table_deletion_protection": false`, then apply it from the Rudolph checkout, at the commit that is deployed, against the existing build:
 
@@ -1076,6 +1185,11 @@ Capture: the deletion protection apply and both destroy outputs.
 | rudolph-web 500 on every page | `/aws/lambda/<web prefix>_rudolph_web`: `config: ... is required` (second apply missing), SSM parameter errors |
 | rudolph-web 503 | `RUDOLPH_WEB_DYNAMODB_TABLE` or `RUDOLPH_WEB_EVENTS_TABLE` not set on the function |
 | rudolph-web 500 on data pages | a KMS `AccessDenied` in its log: set `dynamodb_kms_key_arn` (step 4.2); a missing index: Rudolph deployed without it |
+| rudolph-web: no forms, or 404 on `/admin/audit` and the form POSTs | `enable_editing` is `false` (or the apply in 10.2 did not run); forms are shown to `Rudolph.Admin` only |
+| rudolph-web 403 on a form POST | the session is a viewer's (expected for the viewer in 10.2), or the request is cross-origin: the browser's `Origin` does not match `base_url` |
+| rudolph-web 400 on a form | Rudolph refused the input, as the CLI would (the page gives the reason); 404: no such rule, or Rudolph has nothing for that machine ID |
+| rudolph-web 500 after a form, "could not be recorded in the audit trail" | the change was saved but not audited: an `AccessDenied` on `Audit#` in its log means the role lacks `AppendRudolphAudit` |
+| `rudolph` warns "the change was made but not audited" | the CLI's credentials cannot `dynamodb:PutItem` on `Audit#*` ([CLI permissions](deploy.md#cli-permissions)) |
 | Santa side | `sudo santactl sync --debug`; `santactl status`; `log show --predicate 'process == "santad" OR process == "santasyncservice"' --last 15m` |
 
 Request counts by route and status, in Logs Insights over the handler log groups:
@@ -1088,7 +1202,7 @@ parse @message /(?<method>[A-Z]+) (?<route>\S+) machine=(?<machine>\S+) status=(
 
 ## Doc issues found
 
-Found while writing this runbook, by comparing the docs with the code and with the vendored Santa sources in `testdata/`. Not fixed here.
+Found while writing or reviewing this runbook, by comparing the docs with the code (of both repositories) and with the vendored Santa sources in `testdata/`. Each was fixed, if at all, in the doc or code it names, not in this runbook; statuses as of 2026-11-09.
 
 1. **`EnableCleanSyncEventUpload` is not Santa's key.** [sync.md](sync.md) (and comments in `internal/testutil/fakesanta`) tell admins to set `EnableCleanSyncEventUpload` in the profile. Santa 2025.12, 2026.8 and 2026.9 read `SyncEnableCleanSyncEventUpload` (`kSyncEnableCleanSyncEventUpload` in `SNTConfigurator.mm`); the documented key does nothing. Fixed 2026-11-07.
 2. **The example Santa profile is out of date.** `configs/santa-configuration.mobileconfig`, which [configuring Santa](configuring-santa.md) points to as the example, sets its preferences under `com.google.santa`, while the same page says Santa 2026.8 reads `com.northpolesec.santa` (confirmed in `SNTConfigurator.mm`), and it has no `SyncExtraHeaders`, without which every sync is refused with 401. Fixed 2026-11-07.
@@ -1096,7 +1210,10 @@ Found while writing this runbook, by comparing the docs with the code and with t
 4. **No event count in the eventupload log.** rudolph-web's `docs/data-layer-design.md` says to measure events per Mac per day by counting `events` per upload in the Lambda logs. eventupload logs only the router line (route, machine, status, duration) and `dropped` lines; step 12.1 counts uploads in the logs and stored events in the table instead. Measuring uploaded events with `EnableAllEventUpload` on would need a log line or metric that does not exist. Fixed 2026-11-07.
 5. **Module outputs not exposed by the example environment.** rudolph-web's `docs/deploy.md` refers to Rudolph's `events_dynamodb_table_name` output and the table's KMS key; the `santa_api` module has `events_dynamodb_table_name`, `store_kms_key_arn` and `api_gateway_id` outputs, but `deployments/environments/example/_outputs.tf` exports only `sync_base_url` and `events_dynamodb_table_arn` (step 2.7 adds them locally). Fixed 2026-11-07.
 6. **`lambda_errors` likely fires on a wrong bearer token.** The authoriser rejects a token that does not match by returning the `Unauthorized` error (`internal/handlers/authorizer/authorizer.go`), which Lambda counts as a function error; [deploy.md](deploy.md#alarms) describes `lambda_errors` as firing when a function "returned an error" and only mentions rejected tokens under `api_4xx`. To be confirmed in 11.3; if it fires, scanners with a made-up token page whoever receives the alarms. Fixed 2026-11-07.
-7. **Audit D3 is out of date, and access logging may still not work.** [shortcomings.md](audit/shortcomings.md) D3 describes an ACL on new buckets; the code has since removed the source bucket's ACL and added ownership controls before the logging bucket's ACL. The remaining risk is different: the logging bucket's default encryption is SSE-KMS with a customer managed key, which AWS documents as unsupported for server access log destinations, so logs may never be delivered. To be confirmed in 11.2. The logging buckets now use SSE-S3 (2026-11-07); the D3 wording in the audit is unchanged.
+7. **Audit D3 is out of date, and access logging may still not work.** [shortcomings.md](audit/shortcomings.md) D3 describes an ACL on new buckets; the code has since removed the source bucket's ACL and added ownership controls before the logging bucket's ACL. The remaining risk is different: the logging bucket's default encryption is SSE-KMS with a customer managed key, which AWS documents as unsupported for server access log destinations, so logs may never be delivered. The logging buckets now use SSE-S3 (2026-11-07), and then ACLs disabled with a bucket policy granting `logging.s3.amazonaws.com` instead of the ACL; audit D3 now describes both. Fixed 2026-11-09. That access logs are actually delivered is still to be confirmed in 11.2.
 8. **`provided.al2` runtime.** Rudolph's Lambdas (`modules/lambda/api-handler/lambda.tf`, `ranker.tf`) use `provided.al2`, while rudolph-web uses `provided.al2023`. Amazon Linux 2 reached end of support on 30 June 2026; if AWS has started blocking creation of `provided.al2` functions, the apply in 3.3 fails. No doc mentions the runtime or this risk. Fixed 2026-11-07.
 9. **The costs floor omits fixed monthly items.** [costs.md](costs.md) gives a floor of about US$0.10 a day for one Mac and lists the alarms (about US$2.50 a month), but not the three KMS customer managed keys (US$1 a month each), the hosted zone or point-in-time recovery; the real floor is likely higher. Step 12.4 measures it. Fixed 2026-11-07.
 10. **Example environment placeholders.** `deployments/environments/example/config.auto.tfvars.json` gives `eventupload_handler` as `[KINESIS|FIREHOSE]` with `eventupload_autocreate_policies: true`, although `NONE` is valid and is the simplest start, and it leaves out `authorizer_result_ttl_in_seconds`, which the example's README shows. Fixed 2026-11-07.
+11. **rudolph-web's measurement note names the wrong field.** rudolph-web's `docs/data-layer-design.md` ("Event store options") says to replace its per-Mac estimate by counting `events` per upload in the Lambda logs. Rudolph's eventupload line is `eventupload: machine=<id> received=<n> stored=<m>` (`internal/handlers/eventupload/handler.go`); step 12.1 sums `received` and `stored`. Open (rudolph-web). Fixed 2026-11-09.
+12. **Stale-list warning fixed at 3 hours.** [deploy.md](deploy.md#ranker-schedule) said rudolph-web warns when a top list is more than 3 hours old, so a working-hours ranker schedule shows the warning every night and weekend. rudolph-web now takes the threshold from `top_list_stale_after` (`1h` to `168h`, default `3h`). Fixed 2026-11-09.
+13. **rudolph-web's function description says read-only.** The Lambda function's description is "Read-only admin web view for Rudolph" (`deployments/terraform_modules/rudolph_web/lambda.tf`) also when `enable_editing` is true, which the Lambda console then shows. Cosmetic; nothing reads it. Open (rudolph-web). Fixed 2026-11-09.
