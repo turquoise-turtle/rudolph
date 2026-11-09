@@ -32,7 +32,7 @@ export PREFIX=prod                        # = "prefix" in config.auto.tfvars.jso
 export WEB_PREFIX=prod                    # = "prefix" in rudolph-web's config.auto.tfvars.json
 export ORG=yourorg                        # = "org"
 export ZONE=example.com                   # = "route53_zone_name", the existing hosted zone
-export HOST="${PREFIX}-rudolph.${ZONE}"
+export SYNC_HOST="${PREFIX}-rudolph.${ZONE}"
 export STORE="${PREFIX}_rudolph_store"
 export EVENTS="${PREFIX}_rudolph_events"
 export CAPTURE_DIR="$HOME/rudolph-first-deploy/$(date +%F)"
@@ -240,7 +240,7 @@ Before the first plan, check with read-only commands that nothing in the account
   echo "== S3 buckets";           aws s3api list-buckets --query "Buckets[?starts_with(Name, '${PREFIX}-${ORG}-rudolph')].Name"
   echo "== KMS aliases";          aws kms list-aliases --region "$REGION" --query "Aliases[?starts_with(AliasName, 'alias/${PREFIX}-')].AliasName"
   echo "== REST APIs";            aws apigateway get-rest-apis --region "$REGION" --query "items[?starts_with(name, '${PREFIX}_rudolph')].[id,name]"
-  echo "== API custom domains";   aws apigateway get-domain-names --region "$REGION" --query "items[?domainName=='${HOST}'].domainName"
+  echo "== API custom domains";   aws apigateway get-domain-names --region "$REGION" --query "items[?domainName=='${SYNC_HOST}'].domainName"
   echo "== IAM roles";            aws iam list-roles --query "Roles[?starts_with(RoleName, '${PREFIX}_rudolph')].RoleName"
   echo "== IAM policies";         aws iam list-policies --scope Local --query "Policies[?starts_with(PolicyName, '${PREFIX}_rudolph')].PolicyName"
   echo "== CloudWatch alarms";    aws cloudwatch describe-alarms --region "$REGION" --alarm-name-prefix "${PREFIX}_rudolph_" --query 'MetricAlarms[].AlarmName'
@@ -343,9 +343,9 @@ Watch for, and record if they happen: an error creating Lambda functions with ru
 ### 3.4 First requests
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' "https://$HOST/health"                                   # 401: no token
-curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $TOKEN" "https://$HOST/health"            # {"status":"healthy"} 200
-curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer wrong" "https://$HOST/health"             # 401
+curl -s -o /dev/null -w '%{http_code}\n' "https://$SYNC_HOST/health"                                   # 401: no token
+curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer $TOKEN" "https://$SYNC_HOST/health"            # {"status":"healthy"} 200
+curl -s -w '\n%{http_code}\n' -H "Authorization: Bearer wrong" "https://$SYNC_HOST/health"             # 401
 ```
 
 Success: `401`, then `{"status":"healthy"}` with `200`, then `401`. The first is answered by API Gateway without invoking the authoriser; the third invokes it, and the authoriser answers by returning the `Unauthorized` error. Note the time of the third request: step 11.3 checks that it did not fire `lambda_errors`.
@@ -368,23 +368,23 @@ BODY='{"serial_num":"SMOKECURL01","hostname":"smoke-curl","santa_version":"2026.
 
 # 1. zlib ("deflate"), Santa's default
 printf '%s' "$BODY" | perl -MCompress::Zlib -0777 -ne 'print compress($_)' |
-  curl -s -w '\n%{http_code} %{content_type}\n' -X POST "https://$HOST/preflight/$CURL_MID" \
+  curl -s -w '\n%{http_code} %{content_type}\n' -X POST "https://$SYNC_HOST/preflight/$CURL_MID" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Content-Encoding: deflate' \
     -H 'Accept: application/json' --data-binary @- | tee "$CAPTURE_DIR/03-preflight-deflate.txt"
 
 # 2. gzip
 printf '%s' "$BODY" | gzip -c |
-  curl -s -w '\n%{http_code}\n' -X POST "https://$HOST/preflight/$CURL_MID" \
+  curl -s -w '\n%{http_code}\n' -X POST "https://$SYNC_HOST/preflight/$CURL_MID" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Content-Encoding: gzip' \
     --data-binary @- | tee "$CAPTURE_DIR/03-preflight-gzip.txt"
 
 # 3. uncompressed, with Accept: */*
-curl -s -w '\n%{http_code}\n' -X POST "https://$HOST/preflight/$CURL_MID" \
+curl -s -w '\n%{http_code}\n' -X POST "https://$SYNC_HOST/preflight/$CURL_MID" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Accept: */*' \
   --data-binary "$BODY" | tee "$CAPTURE_DIR/03-preflight-plain.txt"
 
 # 4. wrong media type
-curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://$HOST/preflight/$CURL_MID" \
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "https://$SYNC_HOST/preflight/$CURL_MID" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: text/plain' --data-binary "$BODY"
 ```
 
@@ -933,7 +933,7 @@ List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_
 
   ```sh
   head -c 7000000 /dev/zero | tr '\0' ' ' | perl -MCompress::Zlib -0777 -ne 'print compress($_)' |
-    curl -s -w '\n%{http_code}\n' -X POST "https://$HOST/preflight/$CURL_MID" \
+    curl -s -w '\n%{http_code}\n' -X POST "https://$SYNC_HOST/preflight/$CURL_MID" \
       -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -H 'Content-Encoding: deflate' --data-binary @-
   ```
 
@@ -941,7 +941,7 @@ List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_
 - **`api_4xx`**, for real: more than 5% of at least `api_4xx_alarm_min_requests` (10) requests in each of two consecutive 5-minute periods answered 4xx. Requests without a token are answered 401 by API Gateway without invoking Lambda:
 
   ```sh
-  for i in $(seq 1 30); do curl -s -o /dev/null "https://$HOST/health"; sleep 20; done
+  for i in $(seq 1 30); do curl -s -o /dev/null "https://$SYNC_HOST/health"; sleep 20; done
   ```
 
   Success: after about 10 minutes `prod_rudolph_api_4xx` is `ALARM` and the subscribers are emailed.
