@@ -112,13 +112,13 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 		fmt.Fprintf(w, "macOS:             %s (%s)\n", orNone(sd.OSVersion), orNone(sd.OSBuild))
 		fmt.Fprintf(w, "Santa:             %s\n", orNone(sd.SantaVersion))
 		fmt.Fprintf(w, "Reported mode:     %s (the client mode the Mac was in at its last sync)\n", modeName(sd.ClientMode))
-		fmt.Fprintf(w, "Last sync:         %s\n", timeText(sd.Time))
+		fmt.Fprintf(w, "Last sync:         %s\n", timeText(sd.Time, now))
 		if st := s.Sync; st != nil {
 			if st.PostflightAt != "" {
-				fmt.Fprintf(w, "Last completed:    %s (postflight)\n", timeText(st.PostflightAt))
+				fmt.Fprintf(w, "Last completed:    %s (postflight)\n", timeText(st.PostflightAt, now))
 			}
 			if st.LastCleanSync != "" {
-				fmt.Fprintf(w, "Last clean sync:   %s\n", timeText(st.LastCleanSync))
+				fmt.Fprintf(w, "Last clean sync:   %s\n", timeText(st.LastCleanSync, now))
 			}
 		}
 		fmt.Fprintf(w, "Rules on the Mac:  %d (binary %d, certificate %d, Team ID %d, signing ID %d, CDHash %d; compiler %d, transitive %d)\n",
@@ -178,12 +178,12 @@ func modeName(mode types.ClientMode) string {
 }
 
 // timeText shows a stored RFC 3339 time in UTC and in local time, or as stored when it cannot be parsed
-func timeText(stored string) string {
+func timeText(stored string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339Nano, stored)
 	if err != nil {
 		return orNone(stored)
 	}
-	return clitime.Since(t, time.Now())
+	return clitime.Since(t, now)
 }
 
 func orNone(s string) string {

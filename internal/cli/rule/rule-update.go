@@ -141,7 +141,7 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 	// An update cannot bring back a rule that has expired (and that DynamoDB has not deleted yet): it would look
 	// successful and change nothing on any Mac.
 	if row.ExpiresAfter != 0 && row.ExpiresAfter <= rh.timeProvider.Now().Unix() {
-		return nil, fmt.Errorf("the rule %s of machine %s expired at %s; create it again with --expires or --permanent", sortKey, machineID, clitime.Expiry(time.Unix(row.ExpiresAfter, 0), rh.timeProvider.Now()))
+		return nil, fmt.Errorf("the rule %s of machine %s has expired (%s); create it again with --expires or --permanent", sortKey, machineID, clitime.Expiry(time.Unix(row.ExpiresAfter, 0), rh.timeProvider.Now()))
 	}
 	existing := &existingRule{key: row.PrimaryKey, rule: row.SantaRule, description: row.Description, collecting: row.CollectAllowedEvents, machineRow: row,
 		removing: row.DeleteOnNextSync || row.Policy == types.RulePolicyRemove}
