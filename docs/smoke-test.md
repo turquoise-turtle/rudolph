@@ -1146,7 +1146,7 @@ Tear down only if the checks turned up problems that rule out using the deployme
    export ENV=prod && make justdeploy
    ```
 
-   Do not use `make deploy` here: it rebuilds, and `make build` re-zips the binaries with new timestamps, which changes their hashes, so the plan also replaces the S3 source objects, updates every Lambda's code and creates a new API deployment. Never ship new code as part of a teardown. With the build from the last deployment still in `build/package/`, the plan shows only `deletion_protection_enabled` changing from `true` to `false` on the two tables. If `build/package/` is gone (a fresh checkout, another computer), run `make build` at the deployed commit first; the plan then also lists those S3 object, Lambda code and API deployment changes, which is expected in that case only. Anything else in the plan: stop and check.
+   Do not use `make deploy` here: it rebuilds, and `make build` re-zips the binaries with new timestamps, which changes their hashes, so the plan also replaces the S3 source objects and updates every Lambda's code. Never ship new code as part of a teardown. With the build from the last deployment still in `build/package/`, the plan shows only `deletion_protection_enabled` changing from `true` to `false` on the two tables. If `build/package/` is gone (a fresh checkout, another computer), run `make build` at the deployed commit first; the plan then also lists those S3 object and Lambda code changes, which is expected in that case only. Anything else in the plan: stop and check.
 2. Destroy both stacks, each from its own checkout. Review each plan before typing `yes`: it must list only resources of that stack.
 
    ```sh

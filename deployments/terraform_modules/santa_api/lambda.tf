@@ -25,14 +25,16 @@ resource "aws_s3_object" "santa_api_source" {
   bucket = local.lambda_source_bucket
   key    = local.lambda_source_key
   source = var.lambda_api_zip
-  etag   = filemd5(var.lambda_api_zip)
+  # Not etag: S3's ETag is not the MD5 of a multipart or SSE-KMS upload, so it never matched and every plan re-uploaded.
+  source_hash = filemd5(var.lambda_api_zip)
 }
 
 resource "aws_s3_object" "santa_api_authorizer_source" {
   bucket = local.lambda_source_bucket
   key    = local.lambda_authorizer_source_key
   source = var.lambda_authorizer_zip
-  etag   = filemd5(var.lambda_authorizer_zip)
+  # Not etag: S3's ETag is not the MD5 of a multipart or SSE-KMS upload, so it never matched and every plan re-uploaded.
+  source_hash = filemd5(var.lambda_authorizer_zip)
 }
 
 # The source zips were aws_s3_bucket_object resources (deprecated). The AWS provider cannot move state from that type

@@ -14,7 +14,8 @@ resource "aws_s3_object" "ranker_source" {
   bucket = local.lambda_source_bucket
   key    = "rudolph-source-ranker-${filemd5(var.lambda_ranker_zip)}.zip"
   source = var.lambda_ranker_zip
-  etag   = filemd5(var.lambda_ranker_zip)
+  # Not etag: S3's ETag is not the MD5 of a multipart or SSE-KMS upload, so it never matched and every plan re-uploaded.
+  source_hash = filemd5(var.lambda_ranker_zip)
 }
 
 resource "aws_iam_role" "ranker" {
