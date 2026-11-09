@@ -230,9 +230,9 @@ variable "lambda_timeout" {
 
 func TestCheck_UndeclaredValueInOtherAutoTfvars(t *testing.T) {
 	envDir, exampleDir := dirs(t, map[string]string{
-		"main.tf":                 exampleMain,
-		"_variables.tf":           exampleVariables,
-		"config.auto.tfvars.json": `{"prefix": "prod", "region": "us-west-2"}`,
+		"main.tf":                  exampleMain,
+		"_variables.tf":            exampleVariables,
+		"config.auto.tfvars.json":  `{"prefix": "prod", "region": "us-west-2"}`,
 		"private.auto.tfvars.json": `{"display_time_zone": "Asia/Tokyo", "dispaly_time_zone": "Asia/Tokyo"}`,
 	})
 	problems := check(t, envDir, exampleDir)
