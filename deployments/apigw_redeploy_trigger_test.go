@@ -66,6 +66,12 @@ func TestAPIGW_RedeploymentTriggersCoverSettingsThatNeedARedeploy(t *testing.T) 
 	requireAll(t, "the deployment's triggers", triggers,
 		"binary_media_types", "policy", "api_key_source", "api_gateway_authorizer_sha", "integration_shas")
 
+	// Every gateway response, by its configured attributes.
+	for _, b := range blocks(files, "resource", "aws_api_gateway_gateway_response") {
+		requireAll(t, "the deployment's triggers", triggers, "aws_api_gateway_gateway_response."+b.Labels[1]+",")
+	}
+	requireAll(t, "the deployment's triggers", triggers, "response_type", "status_code", "response_templates")
+
 	requireAll(t, "the integration hash (api_resource integration_sha)",
 		outputSource(t, files, "api_resource", "integration_sha"),
 		"var.gateway_resource_id", "var.http_method", "var.lambda_invocation_arn", "var.authorizer_id", "var.request_model")
