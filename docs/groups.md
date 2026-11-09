@@ -45,6 +45,52 @@ A configuration profile cannot be changed on the Mac, but a plist can be edited 
 
 So for a group that grants privilege, or whose blocks must stick, create it with `--no-reported` (or `rudolph group update <group> --no-reported`): only `rudolph group add` then makes a Mac a member, and Macs reporting the group are ignored. `--accept-reported` undoes it.
 
+### Example: groups from Jamf Pro attributes
+
+Jamf Pro substitutes payload variables (see "Payload Variables for Configuration Profiles" in Jamf Pro's documentation) such as `$DEPARTMENT`, `$ROOM` and `$BUILDING` into configuration profiles, so a Mac's inventory attributes can become its reported groups. Two ways to do it:
+
+**In the Santa profile (recommended).** Add `MachineOwnerGroups` to the `com.northpolesec.santa` payload:
+
+```xml
+<key>MachineOwnerGroups</key>
+<array>
+	<string>$DEPARTMENT</string>
+	<string>$ROOM</string>
+</array>
+```
+
+A local administrator cannot change a configuration profile, so this membership is as trustworthy as your Jamf inventory.
+
+**Through a variables payload.** If you already publish Jamf's variables to the Mac in a custom payload (Application & Custom Settings, with a preference domain of your own such as `com.example.jamfprovariables`), add the groups to it as an **array** and point Santa at the managed preferences file it becomes:
+
+```xml
+<!-- Payload for the domain com.example.jamfprovariables -->
+<key>Username</key>
+<string>$USERNAME</string>
+<key>Groups</key>
+<array>
+	<string>$DEPARTMENT</string>
+	<string>$ROOM</string>
+</array>
+```
+
+```xml
+<!-- In the com.northpolesec.santa payload; MachineOwnerGroups must not be set, or Santa uses it instead -->
+<key>MachineOwnerPlist</key>
+<string>/Library/Managed Preferences/com.example.jamfprovariables.plist</string>
+<key>MachineOwnerGroupsKey</key>
+<string>Groups</string>
+```
+
+`MachineOwnerKey` can point at a key of the same file (`Username` above) if Santa should take the primary user from it too. On a test Mac, `sudo defaults read "/Library/Managed Preferences/com.example.jamfprovariables"` shows the values Jamf substituted. The file is root-owned and Jamf rewrites it, but a local administrator can still edit it between check-ins, so the trust caveat above applies.
+
+Either way:
+
+- **Empty attributes join nothing.** Rudolph drops empty names (and names it does not accept), so a Mac with no room is only in its department's group, and a Mac with neither is in no reported group (and gets `--ungrouped` rules unless it has an assigned group). A variable Jamf leaves unsubstituted, such as a literal `$ROOM`, is ignored too, as long as no group of that name is registered.
+- **Only registered names count.** Register each department or room that should carry rules, using its value as the name: `rudolph group create science`. Names are lower-cased, so `Science` and `science` are one group, and a department and a room with the same value are the same group. Unregistered values cost nothing.
+- **At most 64 groups can be registered**, so register the departments and rooms that need their own rules rather than all of them.
+- `rudolph group show --machine <machine-uuid>` lists the reported groups that count after the Mac's next sync, and rudolph-web's machine page shows the groups as Santa sent them.
+
 ## Group rules
 
 Every `rudolph rule` command that creates rules accepts `--group <group>`, and `--ungrouped` for the Macs in no group, as a third kind of target (exactly one of `--global`, `--machine`, `--group` and `--ungrouped`):
