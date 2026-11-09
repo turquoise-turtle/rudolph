@@ -292,3 +292,63 @@ func TestCheck_RealExampleEnvironment(t *testing.T) {
 		t.Errorf("the example environment fails its own check:\n%s", strings.Join(problems, "\n"))
 	}
 }
+
+// Files Terraform itself ignores (AppleDouble files from copying the project across volumes, editor lock and backup
+// files) must not block a deploy.
+func TestCheck_FilesTerraformIgnores(t *testing.T) {
+	envDir, exampleDir := dirs(t, map[string]string{
+		"main.tf":                   exampleMain,
+		"_variables.tf":             exampleVariables,
+		"config.auto.tfvars.json":   `{"prefix": "prod", "region": "us-west-2"}`,
+		"._main.tf":                 "\x00\x05\x16\x07binary",
+		"main.tf~":                  `variable "x" {`,
+		"#main.tf#":                 `variable "x" {`,
+		"._config.auto.tfvars.json": "\x00\x05\x16\x07binary",
+	})
+	if err := os.Symlink(filepath.Join(envDir, "nowhere"), filepath.Join(envDir, ".#main.tf")); err != nil {
+		t.Fatal(err)
+	}
+	if problems := check(t, envDir, exampleDir); len(problems) != 0 {
+		t.Errorf("files Terraform ignores were checked:\n%s", strings.Join(problems, "\n"))
+	}
+}
+
+// Terraform merges override files into the base module block, so their arguments count.
+func TestCheck_OverrideFilesMergeIntoTheModule(t *testing.T) {
+	for _, name := range []string{"main_override.tf", "override.tf", "_override.tf"} {
+		t.Run(name, func(t *testing.T) {
+			envDir, exampleDir := dirs(t, map[string]string{
+				"main.tf": `
+module "app" {
+  source = "../../terraform_modules/app"
+
+  prefix = var.prefix
+  region = var.region
+}
+`,
+				name: `
+module "app" {
+  display_time_zone = var.display_time_zone
+}
+`,
+				"_variables.tf":           exampleVariables,
+				"config.auto.tfvars.json": `{"prefix": "prod", "region": "us-west-2"}`,
+			})
+			if problems := check(t, envDir, exampleDir); len(problems) != 0 {
+				t.Errorf("an argument set in %s was not counted:\n%s", name, strings.Join(problems, "\n"))
+			}
+		})
+	}
+}
+
+// Terraform treats a "//" key in a JSON tfvars file as a comment.
+func TestCheck_CommentKeyInTfvarsJSON(t *testing.T) {
+	envDir, exampleDir := dirs(t, map[string]string{
+		"main.tf":                 exampleMain,
+		"_variables.tf":           exampleVariables,
+		"config.auto.tfvars.json": `{"//": "prod settings", "prefix": "prod", "region": "us-west-2"}`,
+	})
+	if problems := check(t, envDir, exampleDir); len(problems) != 0 {
+		t.Errorf("a // comment key was reported:\n%s", strings.Join(problems, "\n"))
+	}
+}

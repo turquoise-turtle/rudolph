@@ -64,7 +64,7 @@ func TestMake_PlanAndApplyCheckTheEnvironmentFirst(t *testing.T) {
 			t.Errorf("make %s does not check the environment first: prerequisites %q", target, prereqs)
 		}
 	}
-	// make deploy reaches justdeploy, which checks; the check must come before the slow test and build steps too.
+	// make deploy reaches justdeploy, which checks; listed first, a serial make also checks before the slow test and build steps.
 	prereqs, _ = makeRule(t, makefile, "deploy")
 	if len(prereqs) < 2 || prereqs[0] != ".check-args" || prereqs[1] != ".check-env" {
 		t.Errorf("make deploy should check the environment right after ENV, before testing and building: got %q", prereqs)
