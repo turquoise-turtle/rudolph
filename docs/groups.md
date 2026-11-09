@@ -47,7 +47,7 @@ So for a group that grants privilege, or whose blocks must stick, create it with
 
 ### Example: groups from Jamf Pro attributes
 
-Jamf Pro substitutes payload variables (see "Payload Variables for Configuration Profiles" in Jamf Pro's documentation) such as `$DEPARTMENT`, `$ROOM` and `$BUILDING` into configuration profiles, so a Mac's inventory attributes can become its reported groups. Two ways to do it:
+Jamf Pro substitutes payload variables (see "Payload Variables for Configuration Profiles" in Jamf Pro's documentation) such as `$DEPARTMENT`, `$ROOM` and `$BUILDINGNAME` into configuration profiles, so a Mac's inventory attributes can become its reported groups. Two ways to do it:
 
 **In the Santa profile (recommended).** Add `MachineOwnerGroups` to the `com.northpolesec.santa` payload:
 
@@ -87,6 +87,7 @@ A local administrator cannot change a configuration profile, so this membership 
 Either way:
 
 - **Empty attributes join nothing.** Rudolph drops empty names (and names it does not accept), so a Mac with no room is only in its department's group, and a Mac with neither is in no reported group (and gets `--ungrouped` rules unless it has an assigned group). A variable Jamf leaves unsubstituted, such as a literal `$ROOM`, is ignored too, as long as no group of that name is registered.
+- **Check two things on a test Mac first**, which Jamf's documentation does not say: what Jamf substitutes for an empty inventory field, and whether it re-sends the profile when a Mac's department or room changes (if not, the Mac keeps its old groups until the profile is redistributed). Variable names are case-sensitive.
 - **Only registered names count.** Register each department or room that should carry rules, using its value as the name: `rudolph group create science`. Names are lower-cased, so `Science` and `science` are one group, and a department and a room with the same value are the same group. Unregistered values cost nothing.
 - **At most 64 groups can be registered**, so register the departments and rooms that need their own rules rather than all of them.
 - `rudolph group show --machine <machine-uuid>` lists the reported groups that count after the Mac's next sync, and rudolph-web's machine page shows the groups as Santa sent them.
