@@ -23,7 +23,7 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
 - Rule types: `binary` (`bin`), `certificate` (`cert`), `teamid`, `signingid`, `cdhash`. Policies: `allowlist`, `blocklist`, `silent_blocklist`, `silent_gui_blocklist`, `silent_tty_blocklist`, `cel`, `remove`.
 - Commands that write rules check the local clock against DynamoDB's first (see [rules.md](rules.md)).
-- **Times.** Rule expiries, temporary client mode ends and sync times are printed in UTC, in local time and relative to now, e.g. `Expires: 2026-11-09T11:21:42Z (2026-11-09 20:21 JST local, in 2h 0m)`; an end that has passed shows as `expired 5m ago`, and a machine rule without an expiry as `never`. Audit summaries are stored, so they keep plain UTC.
+- **Times.** Rule expiries, temporary client mode ends and sync times are printed in UTC, in local time and relative to now, e.g. `Expires: 2026-11-09T11:21:42Z (2026-11-09 20:21 JST local, in 2h 0m)`; an end that has passed shows as `expired 5m ago`, and a machine rule without an expiry as `never`. Local time is your computer's time zone; to use another, set `TZ` for the command, e.g. `TZ=America/New_York rudolph rule get …`. Audit summaries are stored, so they keep plain UTC.
 - **Audit trail.** Every change a command writes is also recorded in the [audit trail](#the-audit-trail), after the write succeeds. A dry run or a declined prompt records nothing.
 
 ## Rules
