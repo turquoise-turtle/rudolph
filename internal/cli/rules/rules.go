@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
@@ -174,7 +175,7 @@ func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, filter ruleFilter) er
 	for i, rule := range listed {
 		state := "Expires: never"
 		if rule.ExpiresAfter != 0 {
-			state = "Expires: " + time.Unix(rule.ExpiresAfter, 0).UTC().Format(time.RFC3339)
+			state = "Expires: " + clitime.Expiry(time.Unix(rule.ExpiresAfter, 0), now)
 		}
 		if !rule.AppliesAt(now) {
 			state += " (no longer applies: expired or removed)"

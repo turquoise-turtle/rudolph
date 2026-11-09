@@ -23,6 +23,7 @@ AWS credentials come from the usual AWS SDK sources (`AWS_PROFILE`, environment 
 - **Shorthands** mean the same flag everywhere: `-f` file path, `-i` identifier, `-t` rule type, `-p` policy, `-m` machine, `-g` global, `-c` client mode, `-y` yes.
 - Rule types: `binary` (`bin`), `certificate` (`cert`), `teamid`, `signingid`, `cdhash`. Policies: `allowlist`, `blocklist`, `silent_blocklist`, `silent_gui_blocklist`, `silent_tty_blocklist`, `cel`, `remove`.
 - Commands that write rules check the local clock against DynamoDB's first (see [rules.md](rules.md)).
+- **Times.** Rule expiries, temporary client mode ends and sync times are printed in UTC, in local time and relative to now, e.g. `Expires: 2026-11-09T11:21:42Z (2026-11-09 22:21 AEDT local, in 2h 0m)`; an end that has passed shows as `expired 5m ago`, and a machine rule without an expiry as `never`. Audit summaries are stored, so they keep plain UTC.
 - **Audit trail.** Every change a command writes is also recorded in the [audit trail](#the-audit-trail), after the write succeeds. A dry run or a declined prompt records nothing.
 
 ## Rules
@@ -142,7 +143,7 @@ rudolph info
 - what it reported at its last preflight: hostname, serial number, primary user, model, macOS version and build, Santa version, the client mode it was in, and the number of rules it holds, in total and by type;
 - when it last synced (UTC, local time and how long ago), when a sync last completed (postflight) and when its last clean sync started;
 - a legacy client note when its Santa is older than 2026.8, the oldest release Rudolph fully supports (see [Supported Santa releases](sync.md#supported-santa-releases));
-- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with the end time, if any, and whether a clean sync is requested (`config get --machine` shows every setting);
+- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with its end (UTC, local time and time remaining or since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
 - its assigned, reported and effective groups, as `group show` prints them.
 
 The machine ID is found in any case, as for `--machine` elsewhere (see [Conventions](#conventions)). A Mac that never synced, or whose data expired (90 days after its last sync), is an error: `no machine with ID … has synced`.

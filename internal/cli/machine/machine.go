@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -138,15 +139,15 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 		end := s.Config.TemporaryClientModeEnd()
 		switch _, active := s.Config.TemporaryClientModeAt(now); {
 		case active:
-			fmt.Fprintf(w, "  Temporary mode:  %s until %s (%s); then %s\n", mode, end.UTC().Format(time.RFC3339), end.Local().Format("2006-01-02 15:04 MST"), modeName(s.Config.ClientMode))
+			fmt.Fprintf(w, "  Temporary mode:  %s until %s; then %s\n", mode, clitime.Expiry(end, now), modeName(s.Config.ClientMode))
 		case s.Config.TemporaryClientModeExpiresAt <= 0:
 			fmt.Fprintf(w, "  Temporary mode:  %s without an end (ignored)\n", mode)
 		case end.After(now):
 			// Rudolph caps temporary modes at 30 days, also when reading them, so a later end (other tooling, or
 			// milliseconds written as seconds) is ignored rather than in force.
-			fmt.Fprintf(w, "  Temporary mode:  %s until %s (ignored: more than 30 days away)\n", mode, end.UTC().Format(time.RFC3339))
+			fmt.Fprintf(w, "  Temporary mode:  %s until %s (ignored: more than 30 days away)\n", mode, clitime.Expiry(end, now))
 		default:
-			fmt.Fprintf(w, "  Temporary mode:  %s, ended %s (ignored)\n", mode, end.UTC().Format(time.RFC3339))
+			fmt.Fprintf(w, "  Temporary mode:  %s, ended %s (ignored)\n", mode, clitime.Since(end, now))
 		}
 	} else {
 		fmt.Fprintln(w, "  Temporary mode:  none")
@@ -182,22 +183,7 @@ func timeText(stored string) string {
 	if err != nil {
 		return orNone(stored)
 	}
-	return fmt.Sprintf("%s (%s local, %s ago)", t.UTC().Format(time.RFC3339), t.Local().Format("2006-01-02 15:04 MST"), ago(time.Since(t)))
-}
-
-func ago(d time.Duration) string {
-	switch {
-	case d < 0:
-		return "0s"
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 48*time.Hour:
-		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
-	default:
-		return fmt.Sprintf("%d days", int(d.Hours()/24))
-	}
+	return clitime.Since(t, time.Now())
 }
 
 func orNone(s string) string {
