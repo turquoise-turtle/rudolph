@@ -883,7 +883,7 @@ rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, ma
    rudolph audit --since 1d | tee "$CAPTURE_DIR/10-audit.txt"
    ```
 
-   Success: the web entries of this step, with `web:` actors, and the CLI entries of steps 5 to 9 (`config.set`, `rule.add`, `rule.remove`, `config.update`, `config.temporary-mode`, `config.end-temporary-mode`, `group.create`, `rule.update` and so on) with the actor `cli:<your user>@<your host>`, newest first, with UTC and local times. If the list ends with `Showing the newest 100 entries`, add `--limit 500`.
+   Success: the web entries of this step, with `web:` actors, and the CLI entries of steps 5 to 9 (`config.set`, `rule.add`, `rule.remove`, `config.update`, `config.temporary-mode`, `config.end-temporary-mode`, `group.create`, `rule.update` and so on) with the actor `cli:<your user>@<your host>`, newest first, with local and UTC times. If the list ends with `Showing the newest 100 entries`, add `--limit 500`.
 
 Then decide whether to leave editing on:
 

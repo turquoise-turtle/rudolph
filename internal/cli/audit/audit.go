@@ -23,7 +23,7 @@ var AuditCmd = &cobra.Command{
 	Use:   "audit [--since <duration or RFC 3339 time>] [--limit <n>]",
 	Short: "Show who changed rules, configuration, groups or machines, newest first",
 	Long: `Show the audit trail: every change the CLI (and rudolph-web) made to rules, configuration, groups or machines,
-with its time (UTC and local), actor, action, target and summary, newest first. Entries are kept forever.
+with its time (local and UTC), actor, action, target and summary, newest first. Entries are kept forever.
 
 --since takes a duration back from now ("7d", "36h", "90m") or an RFC 3339 time ("2026-11-01T00:00:00+11:00"), at
 most 400 days back.`,
@@ -54,9 +54,9 @@ most 400 days back.`,
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "TIME (UTC)\tLOCAL TIME\tACTOR\tACTION\tTARGET\tSUMMARY")
+		fmt.Fprintln(w, "LOCAL TIME\tTIME (UTC)\tACTOR\tACTION\tTARGET\tSUMMARY")
 		for _, e := range entries {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Time.UTC().Format(time.RFC3339), e.Time.Local().Format("2006-01-02 15:04:05 MST"), e.Actor, e.Action, e.Target, e.Summary)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Time.Local().Format("2006-01-02 15:04:05 MST"), e.Time.UTC().Format(time.RFC3339), e.Actor, e.Action, e.Target, e.Summary)
 		}
 		if err := w.Flush(); err != nil {
 			return err
