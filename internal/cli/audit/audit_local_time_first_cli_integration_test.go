@@ -35,3 +35,15 @@ func TestAuditTable_LocalTimeComesBeforeUTC(t *testing.T) {
 		t.Errorf("entry %q: want local time, then UTC", lines[1])
 	}
 }
+
+func TestAuditNoEntries_SinceIsLocalTimeFirst(t *testing.T) {
+	old := time.Local
+	time.Local = time.FixedZone("TST", 11*3600)
+	t.Cleanup(func() { time.Local = old })
+
+	ddblocal.Reset(t)
+	out := run(t, AuditCmd, "", "--since", "1h")
+	if !regexp.MustCompile(`No audit entries since \d{4}-\d\d-\d\d \d\d:\d\d TST \(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\)`).MatchString(out) {
+		t.Errorf("empty audit: %q; want the since time in local time first, then UTC in brackets", out)
+	}
+}
