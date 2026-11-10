@@ -82,7 +82,7 @@ func TestMachineShow_WhatTheMacReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	mustContain(t, out, macA, "lab-mac-01", "C02ABC123", "jsmith", "2026.9.0", "15.1", "MONITOR", "12", seen.UTC().Format(time.RFC3339))
+	mustContain(t, out, macA, "lab-mac-01", "C02ABC123", "jsmith", "2026.9.0", "15.1", "MONITOR", "12", "("+seen.UTC().Format("2006-01-02 15:04:05")+" UTC)")
 }
 
 func TestMachineShow_AcceptsAnyCase(t *testing.T) {

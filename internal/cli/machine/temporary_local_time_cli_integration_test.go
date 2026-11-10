@@ -54,8 +54,9 @@ func TestMachineShow_TemporaryModeEndInLocalTime(t *testing.T) {
 					line = l
 				}
 			}
-			if !strings.Contains(line, end.UTC().Format(time.RFC3339)) || !strings.Contains(line, end.In(time.Local).Format("2006-01-02 15:04")+" TST local") {
-				t.Errorf("temporary mode line %q; want the end in UTC and as \"%s TST local\"", line, end.In(time.Local).Format("2006-01-02 15:04"))
+			want := end.In(time.Local).Format("2006-01-02 15:04") + " TST (" + end.UTC().Format("2006-01-02 15:04:05") + " UTC)"
+			if !strings.Contains(line, want) {
+				t.Errorf("temporary mode line %q; want the end in local time, then UTC in brackets: %q", line, want)
 			}
 		})
 	}
