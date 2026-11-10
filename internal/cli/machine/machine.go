@@ -177,7 +177,7 @@ func modeName(mode types.ClientMode) string {
 	return string(text)
 }
 
-// timeText shows a stored RFC 3339 time in UTC and in local time, or as stored when it cannot be parsed
+// timeText shows a stored RFC 3339 time in local time and UTC, or as stored when it cannot be parsed
 func timeText(stored string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339Nano, stored)
 	if err != nil {
