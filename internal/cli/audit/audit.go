@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	modelaudit "github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/spf13/cobra"
@@ -50,7 +51,7 @@ most 400 days back.`,
 			return err
 		}
 		if len(entries) == 0 {
-			fmt.Printf("No audit entries since %s.\n", since.UTC().Format(time.RFC3339))
+			fmt.Printf("No audit entries since %s.\n", clitime.Absolute(since))
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)

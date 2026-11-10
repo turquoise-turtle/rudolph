@@ -141,9 +141,9 @@ rudolph info
 `machine show` prints what Rudolph knows about one Mac:
 
 - what it reported at its last preflight: hostname, serial number, primary user, model, macOS version and build, Santa version, the client mode it was in, and the number of rules it holds, in total and by type;
-- when it last synced (UTC, local time and how long ago), when a sync last completed (postflight) and when its last clean sync started;
+- when it last synced (local time, then UTC in brackets, then how long ago), when a sync last completed (postflight) and when its last clean sync started;
 - a legacy client note when its Santa is older than 2026.8, the oldest release Rudolph fully supports (see [Supported Santa releases](sync.md#supported-santa-releases));
-- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with its end (UTC, local time and time remaining or since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
+- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with its end (local time, then UTC in brackets, then the time remaining or how long since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
 - its assigned, reported and effective groups, as `group show` prints them.
 
 The machine ID is found in any case, as for `--machine` elsewhere (see [Conventions](#conventions)). A Mac that never synced, or whose data expired (90 days after its last sync), is an error: `no machine with ID … has synced`.
@@ -208,6 +208,7 @@ LOCAL TIME               TIME (UTC)            ACTOR                     ACTION 
 
 - `--since` is how far back to look: a duration back from now (`7d`, `36h`, `90m`) or an RFC 3339 time (`2026-11-01T00:00:00+11:00`). Default `7d`. A time in the future is an error, and so is one more than 400 days back (the look-back limit, `audit.MaxLookback`): the error gives the limit in days.
 - `--limit` is the most entries to show. Default `100`; when the limit is reached it says so.
+- With no entries in that window it prints the start of the window, local time first: `No audit entries since 2026-11-06 13:12 JST (2026-11-06 04:12:09 UTC).`
 
 It reads one partition per day back to `--since` with Query, never Scan, so a long `--since` costs one small read per day; the 400-day limit caps that at about 400 reads.
 

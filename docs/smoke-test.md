@@ -17,7 +17,7 @@ Nothing in it has been run yet: where it predicts AWS behaviour that the tests c
 - **Names.** `ENV` (the environment directory) is `prod`: rudolph-web's pages print commands that start with `ENV=prod rudolph`, so the Rudolph environment must have that name. `prefix` (every resource name) can be `prod` too, or another prefix of your choice if `prod` is taken in this account (step 2.9). rudolph-web has its own `prefix` (`WEB_PREFIX` below), which names its Lambda and SSM parameters; it can equal Rudolph's. `prefix` and `org` end up in S3 bucket names (`<prefix>-<org>-rudolph-source`) and a DNS name, so use lower-case letters, digits and dashes only; the bucket name must be globally unique.
 - **Cost budgets.** The monthly amounts, in US dollars, at which you want to hear about Rudolph's and rudolph-web's spend, and who receives the alerts (steps 2.6 and 4.2).
 - **Alarm notifications.** Whether to create an SNS topic with your email subscribed, so the alarms reach you (step 2.4). Recommended for production.
-- **Editing in rudolph-web.** rudolph-web is deployed read-only (step 4.2). Step 10.2 turns its editing on for a test of the forms; decide then whether to leave it on, and who holds `Rudolph.Admin` if you do.
+- **Editing in rudolph-web.** rudolph-web is deployed read-only (step 4.2). Step 10.2 turns its editing on for a test of the forms (10.2 and 10.3); decide in 10.4 whether to leave it on, and who holds `Rudolph.Admin` if you do.
 - **Afterwards.** If the checks pass, migrate the rest of the fleet (step 14). If there are major issues, tear down (step 15). Step 12 needs at least 2 to 3 days of Cost Explorer data, which can overlap with the first migration stage.
 
 ### 0.2 Shell variables
@@ -291,7 +291,7 @@ wc -l < "$CAPTURE_DIR/03-plan-resources.txt"
 
 Success: `Plan: N to add, 0 to change, 0 to destroy.` Record N. **A first plan must not change or destroy anything:** any `to change` or `to destroy` means the state key already held state (step 1.3); stop and check.
 
-With the settings in 2.5 (`eventupload_handler` `NONE`, S3 access logging on, a budget above 0, an existing zone, no mTLS), reading `deployments/terraform_modules/santa_api/` gives **N = 148**, all under `module.santa_api`. That figure comes from the code, not from a real plan (no plan has been run against AWS): if N differs, compare `03-plan-resources.txt` with this breakdown and record the difference.
+With the settings in 2.5 (`eventupload_handler` `NONE`, S3 access logging on, a budget above 0, an existing zone, no mTLS), reading `deployments/terraform_modules/santa_api/` gives **N = 151**, all under `module.santa_api`. That figure comes from the code, not from a real plan (no plan has been run against AWS): if N differs, compare `03-plan-resources.txt` with this breakdown and record the difference.
 
 | Part of the module | Resources | Count |
 |---|---|---|
@@ -304,7 +304,7 @@ With the settings in 2.5 (`eventupload_handler` `NONE`, S3 access logging on, a 
 | Store (`module.rule_store`) | the two tables, KMS key and alias, `prod_rudolph_store_policy` with 4 attachments (health, ruledownload, preflight, postflight), `prod_rudolph_events_write_policy` with 1 attachment (eventupload) | 11 |
 | Lambda source buckets (`module.lambda_source[0]`) | source bucket, its policy, versioning, logging, encryption, KMS key and alias; logging bucket, its policy, versioning, encryption and ownership controls | 12 |
 | Lambda zips (`lambda.tf`) | `aws_s3_object.santa_api_source`, `aws_s3_object.santa_api_authorizer_source` | 2 |
-| Monitoring | 6 alarms; 6 `*_request_too_large` and 8 `*_timeouts` metric filters | 20 |
+| Monitoring | 9 alarms (4 of them DynamoDB throttle alarms); 6 `*_request_too_large` and 8 `*_timeouts` metric filters | 23 |
 | Budget | `aws_budgets_budget.monthly[0]` | 1 |
 
 Check that the plan holds, by name (with `prefix` `prod`):
@@ -315,7 +315,7 @@ Check that the plan holds, by name (with `prefix` `prod`):
 - **EventBridge Scheduler:** `aws_scheduler_schedule.ranker` named `prod_rudolph_ranker` with `schedule_expression = "rate(1 hour)"`, `schedule_expression_timezone = "UTC"`, `flexible_time_window` mode `OFF`, and a target of the `prod_rudolph_ranker` function ARN with `maximum_retry_attempts = 0` and the role `prod_rudolph_ranker_scheduler_role` (path `/rudolph/`, trusted by `scheduler.amazonaws.com` for this account only), whose policy `prod_rudolph_ranker_scheduler_policy` allows only `lambda:InvokeFunction` on that function. No `aws_cloudwatch_event_rule` or `aws_cloudwatch_event_target`, and no `aws_lambda_permission` for the ranker: the schedule invokes it through its role (each API handler and the authoriser still have their own permission for API Gateway).
 - **API Gateway:** REST API `prod_rudolph` with `binary_media_types = ["application/json"]` and `api_key_source = "AUTHORIZER"`; the stage `prod`; a deployment; `aws_api_gateway_method_settings.throttling` (`*/*`, 2000/2000, metrics and logging off); a `REQUEST` authorizer with identity source `method.request.header.Authorization`; `GET /health` and `POST /{preflight,eventupload,ruledownload,postflight,xsrf}/{machine_id}`; the custom domain `prod-rudolph.<zone>` with `TLS_1_2`, its base path mapping, the ACM certificate and its DNS validation, and two Route 53 records (the validation record and the `A` alias).
 - **S3:** `prod-<org>-rudolph-source` (versioning, SSE-KMS, SSL-only policy, access logging) with three `aws_s3_object` resources (API, authoriser and ranker zips, keys `rudolph-source-<MD5>.zip`); `prod-<org>-rudolph-source-logging` with versioning, SSE-S3 default encryption (`sse_algorithm = "AES256"`, no KMS key), `aws_s3_bucket_ownership_controls` (`BucketOwnerEnforced`, ACLs disabled) and a bucket policy that lets `logging.s3.amazonaws.com` write the access logs. No `aws_s3_bucket_acl` and no `aws_s3_bucket_object` anywhere.
-- **Alarms:** six, `prod_rudolph_api_5xx`, `_api_4xx`, `_request_too_large`, `_lambda_errors`, `_lambda_timeouts`, `_dynamodb_throttles`, each with `alarm_actions` and `ok_actions` set to the topic from 2.4; metric filters `*_request_too_large` on the six handler log groups and `*_timeouts` on all eight log groups.
+- **Alarms:** nine, `prod_rudolph_api_5xx`, `_api_4xx`, `_request_too_large`, `_lambda_errors`, `_lambda_timeouts`, `_dynamodb_store_read_throttles`, `_dynamodb_store_write_throttles`, `_dynamodb_events_read_throttles`, `_dynamodb_events_write_throttles`, each with `alarm_actions` and `ok_actions` set to the topic from 2.4; metric filters `*_request_too_large` on the six handler log groups and `*_timeouts` on all eight log groups.
 - **Budget:** `aws_budgets_budget.monthly[0]` named `prod-rudolph-monthly`, `COST`, `MONTHLY`, the amount from 2.5, a `TagKeyValue` cost filter of `user:Name$Rudolph` and three notifications to `budget_alert_emails`.
 
 And that it does **not** hold: anything Firehose or Kinesis, `event_sink_failures`, an `aws_route53_zone` (with `use_existing_route53_zone = true`), or any resource that is not in the `module.santa_api` tree. The module's `removed` blocks for the old `aws_s3_bucket_object` zips only matter to deployments that had them; on a new state they do nothing.
@@ -460,7 +460,7 @@ The keys are those of rudolph-web's example `config.auto.tfvars.json`, in the sa
 
 - `cli_env` is the **Rudolph** environment name, `prod`, so the pages' commands start with `ENV=prod rudolph`.
 - `top_list_stale_after` `3h` (the default, whole hours from `1h` to `168h`): the top list pages warn when the list is older than this. It suits the hourly ranker from 2.5; if you move the ranker to a working-hours schedule later, raise it to fit (rudolph-web's `docs/deploy.md` gives figures for a weekday schedule).
-- `enable_editing` `false`: deploy read-only first. The pages only show data and copy-and-paste CLI commands, the write routes do not exist (404), and the role has no write action. Step 10.2 turns editing on to test it.
+- `enable_editing` `false`: deploy read-only first. The pages only show data and copy-and-paste CLI commands, the write routes do not exist (404), and the role has no write action; admins still get the read-only audit page, `/admin/audit`. Step 10.2 turns editing on to test it.
 - `monthly_budget_usd` and `budget_alert_emails`: rudolph-web's own budget, `<web prefix>_rudolph_web_monthly`, which counts only costs tagged `Name = rudolph-web` (the default tag in rudolph-web's `_backend.tf`; keep it, and do not override `Name` through `tags`). Like Rudolph's (2.6) it needs the `Name` cost allocation tag active, alerts at its thresholds, and never stops spending. `0` creates no budget.
 - `dynamodb_table_name` and `events_dynamodb_table_name` follow Rudolph's prefix: change them if you chose another prefix in 2.9.
 - `dynamodb_kms_key_arn` is left empty on purpose: Rudolph's key policy lets any principal in the account use the key through DynamoDB, so the web role should need no KMS grant. Step 4.5 checks this; if the pages fail with a KMS `AccessDenied`, set it to the `store_kms_key_arn` output from 3.3 and apply again.
@@ -563,6 +563,7 @@ Write this outside both repositories (it holds the token), fill in the values, a
       <key>MachineOwnerGroups</key>
       <array>
         <string>smoke</string>
+        <string>smoke-reported</string>
       </array>
     </dict>
   </array>
@@ -582,7 +583,7 @@ Write this outside both repositories (it holds the token), fill in the values, a
 
 - `SyncBaseURL` is the `sync_base_url` output, with its trailing slash.
 - `SyncExtraHeaders` carries the token: exactly `Bearer ` followed by the token whose digest is in `sync_token_sha256`.
-- `MachineOwnerGroups` reports the test group `smoke`, used in step 6.4. Rudolph ignores it until the group is registered, and again once step 13 deletes the group.
+- `MachineOwnerGroups` reports two test names: `smoke`, the group of step 6.4, and `smoke-reported`, which step 10.3 makes a group from the web view and deletes again. Rudolph ignores a reported name until a group of that name is registered, and again once the group is deleted (steps 10.3 and 13.2).
 - `ClientMode` `1` starts the Mac in monitor mode.
 - Leave out `SyncClientContentEncoding` (deflate, checked in 3.5) and `SyncEnableProtoTransfer`.
 - **`SyncEnableCleanSyncEventUpload`** (the exact key Santa reads) is left out. Santa uploads no events during a clean sync unless it is true, and a Mac that holds no rules is clean synced on every sync. Set it to `<true/>` only for a fleet that will run without any rules; this runbook adds rules in step 6, after which syncs become incremental and events are uploaded.
@@ -703,7 +704,7 @@ On the Mac: `sudo santactl sync`, then `santactl status` shows mode Lockdown. Ru
 rudolph config update --machine "$MID" --end-temporary-mode
 ```
 
-Sync again; `santactl status` shows Monitor. Success: `config get` shows the temporary mode and its end in local time and UTC while it runs; rudolph-web's machine page shows it under "Sync health". Capture both `config get` outputs and the two `santactl status` outputs.
+Sync again; `santactl status` shows Monitor. Success: `config get` shows the temporary mode and its end in local time, then UTC in brackets, while it runs; rudolph-web's machine page shows it under "Sync health". Capture both `config get` outputs and the two `santactl status` outputs.
 
 ### 6.4 Group rule
 
@@ -823,32 +824,35 @@ rudolph-web is still deployed with `enable_editing` `false` (4.2). Signed in as 
 | `/machines` | the test Macs and `smoke-curl`, last seen as a UTC date |
 | `/machines?serial=<first 3 characters>` and `?hostname=<prefix>` | prefix search, case-insensitive |
 | `/machines?serial=a&hostname=b` | 400, "Filter by serial number or by hostname, not both." |
-| `/machines/<MID>` | last sync, client mode, rule counts, machine rules (none left after 6.2 and 8), groups (assigned, reported, effective), Sync health, a "Commands" disclosure |
+| `/machines/<MID>` | last sync, client mode, rule counts, machine rules (none left after 6.2 and 8), groups (assigned, reported and counted: `smoke`; reported by Santa as sent: `smoke` and `smoke-reported`), Sync health, a "Commands" disclosure; times in your local time first, then UTC in brackets |
 | `/rules`, `?type=BINARY`, `?policy=BLOCKLIST`, both | global rules filtered |
 | `/groups`, `/groups/smoke`, and "Macs in no group" | registered group with description and "reported counts", its rule |
-| `/events`, `?machine=<MID>`, `?decision=BLOCK_UNKNOWN`, `?team_id=EQHXZ8M8AV` | newest first, one filter at a time; two filters together answer 400 |
+| `/events`, `?machine=<MID>`, `?decision=BLOCK_UNKNOWN`, `?team_id=EQHXZ8M8AV` | newest first, times in local time first, then UTC in brackets; one filter at a time; two filters together answer 400 |
 | `/events/top-blocked?days=1`, `7`, `30`, `90`; `/events/top-allowed` likewise | generation time shown, no "more than 3 hours ago" warning (`top_list_stale_after`) |
-| any list with `?cursor=garbage` | 400 |
+| any list with more than one page (after step 8, `/events?machine=<MID>` may have) | a numbered pager, `Prev 1 2 Next`; following `2` and then `1` shows the first page again |
+| any list with `?cursor=garbage`, or `?page=x` | 400 |
 | `/admin` and `/admin/audit` | 403 for the viewer |
-| `/rules`, `/machines/<MID>`, `/groups/smoke` | no add or remove forms, only the copy-and-paste commands |
+| `/rules`, `/machines/<MID>`, `/groups`, `/groups/smoke` | no add, remove or group forms (no "Create a group", "Assign a group" or "Make this a group"), only the copy-and-paste commands |
 | Sign out (button) | back to Entra's sign-out, then signed out |
 
 Copy one command from an event row (e.g. block a binary) and one from the machine page, paste each with `--dry-run` appended in the Rudolph checkout: each prints what it would write and `Dry run: the changes shown are not written.` This is production: always keep `--dry-run` on these test pastes.
 
-Sign in as the **admin**: `/admin` answers 200 and says the deployment is read-only and that editing is turned on with `enable_editing`; `/admin/audit` answers 404 (the route only exists with editing), and no page shows a form. Sign in with an account that has neither role (if you have one): every page 403.
+Sign in as the **admin**: `/admin` answers 200, says the deployment is read-only and that editing is turned on with `enable_editing`, and links to the audit trail. `/admin/audit` answers 200 with editing off too: a read-only list of the last 30 days, newest first, showing the CLI changes of steps 5 to 9 with `cli:` actors and times in local time first, then UTC in brackets; the navigation shows an "Audit" link after Admin. No page shows a form. Sign in with an account that has neither role (if you have one): every page 403.
 
 Capture: a screenshot per page, the dry-run outputs, and `aws logs tail "/aws/lambda/${WEB_PREFIX}_rudolph_web" --since 30m` (no secrets, cookies or tokens in it).
 
 ### 10.2 Editing from the web view
 
-rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, machine and group rules and set or end a Mac's temporary client mode from the pages, writing through Rudolph's own packages and recording each change in Rudolph's audit trail (rudolph-web's `docs/deploy.md`, "Editing"). This step turns it on, makes one change of each kind on the test Mac, checks that the Mac receives them, that the audit trail names the person, and that a viewer cannot write. Every change is undone within the step.
+rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, machine and group rules, set or end a Mac's temporary client mode and manage device groups (step 10.3) from the pages, writing through Rudolph's own packages and recording each change in Rudolph's audit trail (rudolph-web's `docs/deploy.md`, "Editing"). This step turns it on, makes one change of each kind on the test Mac, checks that the Mac receives them, that the audit trail names the person, and that a viewer cannot write. Every change is undone within the step.
 
 **What turning it on adds.** `enable_editing = true` sets `RUDOLPH_WEB_EDITING=true` on the function and adds two statements to its role's inline policy, both on the store table only (no index, not the events table):
 
-- `WriteRudolphRules`: `dynamodb:PutItem`, `dynamodb:UpdateItem` and `dynamodb:DeleteItem`, with a `ForAllValues:StringLike` condition on `dynamodb:LeadingKeys` limiting it to `GlobalRules`, `RulesFeed`, `MachineRules#*`, `Machine#*`, `GroupRules#*`, `GroupRegistry` and `EventCollection`.
+- `WriteRudolphRules`: `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem` and `dynamodb:BatchWriteItem`, with a `ForAllValues:StringLike` condition on `dynamodb:LeadingKeys` limiting it to `GlobalRules`, `RulesFeed`, `MachineRules#*`, `Machine#*`, `GroupRules#*`, `GroupRegistry` and `EventCollection`.
 - `AppendRudolphAudit`: `dynamodb:PutItem` only, on `Audit#*`, so the role cannot update or delete an audit entry.
 
-`LeadingKeys` matches the partition key only, so `Machine#*` (which the temporary mode needs for a Mac's `Config` row) also lets the role write that Mac's sensor data, sync state and group rows, and `GroupRegistry` lets it create and delete groups; the code writes only the rows it needs. That is the broadest effect the role can have: record that you accept it before leaving editing on.
+`BatchWriteItem` is there for deleting a group together with its rules ("also delete its rules", the CLI's `group delete --force`): Rudolph's `groups.DeleteGroup` removes the rules with `BatchWriteItem`, 25 at a time, which IAM checks as an action of its own (the other writes are `PutItem`, `UpdateItem` and `DeleteItem`, also inside `TransactWriteItems`, which has no action of its own). A rudolph-web from before group management grants only the first three; step 10.3 needs the release that adds `BatchWriteItem`.
+
+`LeadingKeys` matches the partition key only, so `Machine#*` (which the temporary mode needs for a Mac's `Config` row, and assigning groups for its `Groups` row) also lets the role write that Mac's sensor data and sync state, and `GroupRegistry` lets it create and delete groups; the code writes only the rows it needs. That is the broadest effect the role can have: record that you accept it before leaving editing on.
 
 1. In rudolph-web's `config.auto.tfvars.json`, set `"enable_editing": true`. From the rudolph-web checkout, against the build from 4.4 (do not rebuild: a new zip changes the function's code hash):
 
@@ -859,8 +863,8 @@ rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, ma
    cd /path/to/rudolph && export ENV=prod
    ```
 
-   Success: the plan shows `0 to add, 2 to change, 0 to destroy`: `aws_iam_role_policy.web` gains `WriteRudolphRules` and `AppendRudolphAudit` as above, and `aws_lambda_function.web` changes only `RUDOLPH_WEB_EDITING` from `false` to `true`. If `build/package/` is gone, run `make build` first; the plan then also updates the function's code, which is expected in that case only. Anything else in the plan: stop and check.
-2. Sign in as the **admin**. `/admin` now says editing is on and links to `/admin/audit`. On `/rules`, with the form "Add a global rule": type `BINARY`, identifier the value of `$SHA_UNKNOWN` (smoke-unknown, from step 6), policy `BLOCKLIST`, custom message `Rudolph test: web global block`, description `Rudolph web editing test`. The page returns to `/rules` and lists the rule.
+   Success: the plan shows `0 to add, 2 to change, 0 to destroy`: `aws_iam_role_policy.web` gains `WriteRudolphRules` (with all four actions, `dynamodb:BatchWriteItem` included) and `AppendRudolphAudit` as above, and `aws_lambda_function.web` changes only `RUDOLPH_WEB_EDITING` from `false` to `true`. If `build/package/` is gone, run `make build` first; the plan then also updates the function's code, which is expected in that case only. Anything else in the plan: stop and check.
+2. Sign in as the **admin**. `/admin` now says editing is on, and still links to `/admin/audit`. On `/rules`, with the form "Add a global rule": type `BINARY`, identifier the value of `$SHA_UNKNOWN` (smoke-unknown, from step 6), policy `BLOCKLIST`, custom message `Rudolph test: web global block`, description `Rudolph web editing test`. The page returns to `/rules` and lists the rule.
 3. On `/machines/<MID>`, with "Add a rule for this Mac": type `BINARY`, identifier the value of `$SHA_MACHINE`, policy `ALLOWLIST`, expires `2h`. Then, in the temporary mode form, set `LOCKDOWN` for `30m`. The page shows the machine rule with its expiry and, under "Sync health", the temporary mode and its end.
 4. On the test Mac:
 
@@ -883,14 +887,63 @@ rudolph-web's editing lets people with `Rudolph.Admin` add and remove global, ma
    rudolph audit --since 1d | tee "$CAPTURE_DIR/10-audit.txt"
    ```
 
-   Success: the web entries of this step, with `web:` actors, and the CLI entries of steps 5 to 9 (`config.set`, `rule.add`, `rule.remove`, `config.update`, `config.temporary-mode`, `config.end-temporary-mode`, `group.create`, `rule.update` and so on) with the actor `cli:<your user>@<your host>`, newest first, with local and UTC times. If the list ends with `Showing the newest 100 entries`, add `--limit 500`.
+   Success: the web entries of this step, with `web:` actors, and the CLI entries of steps 5 to 9 (`config.set`, `rule.add`, `rule.remove`, `config.update`, `config.temporary-mode`, `config.end-temporary-mode`, `group.create`, `rule.update` and so on) with the actor `cli:<your user>@<your host>`, newest first, with local time first, then UTC. If the list ends with `Showing the newest 100 entries`, add `--limit 500`.
 
-Then decide whether to leave editing on:
+Capture: the plan and apply outputs, screenshots of the forms, of the machine page with the temporary mode and of `/admin/audit`, the two sync outputs, the 403 pages and `10-audit.txt`.
+
+### 10.3 Managing groups from the web view
+
+With editing on, admins also manage device groups as `rudolph group` does (rudolph-web's `docs/deploy.md`, "Editing"): create a group on `/groups`, change or delete it on its page, assign and remove a Mac's groups on the Mac's page, and make a name the Mac reports a group with **Make this a group**. This step tries each on the test Mac with two test groups and deletes both again: `smoke-web`, created on `/groups`, and `smoke-reported`, the second name the test profile reports (5.2). The `smoke` group from 6.4 is not touched.
+
+**Before you start**, check that the role has `dynamodb:BatchWriteItem` (see 10.2), which deleting a group with its rules needs:
+
+```sh
+aws iam get-role-policy --region "$REGION" --role-name "${WEB_PREFIX}_rudolph_web_role" --policy-name "${WEB_PREFIX}_rudolph_web_policy" \
+  --query 'PolicyDocument.Statement[?Sid==`WriteRudolphRules`].Action'
+```
+
+Success: `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem` and `dynamodb:BatchWriteItem`. If `BatchWriteItem` is missing, the rudolph-web deployed in 10.2 is from before group management: update the rudolph-web checkout to the release that adds it, `make build`, `make plan` (it shows `dynamodb:BatchWriteItem` added to `WriteRudolphRules` and the function's code updated, nothing else) and `make justdeploy`, then check again. Without it, step 5 below fails with a 500 and an `AccessDenied` in the function's log.
+
+Signed in as the **admin**:
+
+1. On `/groups`, open "Create a group": name `smoke-web`, description `Rudolph web group test`, leave "Macs that report it are members" ticked, **Create group**. The page goes to `/groups/smoke-web`. There, open "Change this group", change the description to `Rudolph web group test (changed)` and **Save changes**: the new description is shown. Then, with "Add a rule for this group": type `BINARY`, identifier the value of `$SHA_MACHINE`, policy `ALLOWLIST`, description `Rudolph web group test`. The group's page lists the rule.
+2. On `/machines/<MID>`, under Groups, "Reported by Santa but not a group in Rudolph" lists `smoke-reported` with a **Make this a group** button (and not `smoke`, which is already a group). Press it: the page goes to `/groups/smoke-reported`, with reported membership counting. Back on `/machines/<MID>`, the list of names that are not groups is gone.
+3. Still on `/machines/<MID>`, with "Assign a group", assign `smoke-web`. The page shows `smoke-web` under "Assigned in Rudolph" and a **Remove assigned group smoke-web** button. Wait a minute (the server caches the group list for up to 60 seconds), then on the test Mac:
+
+   ```sh
+   sudo santactl sync --debug 2>&1 | tee ~/10-sync-groups-1.txt
+   santactl rule --check --path ~/smoke-bins/smoke-machine
+   ```
+
+   and on the admin Mac:
+
+   ```sh
+   rudolph group show -m "$MID" | tee "$CAPTURE_DIR/10-group-show-1.txt"
+   ```
+
+   Success: the sync succeeds; smoke-machine has the allowlist binary rule from `smoke-web`; `group show` lists `smoke-web` as assigned, `smoke` and `smoke-reported` as reported, and all three as effective.
+4. On `/machines/<MID>`, press **Remove assigned group smoke-web**: "Assigned in Rudolph" shows none.
+5. On `/groups/smoke-web`, open "Delete this group" and press **Delete group smoke-web** without ticking anything: the page answers 400, as `rudolph group delete` without `--force` refuses a group with rules, and nothing is deleted. Tick **also delete its rules** and press it again: the page goes to `/groups`, which no longer lists `smoke-web`. On `/groups/smoke-reported` (no rules), press **Delete group smoke-reported**: `/groups` lists only `smoke`.
+6. Sync the test Mac again (`~/10-sync-groups-2.txt`), then on the admin Mac:
+
+   ```sh
+   rudolph group list | tee "$CAPTURE_DIR/10-group-list.txt"
+   rudolph group show -m "$MID" | tee "$CAPTURE_DIR/10-group-show-2.txt"
+   ```
+
+   Success: `santactl rule --check --path ~/smoke-bins/smoke-machine` shows no rule; `group list` lists `smoke` only; `group show` lists no assigned group, and `smoke` as reported and effective. `/machines/<MID>` offers **Make this a group** for `smoke-reported` again.
+7. As the admin, open `/admin/audit`, and on the admin Mac run `rudolph audit --since 1h | tee "$CAPTURE_DIR/10-audit-groups.txt"`. Success: both list this step's changes, newest first, each with the actor `web:<Entra user name> (<Entra object ID>)`: `group.delete` (target `group:smoke-reported`), `group.delete` (`group:smoke-web`), `group.remove` (`machine:<MID>`, the summary names `smoke-web`), `group.add` (`machine:<MID>`), `group.create` (`group:smoke-reported`), `rule.add` (`group:smoke-web`), `group.update` (`group:smoke-web`) and `group.create` (`group:smoke-web`). The refused delete of step 5 recorded nothing.
+
+Capture: screenshots of `/groups`, both group pages and the machine page's Groups section at each stage, the 400 page, the two sync outputs, `10-group-show-1.txt`, `10-group-show-2.txt`, `10-group-list.txt` and `10-audit-groups.txt`.
+
+### 10.4 Leave editing on, or turn it off
+
+Decide whether to leave editing on:
 
 - **Leave it on** if admins should change rules and temporary modes from the pages. Assign `Rudolph.Admin` only to the people who may do that; removing someone's assignment takes effect only when their session ends (up to `session_ttl`, one hour), or at once if you roll the cookie key (rudolph-web's `docs/deploy.md`, "Rolling the secrets").
-- **Turn it off** to keep the view read-only: set `"enable_editing": false` in rudolph-web's `config.auto.tfvars.json` and run `make plan` and `make justdeploy` again from the rudolph-web checkout, against the same build. The plan changes the same two resources back; afterwards the forms are gone, the write routes and `/admin/audit` answer 404, and the role has no write action. The audit entries stay in Rudolph's table, and `rudolph audit` still lists them.
+- **Turn it off** to keep the view read-only: set `"enable_editing": false` in rudolph-web's `config.auto.tfvars.json` and run `make plan` and `make justdeploy` again from the rudolph-web checkout, against the same build. The plan changes the same two resources back; afterwards the forms are gone, the write routes answer 404, `/admin/audit` stays (read-only, for admins), and the role has no write action. The audit entries stay in Rudolph's table, and `rudolph audit` still lists them.
 
-Capture: the plan and apply outputs, screenshots of the forms, of the machine page with the temporary mode and of `/admin/audit`, the two sync outputs, the 403 pages, `10-audit.txt`, and what you decided about editing.
+Capture: what you decided about editing and, if you turned it off, the plan and apply outputs.
 
 ## 11. Checks the audit left for the first deploy
 
@@ -926,7 +979,7 @@ Success: log objects have arrived (S3 delivers access logs on a best-effort basi
 
 Firing alarms on purpose is safe in production: nothing acts on them except the notifications. Each check below **emails every subscriber of the topic from 2.4**, once when the alarm fires and again when it returns to `OK`; tell them beforehand.
 
-List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_rudolph_" --region "$REGION" --query 'MetricAlarms[].[AlarmName,StateValue]' --output table`. Expect six, all `OK` or `INSUFFICIENT_DATA`.
+List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_rudolph_" --region "$REGION" --query 'MetricAlarms[].[AlarmName,StateValue]' --output table`. Expect nine, all `OK` or `INSUFFICIENT_DATA`.
 
 - **No `lambda_errors` from a wrong token.** The request in 3.4 with `Bearer wrong` made the authoriser return its `Unauthorized` error, which Lambda counts as a function error. `lambda_errors` leaves the authoriser out, so it must not fire. Check that the authoriser's `Errors` metric shows the error for that minute, and that `lambda_errors` stayed `OK` or `INSUFFICIENT_DATA` (`aws cloudwatch describe-alarm-history --alarm-name "${PREFIX}_rudolph_lambda_errors" --history-item-type StateUpdate --region "$REGION"` shows no change to `ALARM`). If it did fire, record it.
 - **`request_too_large`**: a body that decompresses to more than 6 MiB. Through API Gateway this no longer reaches Rudolph: API Gateway decompresses the body itself, and the result is larger than Lambda's 6 MB invocation payload limit, so AWS refuses it before the handler runs, and Rudolph's `request_too_large` metric filter (which reads the handlers' logs) sees nothing. Run it anyway to record how AWS answers.
@@ -945,7 +998,7 @@ List them first: `aws cloudwatch describe-alarms --alarm-name-prefix "${PREFIX}_
   ```
 
   Success: after about 10 minutes `prod_rudolph_api_4xx` is `ALARM` and the subscribers are emailed.
-- **`api_5xx`, `lambda_timeouts`, `dynamodb_throttles`**: there is no safe way to cause them. Check that each notifies by setting its state by hand; CloudWatch puts it back at the next evaluation (another email):
+- **`api_5xx`, `lambda_timeouts` and the four `dynamodb_*_throttles`**: there is no safe way to cause them. Check that each notifies by setting its state by hand; CloudWatch puts it back at the next evaluation (another email):
 
   ```sh
   aws cloudwatch set-alarm-state --region "$REGION" --alarm-name "${PREFIX}_rudolph_api_5xx" \
@@ -1036,7 +1089,7 @@ Compare with the configured memory (preflight and eventupload 256 MB, ruledownlo
 2. After 2 to 3 days, Cost Explorer, daily, grouped by service, filtered to tag `Name` = `Rudolph`. The filter is required here: the account's other resources would otherwise be counted too.
 3. Look at the budget (Billing → Budgets → `prod-rudolph-monthly`): its actual spend should match the Cost Explorer view, and its forecast should be well below the amount. If it shows nothing after 2 days, the tag is not active.
 
-Compare with [costs.md](costs.md) (a floor of about US$0.10 a day for one Mac, plus fixed items: two KMS customer managed keys at US$1 a month each and point-in-time recovery on both tables; the alarms about US$2.40 a month; the hosted zone is not Rudolph's here, as it already existed) and the ranker estimate in [events-table.md](events-table.md#top-binaries) (about US$2 a month at 1,000 Macs, so cents here).
+Compare with [costs.md](costs.md) (a floor of about US$0.10 a day for one Mac, plus fixed items: two KMS customer managed keys at US$1 a month each and point-in-time recovery on both tables; the alarms about US$3.80 a month without an event sink; the hosted zone is not Rudolph's here, as it already existed) and the ranker estimate in [events-table.md](events-table.md#top-binaries) (about US$2 a month at 1,000 Macs, so cents here).
 
 Capture: a CSV export of the Cost Explorer view.
 
@@ -1062,7 +1115,7 @@ rudolph group delete smoke --force        # deletes the group and all of its rul
 rudolph group list
 ```
 
-`group delete` refuses a group that still has rules unless `--force` is given, which deletes them with it. Success: `smoke` is no longer listed. The test Macs keep reporting `smoke` through `MachineOwnerGroups` until step 14 replaces their profile; Rudolph ignores a reported group that is not registered.
+`group delete` refuses a group that still has rules unless `--force` is given, which deletes them with it. Success: `smoke` is no longer listed (nor `smoke-web` or `smoke-reported`, which 10.3 deleted). The test Macs keep reporting `smoke` and `smoke-reported` through `MachineOwnerGroups` until step 14 replaces their profile; Rudolph ignores a reported group that is not registered.
 
 ### 13.3 Machine rules and the test Mac's configuration (6.2, 6.3, 8)
 
@@ -1098,13 +1151,13 @@ Do not forget the test Mac itself: it stays on Rudolph and moves to the fleet pr
 
 ### 13.7 The audit trail stays
 
-Every change the checks made through the CLI (steps 5 to 9 and this step's cleanup, `machine.forget` included) and through rudolph-web (10.2) is recorded in Rudolph's audit trail, in the store table under `Audit#<UTC day>`. Audit entries never expire and there is no command to delete them: they are the record of this test and stay. Check they are complete and keep a copy with the captures:
+Every change the checks made through the CLI (steps 5 to 9 and this step's cleanup, `machine.forget` included) and through rudolph-web (10.2 and 10.3) is recorded in Rudolph's audit trail, in the store table under `Audit#<UTC day>`. Audit entries never expire and there is no command to delete them: they are the record of this test and stay. Check they are complete and keep a copy with the captures:
 
 ```sh
 rudolph audit --since 30d --limit 1000 | tee "$CAPTURE_DIR/13-audit.txt"
 ```
 
-`--since` takes a duration (`7d`, `36h`) or an RFC 3339 time, at most 400 days back (`rudolph audit --since 400d` is the furthest); older entries are kept but not listed. In rudolph-web, `/admin/audit` (with editing on) shows the last 30 days.
+`--since` takes a duration (`7d`, `36h`) or an RFC 3339 time, at most 400 days back (`rudolph audit --since 400d` is the furthest); older entries are kept but not listed. In rudolph-web, `/admin/audit` shows the last 30 days to admins, whether or not editing is on.
 
 Capture: the outputs of 13.1 to 13.3, 13.6 and 13.7.
 
@@ -1114,7 +1167,9 @@ With the checks passed and the test data cleaned up, move the rest of the fleet 
 
 ### 14.1 The fleet profile
 
-Start from `configs/santa-configuration.mobileconfig` (plus `configs/santa-sysext.mobileconfig` and `configs/santa-tcc.mobileconfig` if the Macs do not have them yet): `SyncBaseURL` is the `sync_base_url` output, `SyncExtraHeaders` carries `Bearer <token>`, and the machine ID settings match how your Macs get theirs. Leave out the test profile's `MachineOwnerGroups` `smoke`; use `MachineOwnerGroups` only for real groups (see [groups.md](groups.md)). Keep `ClientMode` monitor until the fleet's rules are in place (see [lockdown.md](lockdown.md)).
+Start from `configs/santa-configuration.mobileconfig` (plus `configs/santa-sysext.mobileconfig` and `configs/santa-tcc.mobileconfig` if the Macs do not have them yet): `SyncBaseURL` is the `sync_base_url` output, `SyncExtraHeaders` carries `Bearer <token>`, and the machine ID settings match how your Macs get theirs. Leave out the test profile's `MachineOwnerGroups` (`smoke` and `smoke-reported`); use `MachineOwnerGroups` only for real groups (see [groups.md](groups.md)). Keep `ClientMode` monitor until the fleet's rules are in place (see [lockdown.md](lockdown.md)).
+
+The example's `MoreInfoURL`, `EventDetailText` and `EventDetailURL` are placeholders that point at a fictional host (the profile marks them with a comment): replace them or remove all three keys, or users who press the block dialog's button land on a page that does not exist. `MoreInfoURL` is opened from Santa's own window ("More Info..."); `EventDetailURL` is opened by the block dialog's button, labelled with `EventDetailText`. Point them at an internal help page that explains how to ask for an application to be allowed. `EventDetailURL` accepts Santa's placeholders (see Santa's [configuration documentation](https://santa.dev/deployment/configuration#eventdetailurl)); the vendored Santa sources in `testdata/` do not include the code that fills them in, so check on a test Mac that a URL with placeholders opens as expected before relying on it. Rudolph can also set the last two globally or per Mac (`--event-detail-url` and `--event-detail-text` of `rudolph config set` or `config update`); what Rudolph sends takes precedence over the profile (`SNTConfigurator.mm` reads the sync server's value first).
 
 Before the first stage, load the fleet's real rules (`rudolph rules import`, see [rules.md](rules.md)) and set the global configuration (5.4). Remember that a Mac's first sync with Rudolph is a clean sync: it replaces every rule the Mac held with Rudolph's, so the rules must be in Rudolph before the Macs arrive.
 
@@ -1128,7 +1183,7 @@ Before the first stage, load the fleet's real rules (`rudolph rules import`, see
 
 - **Alarms** (step 2.4): `api_4xx` (a wrong token in the profile shows as 401s), `api_5xx`, `lambda_errors`, `request_too_large` (a Mac with a large backlog of events after the move).
 - **rudolph-web:** the machine list fills in as Macs sync; each machine page's "Sync health" shows a recent sync and the expected client mode and rule count. A Mac that is in the MDM scope but not in the list has not synced: check `santactl status` and `sudo santactl sync --debug` on it. From the CLI, `rudolph machines --limit 500` lists the Macs that have synced by serial number with their last sync day, and `rudolph machine show -m <machine ID>` shows one Mac's last sync, configuration and groups.
-- **Audit trail:** `rudolph audit --since 7d` (or `/admin/audit` with editing on) shows every rule and configuration change made during the migration, and by whom.
+- **Audit trail:** `rudolph audit --since 7d` (or `/admin/audit`, for admins whether or not editing is on) shows every rule and configuration change made during the migration, and by whom.
 - **Events:** `/events?decision=BLOCK_BINARY` and `BLOCK_UNKNOWN`, and the top-blocked list, for anything blocked that should not be (in monitor mode, for what would be blocked in lockdown).
 - **Costs:** the budgets (2.6, 4.2) and Cost Explorer (12.4); costs grow with the number of Macs (see [costs.md](costs.md)).
 
@@ -1186,7 +1241,9 @@ Capture: the deletion protection apply and both destroy outputs.
 | rudolph-web 500 on every page | `/aws/lambda/<web prefix>_rudolph_web`: `config: ... is required` (second apply missing), SSM parameter errors |
 | rudolph-web 503 | `RUDOLPH_WEB_DYNAMODB_TABLE` or `RUDOLPH_WEB_EVENTS_TABLE` not set on the function |
 | rudolph-web 500 on data pages | a KMS `AccessDenied` in its log: set `dynamodb_kms_key_arn` (step 4.2); a missing index: Rudolph deployed without it |
-| rudolph-web: no forms, or 404 on `/admin/audit` and the form POSTs | `enable_editing` is `false` (or the apply in 10.2 did not run); forms are shown to `Rudolph.Admin` only |
+| rudolph-web: no forms, or 404 on the form POSTs | `enable_editing` is `false` (or the apply in 10.2 did not run); forms are shown to `Rudolph.Admin` only |
+| rudolph-web 404 on `/admin/audit` for an admin | a rudolph-web from before the read-only audit page, which exists whether or not editing is on: update it |
+| rudolph-web 500 deleting a group with "also delete its rules" | an `AccessDenied` for `dynamodb:BatchWriteItem` in its log: the role predates group management; apply the rudolph-web release that adds it (10.3) |
 | rudolph-web 403 on a form POST | the session is a viewer's (expected for the viewer in 10.2), or the request is cross-origin: the browser's `Origin` does not match `base_url` |
 | rudolph-web 400 on a form | Rudolph refused the input, as the CLI would (the page gives the reason); 404: no such rule, or Rudolph has nothing for that machine ID |
 | rudolph-web 500 after a form, "could not be recorded in the audit trail" | the change was saved but not audited: an `AccessDenied` on `Audit#` in its log means the role lacks `AppendRudolphAudit` |
