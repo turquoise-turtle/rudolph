@@ -2,7 +2,7 @@
 
 package rules
 
-// `rules -m` prints each machine rule's expiry in UTC, local time and time remaining (owner feedback from the first
+// `rules -m` prints each machine rule's expiry in local time, then UTC in brackets, then time remaining (owner feedback from the first
 // production deployment).
 
 import (
@@ -31,7 +31,7 @@ func TestExpiryShownInLocalTime_RulesMachine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rules -m: %v\n%s", err, out)
 	}
-	want := regexp.MustCompile(`Expires: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \(\d{4}-\d\d-\d\d \d\d:\d\d TST local, in (1h 59m|2h 0m)\)`)
+	want := regexp.MustCompile(`Expires: \d{4}-\d\d-\d\d \d\d:\d\d TST \(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\), in (1h 59m|2h 0m)`)
 	if !want.MatchString(out) {
 		t.Errorf("rules -m shows the expiry without local time and time remaining:\n%s", out)
 	}

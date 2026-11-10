@@ -2,7 +2,7 @@
 
 package rule
 
-// Rule expiries are printed in UTC, local time and time remaining (owner feedback from the first production
+// Rule expiries are printed in local time, then UTC in brackets, then time remaining (owner feedback from the first production
 // deployment), wherever a rule command shows them.
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 )
 
-var expiryLine = regexp.MustCompile(`Expires:\s+\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \(\d{4}-\d\d-\d\d \d\d:\d\d TST local, in (1h 59m|2h 0m)\)`)
+var expiryLine = regexp.MustCompile(`Expires:\s+\d{4}-\d\d-\d\d \d\d:\d\d TST \(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC\), in (1h 59m|2h 0m)`)
 
 func withTestZone(t *testing.T) {
 	t.Helper()
@@ -41,7 +41,7 @@ func TestExpiryShownInLocalTime_RuleAllowAndGet(t *testing.T) {
 		t.Fatalf("allow: %v\n%s", err, out)
 	}
 	if !expiryLine.MatchString(out) {
-		t.Errorf("rule allow's confirmation shows expiry %q; want UTC, local time and time remaining, e.g. \"Expires: 2026-11-09T11:21:42Z (2026-11-09 22:21 TST local, in 2h 0m)\"\n%s", expiresLines(out), out)
+		t.Errorf("rule allow's confirmation shows expiry %q; want local time, UTC in brackets and time remaining, e.g. \"Expires: 2026-11-09 22:21 TST (2026-11-09 11:21:42 UTC), in 2h 0m\"\n%s", expiresLines(out), out)
 	}
 
 	out, err = run(t, "get", "-t", "binary", "-i", sha, "--machine", machine)
