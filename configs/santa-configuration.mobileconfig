@@ -32,6 +32,7 @@
 			<string>Entering Lockdown mode</string>
 			<key>ModeNotificationMonitor</key>
 			<string>Entering Monitor mode&lt;br/&gt;Please be careful!</string>
+			<!-- Placeholders: MoreInfoURL, EventDetailText and EventDetailURL point at a fictional host. Replace them with your own pages (for example an internal help page), or remove all three keys, before deploying this profile. -->
 			<key>MoreInfoURL</key>
 			<string>https://rudolph-controller.acme.corp/moreinfo</string>
 			<key>EventDetailText</key>

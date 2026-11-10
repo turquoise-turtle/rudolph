@@ -25,18 +25,18 @@ func Expiry(t, now time.Time) string {
 	if d <= 0 {
 		relative = "expired " + Duration(-d) + " ago"
 	}
-	return absolute(t) + ", " + relative
+	return Absolute(t) + ", " + relative
 }
 
 // Since shows when something happened, e.g. "2026-11-09 15:02 JST (2026-11-09 06:02:56 UTC), 26s ago". A time after
 // now (a clock ahead of this one) shows as 0s ago.
 func Since(t, now time.Time) string {
-	return absolute(t) + ", " + Duration(now.Sub(t)) + " ago"
+	return Absolute(t) + ", " + Duration(now.Sub(t)) + " ago"
 }
 
-// absolute shows t in local time with UTC in brackets, or UTC alone when the local zone at t is UTC, where the two
+// Absolute shows t in local time with UTC in brackets, or UTC alone when the local zone at t is UTC, where the two
 // would repeat each other
-func absolute(t time.Time) string {
+func Absolute(t time.Time) string {
 	utc := t.UTC().Format(utcLayout)
 	local := t.In(time.Local)
 	if name, offset := local.Zone(); name == "UTC" && offset == 0 {

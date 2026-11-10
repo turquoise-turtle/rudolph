@@ -1,13 +1,15 @@
 #
 # CloudWatch alarms for what breaks syncing or loses events.
 #
-# Kept deliberately small for cost: seven alarms (six when no event sink is configured). Four alarm on AWS metrics,
-# which are published for free: api_5xx, api_4xx, lambda_errors and dynamodb_throttles. Three alarm on metrics that
-# metric filters extract from the Lambda logs: request_too_large, lambda_timeouts and event_sink_failures (filters
-# are free, each extracted metric is billed as one custom metric). Alarms are billed per metric they evaluate: 15 in
-# all, as lambda_errors sums one metric per function (7: the ranker included, the authoriser left out),
-# dynamodb_throttles adds reads and writes (2) and api_4xx divides 4xx responses by requests (2). At us-east-1 prices that is about 2.40 US dollars a month,
-# independent of fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
+# Kept deliberately small for cost: ten alarms (nine when no event sink is configured). Seven alarm on AWS metrics,
+# which are published for free: api_5xx, api_4xx, lambda_errors and the four dynamodb_throttles alarms (reads and
+# writes of each table). Three alarm on metrics that metric filters extract from the Lambda logs: request_too_large,
+# lambda_timeouts and event_sink_failures (filters are free, each extracted metric is billed as one custom metric).
+# Alarms are billed per metric they evaluate: 33 in all, as lambda_errors sums one metric per function (7: the ranker
+# included, the authoriser left out), dynamodb_throttles sums each table with its indexes (20: the rule store and its
+# five indexes, the events table and its three, for reads and for writes) and api_4xx divides 4xx responses by
+# requests (2). At us-east-1 prices that is about 4.20 US dollars a month (3.80 without an event sink), independent of
+# fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
 #
 # Every alarm notifies var.alarm_sns_topic_arn when set, both when it fires and when it recovers.
 #
@@ -148,6 +150,10 @@ resource "aws_cloudwatch_metric_alarm" "api_4xx" {
 # 413 responses: a request body above 6 MiB after decompression. The host never gets that payload through, so it
 # keeps failing (and for eventupload, never uploads those events) until someone looks.
 #
+# Through API Gateway this cannot fire: API Gateway decompresses the body itself and refuses one too large for Lambda
+# before any handler runs, so no status=413 line is logged (those requests show in api_4xx or api_5xx instead). It is
+# kept for a front end that passes compressed bodies through to the handlers.
+#
 resource "aws_cloudwatch_log_metric_filter" "request_too_large" {
   for_each = local.handler_log_groups
 
@@ -165,7 +171,7 @@ resource "aws_cloudwatch_log_metric_filter" "request_too_large" {
 
 resource "aws_cloudwatch_metric_alarm" "request_too_large" {
   alarm_name          = "${var.prefix}_rudolph_request_too_large"
-  alarm_description   = "A Santa host sent a request body above 6 MiB (HTTP 413). It will keep failing to sync or upload events until the cause is fixed."
+  alarm_description   = "A handler refused a request body that decompresses to more than 6 MiB (HTTP 413); the Santa host will keep failing to sync or upload events until the cause is fixed. Only fires behind a front end that passes compressed bodies through to the handler: through API Gateway, oversized bodies are refused before the handler runs and show in api_4xx or api_5xx."
   namespace           = local.alarm_metric_namespace
   metric_name         = "RequestTooLarge"
   statistic           = "Sum"
@@ -259,11 +265,39 @@ resource "aws_cloudwatch_metric_alarm" "lambda_timeouts" {
 }
 
 #
-# DynamoDB throttling. The table is on-demand, so throttling means a hot partition or an account limit.
+# DynamoDB throttling, on both tables and every global secondary index. The tables are on-demand, so throttling means a
+# hot partition or an account limit. Throttling on an index is reported under the GlobalSecondaryIndexName dimension
+# (with TableName), so each index needs a metric of its own. One alarm per table and direction keeps each within
+# CloudWatch's limit of 10 metrics per metric-math alarm.
 #
+locals {
+  # The index names are written out rather than read from the store module so that an index added there without being
+  # added here fails deployments/throttle_alarm_coverage_test.go.
+  dynamodb_throttle_tables = {
+    store = {
+      label   = "rule store"
+      table   = module.rule_store.dynamodb_table_name
+      indexes = ["SerialNum_DataType_MachineID", "DataType_MachineID", "DataType_SerialKey", "DataType_HostnameKey", "GlobalRulePolicy_SK"]
+    }
+    events = {
+      label   = "events"
+      table   = module.rule_store.events_dynamodb_table_name
+      indexes = ["Fleet_TS", "Decision_TS", "TeamID_TS"]
+    }
+  }
+
+  dynamodb_throttle_alarms = merge([
+    for key, t in local.dynamodb_throttle_tables : {
+      for direction in ["read", "write"] : "${key}_${direction}" => merge(t, { direction = direction })
+    }
+  ]...)
+}
+
 resource "aws_cloudwatch_metric_alarm" "dynamodb_throttles" {
-  alarm_name          = "${var.prefix}_rudolph_dynamodb_throttles"
-  alarm_description   = "Requests to Rudolph's DynamoDB table are being throttled."
+  for_each = local.dynamodb_throttle_alarms
+
+  alarm_name          = "${var.prefix}_rudolph_dynamodb_${each.key}_throttles"
+  alarm_description   = "${title(each.value.direction)}s to Rudolph's ${each.value.label} DynamoDB table or its indexes are being throttled."
   evaluation_periods  = 1
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -271,43 +305,55 @@ resource "aws_cloudwatch_metric_alarm" "dynamodb_throttles" {
 
   metric_query {
     id          = "throttles"
-    expression  = "reads + writes"
-    label       = "DynamoDB throttle events"
+    expression  = "SUM(METRICS())"
+    label       = "DynamoDB ${each.value.direction} throttle events"
     return_data = true
   }
 
   metric_query {
-    id = "reads"
+    id = "table"
 
     metric {
       namespace   = "AWS/DynamoDB"
-      metric_name = "ReadThrottleEvents"
+      metric_name = each.value.direction == "read" ? "ReadThrottleEvents" : "WriteThrottleEvents"
       stat        = "Sum"
       period      = 300
 
       dimensions = {
-        TableName = module.rule_store.dynamodb_table_name
+        TableName = each.value.table
       }
     }
   }
 
-  metric_query {
-    id = "writes"
+  dynamic "metric_query" {
+    for_each = each.value.indexes
 
-    metric {
-      namespace   = "AWS/DynamoDB"
-      metric_name = "WriteThrottleEvents"
-      stat        = "Sum"
-      period      = 300
+    content {
+      id = "index_${metric_query.key}"
 
-      dimensions = {
-        TableName = module.rule_store.dynamodb_table_name
+      metric {
+        namespace   = "AWS/DynamoDB"
+        metric_name = each.value.direction == "read" ? "ReadThrottleEvents" : "WriteThrottleEvents"
+        stat        = "Sum"
+        period      = 300
+
+        dimensions = {
+          TableName                = each.value.table
+          GlobalSecondaryIndexName = metric_query.value
+        }
       }
     }
   }
 
   alarm_actions = local.alarm_actions
   ok_actions    = local.alarm_actions
+
+  lifecycle {
+    precondition {
+      condition     = length(each.value.indexes) + 1 <= 10
+      error_message = "CloudWatch evaluates at most 10 metrics in one alarm; split the ${each.value.label} table's ${each.value.direction} throttle alarm."
+    }
+  }
 }
 
 #
