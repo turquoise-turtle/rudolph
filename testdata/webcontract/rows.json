@@ -289,6 +289,26 @@
     }
   },
   {
+    "Assigned": {
+      "BOOL": true
+    },
+    "DataType": {
+      "S": "GroupMember"
+    },
+    "PK": {
+      "S": "GroupMembers#eng"
+    },
+    "Reported": {
+      "BOOL": true
+    },
+    "SK": {
+      "S": "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA"
+    },
+    "UpdatedAt": {
+      "S": "<timestamp>"
+    }
+  },
+  {
     "DataType": {
       "S": "GroupRegistry"
     },
