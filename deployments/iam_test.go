@@ -15,7 +15,7 @@ import (
 // Operations the Lambdas never perform: only the CLI (which runs with the operator's own credentials) uses them.
 // Adding an operation here is a decision: say why in the comment.
 var cliOnlyDynamoDBOperations = map[string]string{
-	"TransactWriteItems": "global rule add/update/remove (CLI only)",
+	"TransactWriteItems": "not an IAM action: IAM checks each item's PutItem, UpdateItem, DeleteItem or ConditionCheckItem against the statements above (preflight's group membership transaction, the CLI's global rule changes)",
 	"Scan":               "CLI lookups and exports",
 }
 
