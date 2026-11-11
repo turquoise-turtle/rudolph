@@ -17,7 +17,8 @@ package handlers
 //     time + 100 days). Machine marker: PK "BinarySeen#<file_sha256>", SK "<machine ID>", ExpiresAfter (upload time +
 //     100 days). Only newly stored events count.
 //   - Stored for now: every BLOCK_* decision and ALLOW_UNKNOWN. Allowed-by-rule decisions wait for per-rule collection
-//     (R7b); ALLOW_SCOPE, ALLOW_PLATFORM, BUNDLE_BINARY, file access and audit events are not stored in v1.
+//     (R7b); ALLOW_SCOPE, ALLOW_PLATFORM, BUNDLE_BINARY and audit events are not stored. File access events are stored
+//     as items of their own (file_access_events_integration_test.go), never in the Exec# partitions or counters.
 //   - An event without a SHA-256 or an execution time cannot be stored: it is dropped and logged, and the upload still
 //     succeeds. A failed write to the events table answers 5xx, so Santa keeps the events and retries.
 
@@ -199,7 +200,8 @@ func TestR7_OnlyBlockedAndUnknownDecisionsAreStoredForNow(t *testing.T) {
 	}
 }
 
-func TestR7_FileAccessAndAuditEventsAreNotStored(t *testing.T) {
+// The file access event below has no access time, so it cannot be keyed and is dropped: nothing reaches the table.
+func TestR7_FileAccessEventsWithoutATimeAreNotStored(t *testing.T) {
 	transport := eventsServer(t)
 	host := syncedHost(t, machineA, transport)
 	host.PendingFileAccessEvents = []string{`{"rule_version":"v1","rule_name":"ssh keys","target":"/Users/alice/.ssh/id_ed25519","decision":"FILE_ACCESS_DECISION_DENIED"}`}
