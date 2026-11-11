@@ -1,28 +1,37 @@
-# Execution events table
+# Events table
 
-The eventupload Lambda writes execution events to a second DynamoDB table, `PREFIX_rudolph_events` (resource `aws_dynamodb_table.events` in `deployments/terraform_modules/santa_api/modules/store/events.tf`). A separate, read-only web view (rudolph-web) lists recent events from it and shows the binaries blocked or allowed most often, and those no rule decided. Apart from the ranker (see [Top binaries](#top-binaries)), Rudolph itself never reads this table.
+The eventupload Lambda writes execution events and file access events to a second DynamoDB table, `PREFIX_rudolph_events` (resource `aws_dynamodb_table.events` in `deployments/terraform_modules/santa_api/modules/store/events.tf`). A separate, read-only web view (rudolph-web) lists recent events from it and shows the binaries blocked or allowed most often, and those no rule decided. Apart from the ranker (see [Top binaries](#top-binaries)), Rudolph itself never reads this table.
 
 The table is written independently of the event sinks: it is filled whether eventupload forwards to Firehose, Kinesis, a Lambda, several of them or none (`eventupload_handler = "NONE"`). The Lambda finds it through the `EVENTS_DYNAMODB_NAME` environment variable; when that is not set (a build run outside the `santa_api` module), nothing is written.
 
 ## What is stored
 
-For now only the executions an administrator works through before moving Macs to lockdown are stored:
+Two kinds of event are stored: the executions an administrator works through before moving Macs to lockdown, and every file access event (see [File access events](#file-access-events)).
+
+Executions stored:
 
 - every `BLOCK_*` decision (`BLOCK_UNKNOWN`, `BLOCK_BINARY`, `BLOCK_CERTIFICATE`, `BLOCK_SCOPE`, `BLOCK_TEAMID`, `BLOCK_SIGNINGID`, `BLOCK_CDHASH`, `BLOCK_BINARY_MISMATCH`, and any later `BLOCK_*` decision);
 - `ALLOW_UNKNOWN` (an unknown binary allowed because the Mac is in monitor mode).
 
-Executions allowed by a rule (`ALLOW_BINARY`, `ALLOW_CERTIFICATE`, `ALLOW_TEAMID`, `ALLOW_SIGNINGID`, `ALLOW_CDHASH`) are stored only for rules flagged for collection (see [Collecting allowed executions per rule](#collecting-allowed-executions-per-rule)): storing all of them would multiply the table's cost about tenfold. `ALLOW_SCOPE`, `ALLOW_PLATFORM`, `BUNDLE_BINARY`, file access events and audit events are not stored.
+Executions allowed by a rule (`ALLOW_BINARY`, `ALLOW_CERTIFICATE`, `ALLOW_TEAMID`, `ALLOW_SIGNINGID`, `ALLOW_CDHASH`) are stored only for rules flagged for collection (see [Collecting allowed executions per rule](#collecting-allowed-executions-per-rule)): storing all of them would multiply the table's cost about tenfold. `ALLOW_SCOPE`, `ALLOW_PLATFORM`, `BUNDLE_BINARY` and audit events are not stored.
 
 By default Santa uploads only blocked executions and, on Macs in monitor mode, `ALLOW_UNKNOWN`, so with the default configuration the table holds almost everything Santa uploads.
 
 Some events are never stored. They are dropped, the eventupload log gets one line containing `dropped` with the count, the machine ID and the reason (never the event), the rest of the upload is stored and the upload succeeds:
 
-- events without a file SHA-256 or an execution time, which cannot be keyed;
-- events executed more than a day after the upload or more than 90 days before it (a wrong clock or a forged upload): a future date would keep an event at the top of every newest-first list for 90 days, and an older event would expire at once;
+- executions without a file SHA-256 or an execution time, which cannot be keyed;
+- file access events without an access time or a target, or whose decision is missing or `FILE_ACCESS_DECISION_UNKNOWN`;
+- events executed or accessed more than a day after the upload or more than 90 days before it (a wrong clock or a forged upload): a future date would keep an event at the top of every newest-first list for 90 days, and an older event would expire at once;
 - events DynamoDB rejects as invalid, which would be rejected on every retry;
-- everything beyond the first 1,000 stored events of one upload. Santa uploads in batches of the preflight's `batch_size` (50 by default), so only a misconfigured or forged client reaches this; it bounds the DynamoDB calls and time of one upload.
+- everything beyond the first 1,000 stored events of one upload, executions and file access events together (executions first). Santa uploads in batches of the preflight's `batch_size` (50 by default), so only a misconfigured or forged client reaches this; it bounds the DynamoDB calls and time of one upload.
 
-A long field is not a reason to drop an event: every stored string is cut to at most 4,096 bytes (`Decision` and `TeamID`, which are index keys, to 1,024) on a UTF-8 character boundary. Santa's fields have no length limit, and an item over DynamoDB's 400 KB limit would be refused on every retry.
+A long field is not a reason to drop an event: every stored string, each path of a file access event's process chain included, is cut to at most 4,096 bytes (`Decision` and `TeamID`, which are index keys, to 1,024) on a UTF-8 character boundary. Santa's fields have no length limit, and an item over DynamoDB's 400 KB limit would be refused on every retry.
+
+### File access events
+
+File access events come from Santa's File Access Authorization (FAA): a process opened a path that an FAA rule watches. Santa uploads them to any configured sync server, a denied access at once and an audit-only match with its next upload, so there is nothing to turn on in Rudolph. The FAA policy itself (the rules, their paths and the processes they allow) comes from the Mac's configuration profile, as `FileAccessPolicy` or `FileAccessPolicyPlist` in the `com.northpolesec.santa` payload, not from Rudolph: sync v1 has no way to deliver FAA rules. Rudolph only sends `override_file_access_action` (`NONE`, `AUDIT_ONLY` or `DISABLE`, see [Reconfiguring the Sensor](sync.md#reconfiguring-the-sensor)).
+
+Every usable file access event is stored, whatever its decision (`FILE_ACCESS_DECISION_DENIED`, `FILE_ACCESS_DECISION_DENIED_INVALID_SIGNATURE` or `FILE_ACCESS_DECISION_AUDIT_ONLY`), in a partition of its own per Mac. File access events have no day counter or machine marker, so they never reach the top lists, and they are forwarded to the event sinks exactly as before.
 
 ## Collecting allowed executions per rule
 
@@ -54,18 +63,19 @@ Santa uploads allowed-by-rule executions only when `EnableAllEventUpload` is on 
 | Item | PK | SK | Attributes | Expires |
 |---|---|---|---|---|
 | Event | `Exec#<machine ID>` | `<TS>#<file SHA-256>#<pid>` | `MachineID`, `TS`, `Fleet` (always `Exec`), `Decision` (Santa's name, e.g. `BLOCK_BINARY`), `FileSHA256`, `FilePath`, `FileName`, `ExecutingUser`, `TeamID`, `SigningID`, `CDHash`, `IdentityUnverified` (boolean, only when Santa 2026.9 reported `identity_unverified`: Santa could not confirm that the file it evaluated is the image the kernel loaded, so the file hash is report-only) | 90 days after upload |
+| File access event | `FileAccess#<machine ID>` | `<TS>#<pid>#<16 hex digits>`: `TS` is the access time, `pid` the first process's (0 without a process chain), and the hex digits the start of the SHA-256 of the rule name, the target and the decision, so that two accesses by one process at one instant are two items and the same event uploaded again is the same item | `MachineID`, `TS`, `Fleet` (always `FileAccess`), `Decision` (Santa's name, e.g. `FILE_ACCESS_DECISION_DENIED`), `RuleName`, `RuleVersion`, `Target` (the path accessed); of the first process in the chain (the one that accessed the path): `ProcessPath`, `ProcessName` (the last element of `ProcessPath`), `ProcessSHA256`, `ProcessSigningID`, `ProcessTeamID`, `ProcessCDHash`, `PID` (number); `ParentPath` (the second process's path); `ProcessChain` (list of every process's path, accessing process first, then each parent, at most 8) | 90 days after upload |
 | Day counter | `BinaryDay#<UTC date of the execution>` (`YYYY-MM-DD`) | `<file SHA-256>` | `Blocked`, `Allowed`, `UnknownBlocked`, `UnknownAllowed` (numbers; each absent until its first event), `FileName`, `SigningID`, `TeamID` | 100 days after its first event |
 | Machine marker | `BinarySeen#<file SHA-256>` | `<machine ID>` | `LastSeenDay` (UTC date, `YYYY-MM-DD`, of the Mac's latest upload of an event of the binary) | 100 days after the Mac last ran the binary |
 | Top list snapshot row | `TopSnapshot#<kind>#<window>#<snapshot ID>` | `<rank>` (6 digits from `000001`) | `FileSHA256`, `Count`, `Machines` (numbers; `Machines` on the first 100 rows only), `FileName`, `SigningID`, `TeamID`, `GlobalRule` (unknown lists only, on the first 100 rows, when a global rule covers the binary) | 8 days after it was written |
 | Top list pointer | `Top#<kind>#<window>` | `Current` | `Snapshot` (the snapshot ID), `GeneratedAt` (RFC 3339) | never; replaced every hour |
 
-`TS` is the execution time in microseconds since the Unix epoch, rounded and zero-padded to 20 digits, so it sorts as a string. Empty attributes are left out (DynamoDB rejects an empty string in an index key such as `TeamID`). `ExpiresAfter` holds the expiry in Unix seconds; the table's TTL deletes expired items, free of charge, usually within a few days of expiry.
+`TS` is the execution (or access) time in microseconds since the Unix epoch, rounded and zero-padded to 20 digits, so it sorts as a string. Empty attributes are left out (DynamoDB rejects an empty string in an index key such as `TeamID`). `ExpiresAfter` holds the expiry in Unix seconds; the table's TTL deletes expired items, free of charge, usually within a few days of expiry.
 
 Indexes, all projecting every attribute and with `TS` as the sort key, so a time window is a range on `TS`:
 
-- `Fleet_TS` (`Fleet`): every event of the fleet, newest first.
-- `Decision_TS` (`Decision`): events with one decision.
-- `TeamID_TS` (`TeamID`): events of one team ID. Sparse: unsigned binaries have no team ID.
+- `Fleet_TS` (`Fleet`): every event of the fleet, newest first: executions under `Exec`, file access events under `FileAccess`.
+- `Decision_TS` (`Decision`): events with one decision. File access decisions (`FILE_ACCESS_DECISION_*`) are values no execution has, so they list file access events only.
+- `TeamID_TS` (`TeamID`): executions of one team ID. Sparse: unsigned binaries have no team ID, and file access events keep their process's team ID in `ProcessTeamID`, outside this index.
 
 Day counters, machine markers and the top lists have no `TS`, so they are in no index.
 
@@ -73,6 +83,7 @@ Day counters, machine markers and the top lists have no `TS`, so they are in no 
 
 - The events of one upload that add to the same day counter (same binary, same UTC day) are written together with that counter in `TransactWriteItems` transactions of up to 99 events plus the counter update, and at most about 3 MB (DynamoDB allows 100 items and 4 MB). Each event is put only if it does not exist yet (`attribute_not_exists(PK)`), and the counter gets `ADD Blocked` or `ADD Allowed` with the number of events written, and in the same `ADD`, `UnknownBlocked` for the `BLOCK_UNKNOWN` events among them and `UnknownAllowed` for the `ALLOW_UNKNOWN` ones (the display attributes and the expiry are set only if absent). `Blocked` and `Allowed` still count every stored decision, unknown ones included; the unknown counts tell the ranker which executions no rule of any scope decided on that Mac at that time. An event is therefore never stored without being counted, nor counted twice. When Santa uploads events again that are already stored, DynamoDB cancels the transaction and says which events failed their condition; the transaction is sent again without them, adding only the others; DynamoDB may name further events on the next attempt, so a batch can take a few calls, and a batch that is entirely stored already needs no second call. An event DynamoDB refuses as invalid is dropped from the batch the same way and logged.
 - Transactions on the same counter run one after another, since concurrent transactions on one item cancel each other; different counters are written in parallel, at most 16 calls at a time. A transaction cancelled by a conflicting write from another upload or by throttling is retried after a short wait, up to 5 attempts in all. Each attempt carries its own client request token, derived from its contents, the upload's expiries and the attempt number: the AWS SDK's own retries of an attempt whose response was lost reuse the token, so DynamoDB does not apply the transaction twice.
+- Each file access event is a plain `PutItem`, written only if it does not exist yet (`attribute_not_exists(PK)`); one already stored by an earlier upload is skipped, not an error, and one DynamoDB refuses as invalid is dropped and logged. These puts share the pool of at most 16 calls at a time with the execution transactions.
 - Each binary of the upload then gets its machine marker (`PutItem`, with `LastSeenDay` set to the UTC date of the upload), also for events stored by an earlier upload, so a marker lost with an earlier attempt is made up for. A crash-looping binary that fills a 500-event upload therefore takes about a dozen calls, and any upload of N events at most about 2N, besides retries.
 - The writes run alongside the sinks and share their deadline (the Lambda deadline minus 1.5 seconds, see [Delivery to the event sink](sync.md#delivery-to-the-event-sink)). After the first failed write no new writes start, but writes already running finish. A failed write, or running out of time, answers HTTP 500, so Santa keeps the events and uploads them again at its next sync; events already stored are skipped then.
 - Santa retries the whole upload, not just the events this table missed, so after a table failure the Firehose, Kinesis or Lambda sinks receive the upload's records again. Sinks can already receive records twice when one sink fails after another succeeded; consumers of the sinks must tolerate duplicates.
@@ -117,6 +128,8 @@ Storage of 8 days of snapshots (up to ~600 MB) adds about US$0.15 a month and th
 ## Costs
 
 The cost depends on how many events Santa uploads, not on how often binaries run. Each stored event costs five to eight write units: the item costs two because it is written in a transaction, plus three index entries; the day counter update (also two units in a transaction) and the machine marker are shared by the events of one binary in an upload, so they add three more per event when every event is of a different binary and almost nothing for a crash-looping binary and about 1 KB of storage for 90 days. rudolph-web's `docs/data-layer-design.md`, sections "Event store options" and "D+ in detail", has the estimates by fleet size and upload setting (they assume about six write units per event, within that range); in short, with Santa's default upload setting it is a few US dollars a month for 1,000 Macs in monitor mode and under a dollar in lockdown mode. Turning on `EnableAllEventUpload` multiplies uploads about tenfold; only the events of flagged rules are stored, so the rest raise Lambda and sink costs (about US$0.30 a month for 1,000 Macs for the Lambda) but not this table's. Each flagged rule's stored executions cost the same as any other stored event, so flag a broad rule such as a widely used team ID only for as long as you need it.
+
+A file access event costs about 3 write units: 1 for the item (a plain `PutItem` of up to 1 KB) and 1 each for its `Fleet_TS` and `Decision_TS` entries; a long process chain or long paths make the item, and so each of the three writes, larger than 1 KB and cost a unit more per KB. It takes about 1 KB of storage for 90 days. How many there are depends entirely on the FAA policy in the Macs' configuration profiles: a rule that a common process trips many times a day can upload far more events than executions, so check `file_access_stored` in the eventupload log (see [Eventupload](sync.md#eventupload)) after rolling out a new FAA policy.
 
 Point-in-time recovery is on, as for the store table, and is billed by table size.
 

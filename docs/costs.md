@@ -169,8 +169,8 @@ The optional monthly cost budget (`monthly_budget_usd`, see [deploy](./deploy.md
 
 The budget only sees costs tagged `Name = Rudolph` once `Name` is activated as a cost allocation tag (see below), and it only alerts: it never stops spending.
 
-## Execution Events Table
-Blocked and unknown executions, and those allowed by rules flagged for collection, are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, about US$9 a month per 1,000 Macs in monitor mode at us-east-1 list prices, or about US$6 when its storage fits in the free tier, and about a tenth of that in lockdown mode; see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)); see [Execution events table](./events-table.md#costs).
+## Events Table
+Blocked and unknown executions, those allowed by rules flagged for collection, and file access events are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, about US$9 a month per 1,000 Macs in monitor mode at us-east-1 list prices, or about US$6 when its storage fits in the free tier, and about a tenth of that in lockdown mode; see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). File access events add about 3 write units each, and how many there are depends on the FAA policy in the Macs' configuration profiles; see [Events table](./events-table.md#costs).
 
 The ranker, which builds the web view's top-blocked, top-allowed and top-unknown lists, reads 90 days of day counters, the machine markers of up to 2,000 binaries (usually a few hundred) and up to about 300 global rules per run, and writes up to 10,000 snapshot rows: about US$4 a month for 1,000 Macs and about US$21 a month for 100,000 Macs (up to about US$150 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). See [Top binaries](./events-table.md#top-binaries).
 

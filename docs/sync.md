@@ -239,9 +239,9 @@ If KEXT is in use → /usr/bin/log show --info --debug --predicate 'senderImageP
 ### Eventupload
 
 #### URL - HTTP POST /eventupload/{machine_uuid}
-This endpoint allows the Santa sensor to upload execution events: by default blocked executions and, on Macs in monitor mode, unknown binaries it allowed; with `enable_all_event_upload`, every execution. It is useful for gathering logs but is unimportant to the ruledownload part of sync.
+This endpoint allows the Santa sensor to upload execution events: by default blocked executions and, on Macs in monitor mode, unknown binaries it allowed; with `enable_all_event_upload`, every execution. Santa also uploads its file access events (`file_access_events`) here whenever a sync server is configured: the accesses its File Access Authorization (FAA) policy denied or audited. That policy comes from the Mac's configuration profile (`FileAccessPolicy` or `FileAccessPolicyPlist`), not from Rudolph, as sync v1 cannot deliver FAA rules; Rudolph only sends `override_file_access_action`. The endpoint is useful for gathering logs but is unimportant to the ruledownload part of sync.
 
-Rudolph forwards the events to the configured sinks (Firehose, Kinesis Data Streams, a Lambda function, several of them or none; see [Delivery to the event sink](#delivery-to-the-event-sink)) and stores blocked and unknown executions, and those allowed by rules flagged for collection, in the [execution events table](events-table.md).
+Rudolph forwards the events to the configured sinks (Firehose, Kinesis Data Streams, a Lambda function, several of them or none; see [Delivery to the event sink](#delivery-to-the-event-sink)) and stores blocked and unknown executions, those allowed by rules flagged for collection, and every file access event in the [events table](events-table.md) (see [File access events](events-table.md#file-access-events)).
 
 #### Request - JSON
 
@@ -296,7 +296,7 @@ Rudolph forwards the events to the configured sinks (Firehose, Kinesis Data Stre
 Santa 2026.9 adds `identity_unverified` (true when Santa could not confirm that the file it evaluated is the image the kernel loaded; the file hash and other content-derived fields are then report-only). Rudolph forwards it to every sink as sent, omitted when false, and stores it on the event's item as `IdentityUnverified`.
 
 #### Delivery to the event sink
-Blocked and unknown executions, and those allowed by rules flagged for collection, are also stored in the execution events table, whatever sink is configured, and a failed write answers 500 like a failing sink; see [Execution events table](events-table.md).
+Blocked and unknown executions, those allowed by rules flagged for collection, and file access events are also stored in the events table, whatever sink is configured, and a failed write answers 500 like a failing sink; see [Events table](events-table.md).
 
 Events are written to the configured sink (Firehose, Kinesis Data Streams and/or a Lambda function). Each upload is
 split into as many requests as the service's limits require (Firehose PutRecordBatch: 500 records / 4 MiB; Kinesis
@@ -334,7 +334,7 @@ The HTTP status tells Santa whether to keep the batch:
 - **500** when the sink is throttled or failing, or records kept failing after the retries. Santa keeps the batch and
   sends it again on the next sync; events of that batch that were already delivered may then arrive twice.
 
-Every upload also logs one line with counts only, never event contents: `eventupload: machine=<id> received=<n> stored=<m>`. `received` is the number of execution events in the request, `stored` the number this upload wrote to the events table (0 without one). An event already stored by an earlier attempt of the same batch is not counted again, so the sum of `stored` over a day is the number of events stored that day; `received` counts a re-sent batch again. [smoke-test.md](smoke-test.md#121-events-per-mac-per-day) step 12.1 has the Logs Insights query for events per Mac per day.
+Every upload also logs one line with counts only, never event contents: `eventupload: machine=<id> received=<n> stored=<m> file_access_received=<n> file_access_stored=<m>`. `received` is the number of execution events in the request, `stored` the number this upload wrote to the events table (0 without one); the `file_access_` fields count file access events the same way. An event already stored by an earlier attempt of the same batch is not counted again, so the sum of `stored` over a day is the number of events stored that day; `received` counts a re-sent batch again. [smoke-test.md](smoke-test.md#121-events-per-mac-per-day) step 12.1 has the Logs Insights query for events per Mac per day.
 
 ### Ruledownload
 
