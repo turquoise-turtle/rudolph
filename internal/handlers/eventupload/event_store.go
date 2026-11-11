@@ -24,10 +24,10 @@ import (
 	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 )
 
-// The execution events table (EVENTS_DYNAMODB_NAME) is read by the separate web view: it lists events by machine, by
-// fleet, by decision and by team ID, and ranks the binaries blocked or allowed on a day from the day counters. Its
-// layout is a contract with that web view (rudolph-web's docs/data-layer-design.md, "D+ in detail"); see
-// docs/events-table.md.
+// The events table (EVENTS_DYNAMODB_NAME) is read by the separate web view: it lists execution and file access events
+// by machine, by fleet, by decision and (executions only) by team ID, and ranks the binaries blocked or allowed on a
+// day from the day counters. Its layout is a contract with that web view (rudolph-web's docs/data-layer-design.md,
+// "D+ in detail"); see docs/events-table.md.
 const (
 	eventPKPrefix       = "Exec#"
 	dayCounterPKPrefix  = "BinaryDay#"
@@ -176,13 +176,14 @@ func cutFields(e EventUploadEvent) EventUploadEvent {
 type counterKey struct{ day, sha string }
 
 // Store writes the execution events of one upload that the events table keeps, and counts each newly stored event
-// exactly once in its day counter. An event that can never be stored (no SHA-256, an execution time outside the kept
-// window, one DynamoDB rejects, or beyond maxStoredPerUpload) is dropped and logged. Any other failure is returned,
-// so the handler answers 5xx and Santa uploads the events again; events already stored and counted are skipped then.
+// exactly once in its day counter, and writes the upload's file access events (see file_access_store.go). An event
+// that can never be stored (no SHA-256 or access target, a time outside the kept window, one DynamoDB rejects, or
+// beyond maxStoredPerUpload, which executions and file access events share) is dropped and logged. Any other failure
+// is returned, so the handler answers 5xx and Santa uploads the events again; events already stored are skipped then.
 //
-// It returns how many events this call wrote to the table, not counting those an earlier upload had already stored,
-// even when it also returns an error.
-func (s *eventStore) Store(ctx context.Context, machineID string, events []EventUploadEvent) (written int, err error) {
+// It returns how many execution and file access events this call wrote to the table, not counting those an earlier
+// upload had already stored, even when it also returns an error.
+func (s *eventStore) Store(ctx context.Context, machineID string, events []EventUploadEvent, fileAccess []FileAccessEvent) (written, writtenFileAccess int, err error) {
 	now := s.now()
 	earliest := float64(now.Add(-maxEventAge).Unix())
 	latest := float64(now.Add(maxFutureSkew).Unix())
@@ -227,9 +228,11 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	}
 	logDropped(machineID, incomplete, "no file SHA-256 or execution time")
 	logDropped(machineID, outside, "execution time more than a day ahead or older than the 90 days kept")
-	logDropped(machineID, overLimit, fmt.Sprintf("more than %d events in one upload", maxStoredPerUpload))
-	if len(candidates) == 0 {
-		return 0, nil
+	// Executions come first in the shared limit: they feed the day counters and the ranker.
+	accesses, accessOverLimit := selectFileAccess(machineID, fileAccess, earliest, latest, maxStoredPerUpload-len(candidates))
+	logDropped(machineID, overLimit+accessOverLimit, fmt.Sprintf("more than %d events in one upload", maxStoredPerUpload))
+	if len(candidates) == 0 && len(accesses) == 0 {
+		return 0, 0, nil
 	}
 
 	eventExpiry := strconv.FormatInt(now.Add(eventTTL).Unix(), 10)
@@ -250,7 +253,21 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	stored := make([]bool, len(candidates))
 	var rejected int
 	var mu sync.Mutex
-	writeErr := parallel(ctx, len(groupOrder), func(ctx context.Context, g int) error {
+	// File access events are written in the same pool as the execution groups, so the upload keeps to
+	// storeParallelism calls in flight.
+	writeErr := parallel(ctx, len(groupOrder)+len(accesses), func(ctx context.Context, g int) error {
+		if g >= len(groupOrder) {
+			added, invalid, err := s.putFileAccess(ctx, machineID, accesses[g-len(groupOrder)], eventExpiry)
+			mu.Lock()
+			if added {
+				writtenFileAccess++
+			}
+			if invalid {
+				rejected++
+			}
+			mu.Unlock()
+			return err
+		}
 		group := groups[groupOrder[g]]
 		for _, chunk := range transactionChunks(candidates, group) {
 			batches := [][]int{chunk}
@@ -320,9 +337,9 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	})
 
 	if err := errors.Join(writeErr, markerErr); err != nil {
-		return written, fmt.Errorf("events table: %w", err)
+		return written, writtenFileAccess, fmt.Errorf("events table: %w", err)
 	}
-	return written, nil
+	return written, writtenFileAccess, nil
 }
 
 func logDropped(machineID string, n int, reason string) {

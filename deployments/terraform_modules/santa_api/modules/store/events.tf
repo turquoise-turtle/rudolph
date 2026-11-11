@@ -1,5 +1,5 @@
 #
-# DynamoDB table of execution events, read by the separate web view (rudolph-web's docs/data-layer-design.md, "D+ in
+# DynamoDB table of execution and file access events, read by the separate web view (rudolph-web's docs/data-layer-design.md, "D+ in
 # detail"). The eventupload Lambda writes it; the scheduled ranker (../../ranker.tf) reads its day counters and machine
 # markers and writes the top lists. Layout and costs: docs/events-table.md.
 #
@@ -11,9 +11,10 @@ resource "aws_dynamodb_table" "events" {
   name         = local.events_table_name
   billing_mode = "PAY_PER_REQUEST"
 
-  # Event items: PK Exec#<machine ID>, SK <20-digit µs execution time>#<file SHA-256>#<pid>. Day counters
-  # (BinaryDay#<UTC date> / <file SHA-256>) and machine markers (BinarySeen#<file SHA-256> / <machine ID>) share the
-  # table; they carry no TS, so they stay out of every index.
+  # Execution items: PK Exec#<machine ID>, SK <20-digit µs execution time>#<file SHA-256>#<pid>. File access items:
+  # PK FileAccess#<machine ID>, SK <20-digit µs access time>#<pid>#<16 hex digits>; they carry no TeamID, so they
+  # stay out of TeamID_TS. Day counters (BinaryDay#<UTC date> / <file SHA-256>) and machine markers
+  # (BinarySeen#<file SHA-256> / <machine ID>) share the table; they carry no TS, so they stay out of every index.
   hash_key  = "PK"
   range_key = "SK"
 
@@ -52,8 +53,9 @@ resource "aws_dynamodb_table" "events" {
     enabled        = true
   }
 
-  # Every event of the fleet, newest first. Fleet is the same on every event, so this index has one partition; at
-  # the event rates in docs/events-table.md that is far below a partition's write limit.
+  # Every event of the fleet, newest first. Fleet is Exec on every execution and FileAccess on every file access
+  # event, so this index has two partitions; at the event rates in docs/events-table.md that is far below a
+  # partition's write limit.
   global_secondary_index {
     name = "Fleet_TS"
     key_schema {
@@ -80,7 +82,7 @@ resource "aws_dynamodb_table" "events" {
     projection_type = "ALL"
   }
 
-  # Sparse: unsigned binaries have no team ID, and the writer leaves the attribute out.
+  # Sparse: unsigned binaries have no team ID, and the writer leaves the attribute out. Executions only.
   global_secondary_index {
     name = "TeamID_TS"
     key_schema {

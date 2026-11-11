@@ -113,6 +113,9 @@ later remotely changed by Rudolph once everything is set up, but an initial defa
 
 Once Santa syncs, Rudolph sends the client mode and the other settings it manages from its own configuration, which is changed with `rudolph config set` / `rudolph config update` and shown with `rudolph config get`, globally (`--global`) or per Mac (`--machine <machine-id>`). See the [CLI reference](cli.md#configuration) for the commands and [sync.md](sync.md) for what each setting does.
 
+### `FileAccessPolicy` and `FileAccessPolicyPlist` (optional)
+Santa's File Access Authorization (FAA) policy, the paths it watches and the processes allowed to open them, is set here in the profile (inline as `FileAccessPolicy`, or as the path of a policy file in `FileAccessPolicyPlist`), not by Rudolph: sync v1 cannot deliver FAA rules. Rudolph can only override the policy's action per Mac or globally (`override_file_access_action`, see [Reconfiguring the Sensor](sync.md#reconfiguring-the-sensor)). With a policy in place, Santa uploads its file access events to Rudolph with no further setting, and Rudolph stores them in the [events table](events-table.md#file-access-events) for the web view and forwards them to the event sinks.
+
 
 ## Plist File
 Deploy a `.plist` file to the `MachineIDPlist` location, using your MDM or otherwise. We've included an example file, [configs/com.northpolesec.santa.machine-mapping.plist](/configs/com.northpolesec.santa.machine-mapping.plist).

@@ -32,7 +32,7 @@ One Lambda function is not behind the API: the ranker (`PREFIX_rudolph_ranker`),
 Rudolph has two DynamoDB tables:
 
 * The store table, `PREFIX_rudolph_store`, holds all rules (global, machine-specific and group rules), machine configurations, device groups, sync state and the sensor data each Mac reports at preflight.
-* The execution events table, `PREFIX_rudolph_events`, holds the execution events the eventupload Lambda stores (blocked and unknown executions, and those allowed by rules flagged for collection) for 90 days, with per-day counters per binary and the top lists the ranker builds. Only eventupload and the ranker write it; Rudolph's sync never reads it. See [Execution events table](events-table.md).
+* The events table, `PREFIX_rudolph_events`, holds the events the eventupload Lambda stores (blocked and unknown executions, those allowed by rules flagged for collection, and file access events) for 90 days, with per-day counters per binary and the top lists the ranker builds. Only eventupload and the ranker write it; Rudolph's sync never reads it. See [Events table](events-table.md).
 
 Besides its primary key (`PK`, `SK`), the store table has five global secondary indexes: `SerialNum_DataType_MachineID` (`rudolph lookup serial-number`), `DataType_MachineID` (machine ID prefix lookups), `DataType_SerialKey` and `DataType_HostnameKey`, which the web view uses to list Macs by serial number and hostname (`rudolph machines` reads `DataType_SerialKey` too) (see [Sensor data row](sync.md#sensor-data-row)), and `GlobalRulePolicy_SK`, which the web view uses to list global rules by policy (see [Global rules and the policy index](rules.md#global-rules-and-the-policy-index)).
 

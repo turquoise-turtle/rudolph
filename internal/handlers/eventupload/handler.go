@@ -29,7 +29,7 @@ type PostEventuploadHandler struct {
 	lambdaClient lambda.LambdaClient
 	enableLambda bool
 
-	// eventStore writes execution events to the events table read by the web view, independently of the sinks.
+	// eventStore writes execution and file access events to the events table read by the web view, independently of the sinks.
 	// Nil when EVENTS_DYNAMODB_NAME is not set.
 	eventStore *eventStore
 }
@@ -105,13 +105,16 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 
 	// Counts only, never event contents: the first deployment measures events per Mac per day from this line
 	// (docs/smoke-test.md step 12.1). stored is what this upload wrote, so a retried upload is not counted twice.
-	var written int
+	// File access events are counted apart, after the execution counts, so the step 12.1 query still reads
+	// executions only.
+	var written, writtenFileAccess int
 	defer func() {
-		log.Printf("eventupload: machine=%s received=%d stored=%d", machineID, len(eventsRequest.Events), written)
+		log.Printf("eventupload: machine=%s received=%d stored=%d file_access_received=%d file_access_stored=%d",
+			machineID, len(eventsRequest.Events), written, len(eventsRequest.FileAccessEvents), writtenFileAccess)
 	}()
 
 	sinksEnabled := h.enableFirehose || h.enableKinesis || h.enableLambda
-	storeEvents := h.eventStore != nil && len(eventsRequest.Events) > 0
+	storeEvents := h.eventStore != nil && (len(eventsRequest.Events) > 0 || len(eventsRequest.FileAccessEvents) > 0)
 	// Execution events, file access events and audit events are all forwarded, each record tagged with the
 	// machine that reported it.
 	var forwardedEvents []interface{}
@@ -133,7 +136,7 @@ func (h *PostEventuploadHandler) HandleContext(ctx context.Context, request even
 		stored.Add(1)
 		go func() {
 			defer stored.Done()
-			written, storeErr = h.eventStore.Store(ctx, machineID, eventsRequest.Events)
+			written, writtenFileAccess, storeErr = h.eventStore.Store(ctx, machineID, eventsRequest.Events, eventsRequest.FileAccessEvents)
 		}()
 	}
 

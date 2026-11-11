@@ -43,6 +43,6 @@ Use the cli to sync rules ([docs/rules.md](docs/rules.md)). Every command and fl
 * [Architecture](docs/architecture.md)
 * [The sync process](docs/sync.md)
 * [Device groups](docs/groups.md)
-* [Execution events table](docs/events-table.md), which the read-only web view, rudolph-web, lists events and top binaries from
+* [Events table](docs/events-table.md) (executions and file access events), which the read-only web view, rudolph-web, lists events and top binaries from
 * [Costs](docs/costs.md) and [security risks](docs/security-risks.md)
 

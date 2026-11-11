@@ -480,3 +480,11 @@ This applies to every existing deployment. Preflight and `rudolph group add|remo
 
 - **Costs.** No change on steady-state syncs; a membership change costs about two more write units per group joined or left (transactional writes cost double); see [Group members](costs.md#group-members).
 - **rudolph-web**, if it changes a Mac's assigned groups, must write the member row in the same transaction from the same release; otherwise run `rudolph group members --rebuild` again after such changes.
+
+### 20. File access events stored
+This applies to every existing deployment. The eventupload Lambda now also stores Santa's file access (FAA) events in the events table, as items `FileAccess#<machine ID>`, listed in the `Fleet_TS` index under `FileAccess` and in `Decision_TS` under their `FILE_ACCESS_DECISION_*` decision (see [File access events](events-table.md#file-access-events)). They are still forwarded to the event sinks as before.
+
+- **Code only.** The eventupload role already has `dynamodb:PutItem` on the whole events table, so `make deploy` changes only the Lambda code; no IAM, table or index change.
+- **Only Macs with an FAA policy upload them.** The policy comes from the Mac's configuration profile (`FileAccessPolicy` or `FileAccessPolicyPlist`), not from Rudolph (see [configuring Santa](configuring-santa.md#fileaccesspolicy-and-fileaccesspolicyplist-optional)); without one there are no events and nothing changes.
+- **Log line.** The eventupload count line gains `file_access_received=<n> file_access_stored=<m>` after `stored=<m>`; queries that parse `received` and `stored` keep working.
+- **Costs.** About 3 write units and 1 KB of storage for 90 days per stored file access event; see [Costs](events-table.md#costs).
