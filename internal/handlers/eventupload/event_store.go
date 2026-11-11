@@ -130,6 +130,9 @@ type storableEvent struct {
 	event   EventUploadEvent
 	micros  int64
 	blocked bool
+	// unknown is set for BLOCK_UNKNOWN and ALLOW_UNKNOWN: no rule decided, so the ranker lists the binary as a
+	// candidate for one.
+	unknown bool
 	sk      string
 	counter counterKey
 
@@ -218,6 +221,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 		seen[sk] = true
 		candidates = append(candidates, storableEvent{
 			event: cutFields(e), micros: micros, blocked: blocked, sk: sk,
+			unknown: e.Decision == "BLOCK_UNKNOWN" || e.Decision == "ALLOW_UNKNOWN",
 			counter: counterKey{day: time.UnixMicro(micros).UTC().Format("2006-01-02"), sha: e.FileSHA256},
 		})
 	}
@@ -502,13 +506,18 @@ type counterChange struct {
 // set only if absent, so concurrent uploads never overwrite each other and the counter expires 100 days after its
 // first event.
 func counterUpdate(events []*storableEvent, expiry string) counterChange {
-	var blocked, allowed int
+	var blocked, allowed, unknownBlocked, unknownAllowed int
 	var fileName, signingID, teamID string
 	for _, e := range events {
 		if e.blocked {
 			blocked++
 		} else {
 			allowed++
+		}
+		if e.unknown && e.blocked {
+			unknownBlocked++
+		} else if e.unknown {
+			unknownAllowed++
 		}
 		if fileName == "" {
 			fileName = e.event.FileName
@@ -529,6 +538,14 @@ func counterUpdate(events []*storableEvent, expiry string) counterChange {
 	if allowed > 0 {
 		add = append(add, "Allowed :allowed")
 		values[":allowed"] = &types.AttributeValueMemberN{Value: strconv.Itoa(allowed)}
+	}
+	if unknownBlocked > 0 {
+		add = append(add, "UnknownBlocked :unknownblocked")
+		values[":unknownblocked"] = &types.AttributeValueMemberN{Value: strconv.Itoa(unknownBlocked)}
+	}
+	if unknownAllowed > 0 {
+		add = append(add, "UnknownAllowed :unknownallowed")
+		values[":unknownallowed"] = &types.AttributeValueMemberN{Value: strconv.Itoa(unknownAllowed)}
 	}
 	set := []string{"ExpiresAfter = if_not_exists(ExpiresAfter, :exp)"}
 	for _, field := range []struct{ name, value string }{

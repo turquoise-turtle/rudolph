@@ -50,7 +50,7 @@ Assumptions:
 * **Logs**: about 600 bytes of CloudWatch Logs per Lambda invocation (Rudolph's request line and a handler line or two, Lambda's START/END/REPORT lines, and CloudWatch's 26 bytes per log event), kept 30 days (`log_retention_in_days`). API Gateway execution logging is off.
 * **Data transfer out** to the Macs: about 5 KB a sync (TLS handshake with the certificate chain, and the three responses), counted in the API Gateway column.
 * **Events**: Santa's default upload setting in **monitor mode**, about 50 events a Mac a day (rudolph-web's `docs/data-layer-design.md`; replace it with your fleet's real figure from the eventupload logs). They do not depend on the sync interval: about 6 write units each (event item, its three index entries, its share of the day counter and machine marker) and, kept 90 days, about 2.7 KB of table storage each (the item and three indexes that project every attribute) plus point-in-time recovery of the item. Santa uploads blocked executions straight away but monitor mode's `ALLOW_UNKNOWN` executions at the next sync, so with events spread over 8 hours of use a day, the number of eventupload requests does depend on the interval (about 47, 31, 15 and 8 a Mac a day at 1, 10, 30 and 60 minutes). In **lockdown mode** (about 5 events a Mac a day) the Events column is about a tenth of the figure shown.
-* **Fixed** (see [Fixed monthly costs](#fixed-monthly-costs)): US$8.00, US$8.60 and US$9.60 for 500, 2,000 and 5,000 Macs, with the ranker running hourly.
+* **Fixed** (see [Fixed monthly costs](#fixed-monthly-costs)): US$10.10, US$10.90 and US$11.90 for 500, 2,000 and 5,000 Macs, with the ranker running hourly.
 
 Unit prices used (us-east-1, on-demand, list):
 
@@ -71,52 +71,52 @@ Unit prices used (us-east-1, on-demand, list):
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 8.0 | **364** |
-| 1,000 | 1 min | 66.5 M | 33 | 242 | 56 | 20 | 4.6 | 8.0 | **364** |
-| 10,000 | 1 min | 66.7 M | 33 | 243 | 56 | 20 | 4.6 | 8.0 | **366** |
-| 100 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 8.0 | **50** |
-| 1,000 | 10 min | 7.1 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 8.0 | **50** |
-| 10,000 | 10 min | 7.3 M | 3.7 | 27 | 5.7 | 2.2 | 4.6 | 8.0 | **51** |
-| 100 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 8.0 | **25** |
-| 1,000 | 30 min | 2.4 M | 1.3 | 8.9 | 1.9 | 0.7 | 4.6 | 8.0 | **25** |
-| 10,000 | 30 min | 2.7 M | 1.4 | 9.7 | 1.9 | 0.8 | 4.6 | 8.0 | **27** |
-| 100 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 8.0 | **19** |
-| 1,000 | 60 min | 1.2 M | 0.6 | 4.5 | 1.0 | 0.4 | 4.6 | 8.0 | **19** |
-| 10,000 | 60 min | 1.5 M | 0.8 | 5.3 | 1.0 | 0.4 | 4.6 | 8.0 | **20** |
+| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **366** |
+| 1,000 | 1 min | 66.5 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
+| 10,000 | 1 min | 66.7 M | 33 | 243 | 56 | 20 | 4.6 | 10 | **368** |
+| 100 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
+| 1,000 | 10 min | 7.1 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
+| 10,000 | 10 min | 7.3 M | 3.7 | 27 | 5.7 | 2.2 | 4.6 | 10 | **53** |
+| 100 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
+| 1,000 | 30 min | 2.4 M | 1.3 | 8.9 | 1.9 | 0.7 | 4.6 | 10 | **28** |
+| 10,000 | 30 min | 2.7 M | 1.4 | 9.7 | 1.9 | 0.8 | 4.6 | 10 | **29** |
+| 100 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
+| 1,000 | 60 min | 1.2 M | 0.6 | 4.5 | 1.0 | 0.4 | 4.6 | 10 | **21** |
+| 10,000 | 60 min | 1.5 M | 0.8 | 5.3 | 1.0 | 0.4 | 4.6 | 10 | **22** |
 
 2,000 Macs, monitor mode, US$ a month:
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 min | 266 M | 132 | 969 | 225 | 80 | 19 | 8.6 | **1,434** |
-| 1,000 | 1 min | 266 M | 132 | 970 | 225 | 80 | 19 | 8.6 | **1,434** |
-| 10,000 | 1 min | 267 M | 133 | 973 | 225 | 81 | 19 | 8.6 | **1,439** |
-| 100 | 10 min | 28.2 M | 14 | 103 | 23 | 8.5 | 19 | 8.6 | **175** |
-| 1,000 | 10 min | 28.3 M | 14 | 103 | 23 | 8.6 | 19 | 8.6 | **176** |
-| 10,000 | 10 min | 29.2 M | 15 | 106 | 23 | 8.8 | 19 | 8.6 | **180** |
-| 100 | 30 min | 9.7 M | 5.0 | 35 | 7.6 | 2.9 | 19 | 8.6 | **78** |
-| 1,000 | 30 min | 9.8 M | 5.1 | 36 | 7.6 | 3.0 | 19 | 8.6 | **78** |
-| 10,000 | 30 min | 10.7 M | 5.6 | 39 | 7.8 | 3.2 | 19 | 8.6 | **83** |
-| 100 | 60 min | 4.9 M | 2.5 | 18 | 3.8 | 1.5 | 19 | 8.6 | **53** |
-| 1,000 | 60 min | 5.0 M | 2.6 | 18 | 3.8 | 1.5 | 19 | 8.6 | **53** |
-| 10,000 | 60 min | 5.9 M | 3.1 | 21 | 4.0 | 1.8 | 19 | 8.6 | **57** |
+| 100 | 1 min | 266 M | 132 | 969 | 225 | 80 | 19 | 11 | **1,436** |
+| 1,000 | 1 min | 266 M | 132 | 970 | 225 | 80 | 19 | 11 | **1,437** |
+| 10,000 | 1 min | 267 M | 133 | 973 | 225 | 81 | 19 | 11 | **1,441** |
+| 100 | 10 min | 28.2 M | 14 | 103 | 23 | 8.5 | 19 | 11 | **177** |
+| 1,000 | 10 min | 28.3 M | 14 | 103 | 23 | 8.6 | 19 | 11 | **178** |
+| 10,000 | 10 min | 29.2 M | 15 | 106 | 23 | 8.8 | 19 | 11 | **182** |
+| 100 | 30 min | 9.7 M | 5.0 | 35 | 7.6 | 2.9 | 19 | 11 | **80** |
+| 1,000 | 30 min | 9.8 M | 5.1 | 36 | 7.6 | 3.0 | 19 | 11 | **81** |
+| 10,000 | 30 min | 10.7 M | 5.6 | 39 | 7.8 | 3.2 | 19 | 11 | **85** |
+| 100 | 60 min | 4.9 M | 2.5 | 18 | 3.8 | 1.5 | 19 | 11 | **55** |
+| 1,000 | 60 min | 5.0 M | 2.6 | 18 | 3.8 | 1.5 | 19 | 11 | **55** |
+| 10,000 | 60 min | 5.9 M | 3.1 | 21 | 4.0 | 1.8 | 19 | 11 | **60** |
 
 5,000 Macs, monitor mode, US$ a month:
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 min | 664 M | 331 | 2,192 | 561 | 201 | 46 | 9.6 | **3,341** |
-| 1,000 | 1 min | 665 M | 331 | 2,192 | 562 | 201 | 46 | 9.6 | **3,342** |
-| 10,000 | 1 min | 667 M | 332 | 2,199 | 562 | 202 | 46 | 9.6 | **3,351** |
-| 100 | 10 min | 70.5 M | 36 | 256 | 56 | 21 | 46 | 9.6 | **426** |
-| 1,000 | 10 min | 70.7 M | 36 | 257 | 56 | 21 | 46 | 9.6 | **427** |
-| 10,000 | 10 min | 73.0 M | 37 | 265 | 57 | 22 | 46 | 9.6 | **438** |
-| 100 | 30 min | 24.3 M | 13 | 88 | 19 | 7.3 | 46 | 9.6 | **183** |
-| 1,000 | 30 min | 24.5 M | 13 | 89 | 19 | 7.4 | 46 | 9.6 | **184** |
-| 10,000 | 30 min | 26.8 M | 14 | 97 | 19 | 8.1 | 46 | 9.6 | **195** |
-| 100 | 60 min | 12.2 M | 6.3 | 44 | 9.6 | 3.7 | 46 | 9.6 | **120** |
-| 1,000 | 60 min | 12.4 M | 6.4 | 45 | 9.6 | 3.8 | 46 | 9.6 | **121** |
-| 10,000 | 60 min | 14.7 M | 7.8 | 53 | 10 | 4.4 | 46 | 9.6 | **131** |
+| 100 | 1 min | 664 M | 331 | 2,192 | 561 | 201 | 46 | 12 | **3,344** |
+| 1,000 | 1 min | 665 M | 331 | 2,192 | 562 | 201 | 46 | 12 | **3,344** |
+| 10,000 | 1 min | 667 M | 332 | 2,199 | 562 | 202 | 46 | 12 | **3,353** |
+| 100 | 10 min | 70.5 M | 36 | 256 | 56 | 21 | 46 | 12 | **428** |
+| 1,000 | 10 min | 70.7 M | 36 | 257 | 56 | 21 | 46 | 12 | **429** |
+| 10,000 | 10 min | 73.0 M | 37 | 265 | 57 | 22 | 46 | 12 | **440** |
+| 100 | 30 min | 24.3 M | 13 | 88 | 19 | 7.3 | 46 | 12 | **185** |
+| 1,000 | 30 min | 24.5 M | 13 | 89 | 19 | 7.4 | 46 | 12 | **186** |
+| 10,000 | 30 min | 26.8 M | 14 | 97 | 19 | 8.1 | 46 | 12 | **197** |
+| 100 | 60 min | 12.2 M | 6.3 | 44 | 9.6 | 3.7 | 46 | 12 | **122** |
+| 1,000 | 60 min | 12.4 M | 6.4 | 45 | 9.6 | 3.8 | 46 | 12 | **123** |
+| 10,000 | 60 min | 14.7 M | 7.8 | 53 | 10 | 4.4 | 46 | 12 | **134** |
 
 Per sync this is about US$16 per million syncs: API Gateway about US$11 (US$10.50 for the 3 requests, about US$0.45 for data transfer out), DynamoDB about US$2.60, Lambda about US$1.50 and CloudWatch Logs about US$0.90. Above 333 million requests a month (about 2,500 Macs syncing every minute), API Gateway's lower tiers bring the per-sync cost down a little.
 
@@ -126,7 +126,7 @@ Takeaways:
 
 * API Gateway's per-request price is about two thirds of every sync-driven figure, followed by DynamoDB; at intervals of 30 minutes and more, the events table and the fixed items become a large share of a small bill.
 * The sync interval matters far more than the rule count: 1-minute syncs cost about 8 times as much as Santa's 10-minute default and 20 to 30 times as much as 60-minute syncs, while 1,000 rules instead of 100 change the total by about a dollar or less, because only the periodic clean syncs page through the global rules. Even 10,000 rules add only a few per cent at a 10-minute interval.
-* For most fleets, keep Santa's default of 10 minutes (about US$50, US$175 and US$425 a month for 500, 2,000 and 5,000 Macs if every Mac is always online, much less in practice), or 30 minutes (about US$25, US$80 and US$185) if a rule change or temporary mode may take up to half an hour to arrive; `santactl sync` applies a change at once on a Mac that needs it. Avoid 1 minute: it is Santa's minimum and costs about US$365, US$1,435 and US$3,340 a month for little gain.
+* For most fleets, keep Santa's default of 10 minutes (about US$52, US$180 and US$430 a month for 500, 2,000 and 5,000 Macs if every Mac is always online, much less in practice), or 30 minutes (about US$27, US$80 and US$185) if a rule change or temporary mode may take up to half an hour to arrive; `santactl sync` applies a change at once on a Mac that needs it. Avoid 1 minute: it is Santa's minimum and costs about US$365, US$1,435 and US$3,345 a month for little gain.
 
 ## Fixed monthly costs
 These do not depend on the sync interval, and apart from the ranker not on the number of Macs (us-east-1 list prices; `scripts/cost_grid.py` prints the ranker figures for other fleet sizes and `--ranker-runs`):
@@ -135,13 +135,13 @@ These do not depend on the sync interval, and apart from the ranker not on the n
 |---|---|
 | 2 KMS customer managed keys (DynamoDB tables, Lambda source bucket); a Firehose sink created by Terraform adds a third | 2.00 |
 | CloudWatch alarms: 33 alarm metrics and 3 custom metrics (see [Throttling and Alarms](#throttling-and-alarms)); 3.80 without an event sink | 4.20 |
-| Ranker, hourly (`rate(1 hour)`, 720 runs): 500 / 2,000 / 5,000 Macs in monitor mode | about 1.75 / 2.40 / 3.30 |
-| Ranker on weekdays in working hours only (for example `cron(0 8-18 ? * MON-FRI *)`: 11 runs a weekday, about 240 a month): 500 / 2,000 / 5,000 Macs | about 0.60 / 0.80 / 1.10 |
+| Ranker, hourly (`rate(1 hour)`, 720 runs): 500 / 2,000 / 5,000 Macs in monitor mode | about 3.90 / 4.60 / 5.70 |
+| Ranker on weekdays in working hours only (for example `cron(0 8-18 ? * MON-FRI *)`: 11 runs a weekday, about 240 a month): 500 / 2,000 / 5,000 Macs | about 1.30 / 1.55 / 1.90 |
 | S3: the Lambda source bucket and its access logs | under 0.05 |
 | EventBridge schedule, SSM standard parameters, the cost budget | free |
 | Route 53 hosted zone, only when Terraform creates it (`use_existing_route53_zone` false), so not counted above; alias queries to API Gateway are free | 0.50 |
 
-With the ranker restricted to working hours, the Fixed column above drops by about US$1.20 (500 Macs), US$1.60 (2,000 Macs) or US$2.20 (5,000 Macs).
+With the ranker restricted to working hours, the Fixed column above drops by about US$2.60 (500 Macs), US$3.10 (2,000 Macs) or US$3.80 (5,000 Macs).
 
 ## rudolph-web
 The web view (a Lambda Function URL, optionally behind CloudFront) has no idle cost: it is billed per request only. Assuming light admin use, a few admins and about 200 page views a working day (about 5,000 requests a month, each a Lambda invocation of a few hundred milliseconds at 256 MB and a few DynamoDB queries), it costs under US$0.10 a month in Lambda, DynamoDB reads and logs. CloudFront adds about US$0.01 per 10,000 HTTPS requests and US$0.085 per GB to viewers in North America and Europe (`PriceClass_100`, the example's setting, serves viewers elsewhere from North American and European edges at those prices): a few cents a month at this use, and within CloudFront's always-free 1 TB and 10 million requests a month.
@@ -172,7 +172,7 @@ The budget only sees costs tagged `Name = Rudolph` once `Name` is activated as a
 ## Execution Events Table
 Blocked and unknown executions, and those allowed by rules flagged for collection, are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, about US$9 a month per 1,000 Macs in monitor mode at us-east-1 list prices, or about US$6 when its storage fits in the free tier, and about a tenth of that in lockdown mode; see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)); see [Execution events table](./events-table.md#costs).
 
-The ranker, which builds the web view's top-blocked and top-allowed lists, reads 90 days of day counters and the machine markers of up to 800 binaries per run and writes up to 4,000 snapshot rows: about US$2 a month for 1,000 Macs and about US$19 a month for 100,000 Macs (up to about US$70 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). See [Top binaries](./events-table.md#top-binaries).
+The ranker, which builds the web view's top-blocked, top-allowed and top-unknown lists, reads 90 days of day counters, the machine markers of up to 2,000 binaries (usually a few hundred) and up to about 300 global rules per run, and writes up to 10,000 snapshot rows: about US$4 a month for 1,000 Macs and about US$21 a month for 100,000 Macs (up to about US$150 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). See [Top binaries](./events-table.md#top-binaries).
 
 ## Costs of Rules
 The number of global rules barely affects cost. A sync with no changes reads only the rules feed since the Mac's last completed syncs, not the global rules, so it costs the same with 100 rules or 80,000. Only clean syncs (a Mac's first sync, then every 7 to 17 days) page through every global rule, in pages of the preflight's `batch_size` (default 50); for 1,000 rules that is about 20 extra small requests per Mac every couple of weeks, about a dollar a month for 5,000 Macs (see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). Machine and group rules are read on every sync (about 150 KB, 20 read units at eventual consistency, for 1,000 of them on one Mac), so a Mac with very many machine rules does cost more per sync.

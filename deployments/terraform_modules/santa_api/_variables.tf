@@ -233,7 +233,7 @@ variable "table_deletion_protection" {
 #
 variable "ranker_schedule_expression" {
   type        = string
-  description = "When the ranker rebuilds the web view's top-blocked and top-allowed lists: an EventBridge Scheduler rate(), cron() or at() expression, in ranker_schedule_timezone. For example cron(0 8-18 ? * MON-FRI *) runs it hourly from 8am to 6pm on weekdays."
+  description = "When the ranker rebuilds the web view's top-blocked, top-allowed and top-unknown lists: an EventBridge Scheduler rate(), cron() or at() expression, in ranker_schedule_timezone. For example cron(0 8-18 ? * MON-FRI *) runs it hourly from 8am to 6pm on weekdays."
   default     = "rate(1 hour)"
 
   validation {

@@ -100,7 +100,9 @@ INDEX_WRITES_PER_MAC_DAY = 2  # LastSeenDay in the two machine list indexes
 # Ranker, per run (docs/events-table.md, "Top binaries"). Distinct binaries a day are a guess: about 2,000 at 1,000
 # Macs and 50,000 at 100,000, i.e. growing with the fleet to the power 0.7. Each day counter is about 250 bytes,
 # read at half a read unit per 4 KB for 90 days. About 300 listed binaries run on about a fifth of the Macs, with
-# a 60 byte machine marker each. Snapshot rows (under 1 KB, one write unit) grow from about 3,000 to the 4,000 cap.
+# a 60 byte machine marker each: the unknown lists mostly repeat binaries already in the blocked and allowed ones.
+# Snapshot rows (under 1 KB, one write unit) of the 20 lists grow from about 7,500 to the 10,000 cap. Up to 300
+# global rule lookups (GetItem, half a read unit each) mark the unknown lists.
 RANKER_DAYS = 90
 RANKER_COUNTER_BYTES = 250
 RANKER_LISTED_BINARIES = 300
@@ -108,6 +110,7 @@ RANKER_MARKER_SHARE = 0.2
 RANKER_MARKER_BYTES = 60
 RANKER_ROW_STORED_BYTES = 400
 RANKER_ROWS_KEPT_DAYS = 8
+RANKER_RULE_LOOKUPS = 300
 RANKER_LAMBDA = (0.256, 10.0)
 
 ALARM_METRICS = 33
@@ -169,9 +172,10 @@ def ranker(p: dict, macs: int, runs: float) -> float:
     binaries_a_day = 2000 * (macs / 1000) ** 0.7
     counter_reads = binaries_a_day * RANKER_DAYS * RANKER_COUNTER_BYTES / 4096 * 0.5
     marker_reads = RANKER_LISTED_BINARIES * macs * RANKER_MARKER_SHARE * RANKER_MARKER_BYTES / 4096 * 0.5
-    rows = min(4000, 3000 + 500 * math.log10(max(macs, 1000) / 1000))
+    rule_reads = RANKER_RULE_LOOKUPS * 0.5
+    rows = min(10000, 7500 + 1250 * math.log10(max(macs, 1000) / 1000))
     stored_gb = rows * RANKER_ROW_STORED_BYTES * runs * RANKER_ROWS_KEPT_DAYS / DAYS / GB
-    return (runs * ((counter_reads + marker_reads) * p["ddb_read_per_million"] / 1e6
+    return (runs * ((counter_reads + marker_reads + rule_reads) * p["ddb_read_per_million"] / 1e6
                     + rows * p["ddb_write_per_million"] / 1e6 + lambda_cost(p, RANKER_LAMBDA))
             + stored_gb * p["ddb_storage_gb_month"])
 
