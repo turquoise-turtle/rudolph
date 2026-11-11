@@ -29,10 +29,10 @@ func init() {
 		Use:   "forget -m <machine-id> [--yes|--dry-run]",
 		Short: "Delete everything Rudolph keeps in the store table for a retired Mac",
 		Long: `Deletes everything Rudolph keeps in the store table for one Mac: what it reported (sensor data), its sync state,
-its configuration, its group membership, its machine rules and their delivery tracking, and its entries in the index
-of rules whose allowed events are collected. Group registrations, global rules and group rules are not changed.
-Events in the events table are not deleted; they expire on their own. If the Mac syncs again, it starts afresh, as a
-Mac Rudolph has never seen. Forget a Mac after it stops syncing: what a sync writes after the list is made is not
+its configuration, its group membership (with its rows in the group member index), its machine rules and their
+delivery tracking, and its entries in the index of rules whose allowed events are collected. Group registrations,
+global rules and group rules are not changed. Events in the events table are not deleted; they expire on their own. If
+the Mac syncs again, it starts afresh, as a Mac Rudolph has never seen. Forget a Mac after it stops syncing: what a sync writes after the list is made is not
 deleted. Running forget again lists and deletes whatever is left.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -95,6 +95,8 @@ type forgetPlan struct {
 	deliveries   []dynamodb.PrimaryKey
 	assigned     []string
 	reported     []string
+	// members are the Mac's rows in the member index of each group it is in (GroupMembers#<group>)
+	members []dynamodb.PrimaryKey
 	// collected is the number of the Mac's machine rules in the event collection index
 	collected int
 }
@@ -125,6 +127,7 @@ func planForget(client dynamodb.DynamoDBClient, machineID string) (*forgetPlan, 
 		return nil, err
 	}
 	p.assigned, p.reported = membership.Assigned, membership.Reported
+	p.members = groups.MemberKeys(machineID, membership)
 	index, err := eventcollection.ReadIndex(client)
 	if err != nil {
 		return nil, err
@@ -164,7 +167,8 @@ func partitionKeys(client dynamodb.QueryAPI, pk string) ([]dynamodb.PrimaryKey, 
 func (p *forgetPlan) keys() []dynamodb.PrimaryKey {
 	keys := append([]dynamodb.PrimaryKey{}, p.machineItems...)
 	keys = append(keys, p.rules...)
-	return append(keys, p.deliveries...)
+	keys = append(keys, p.deliveries...)
+	return append(keys, p.members...)
 }
 
 func (p *forgetPlan) hasGroupsItem() bool {
@@ -218,6 +222,7 @@ func (p *forgetPlan) print() {
 	}
 	if len(p.assigned) > 0 || len(p.reported) > 0 {
 		fmt.Printf("  %-34s assigned %s; reported %s\n", "groups it leaves:", list(p.assigned), list(p.reported))
+		fmt.Printf("  %-34s %s\n", "group member rows:", items(len(p.members)))
 	}
 	fmt.Printf("  %-34s %s\n", "machine rules:", items(len(p.rules)))
 	fmt.Printf("  %-34s %s\n", "machine rule delivery tracking:", items(len(p.deliveries)))
@@ -236,7 +241,8 @@ func items(n int) string {
 }
 
 // apply deletes what the plan lists. Assigned groups are removed with the writer `rudolph group remove` uses, which
-// records the membership change for readers that cache membership; deleting the Groups row records it too, since
+// records the membership change for readers that cache membership and keeps the member rows in step; the member rows
+// left (those of reported groups) are deleted with the Mac's items; deleting the Groups row records it too, since
 // reported groups alone also make the Mac a member. A run that fails part-way can be run again: it lists what is
 // left. On an error, changed says whether anything may have been changed before it.
 func (p *forgetPlan) apply(client writer) (changed bool, err error) {

@@ -458,3 +458,25 @@ This applies to every existing deployment. The eventupload Lambda now also count
 - **Terraform apply needed.** `make deploy` applies it. The plan updates the ranker's role policy (a new statement allowing `dynamodb:GetItem` on the store table, `dynamodb:LeadingKeys` `GlobalRules` only), adds `DYNAMODB_NAME` to the ranker Lambda's environment, and changes the description of the ranker schedule; no resource is replaced. A ranker deployed without the apply runs without `DYNAMODB_NAME`: it still builds every list but logs that it can't mark global rules. If the code is deployed with the new environment but an older role policy, every run fails with `AccessDeniedException` on `GetItem` (the `lambda_errors` alarm fires) and the lists stay on their last snapshot, so deploy code and infrastructure together (step 0).
 - **The unknown lists fill from the deploy day.** Day counters written before the deploy have no unknown counts, so the unknown lists start empty and a window is complete once that many days have passed since the deploy. `Blocked` and `Allowed` are unchanged.
 - **Costs.** The ranker writes 2.5 times as many snapshot rows (twenty lists instead of eight) and makes up to about 300 point reads a run: about US$4 a month for 1,000 Macs instead of US$2, and about US$21 for 100,000 instead of US$19; see [Top binaries](events-table.md#top-binaries). The day counter update is the same write as before, so storing events costs nothing more.
+
+### 19. Group members
+This applies to every existing deployment. Preflight and `rudolph group add|remove` now keep a member row per Mac and group (`GroupMembers#<group>`/`<machine id>`) in step with the Mac's groups item, in the same transaction, so that `rudolph group members <group>` can list a group's Macs (see [Listing a group's Macs](groups.md#listing-a-groups-macs)).
+
+1. **Apply the IAM change before the new Lambdas run.** The Lambdas' store policy gains `GroupMembers#*` in the write statement's `dynamodb:LeadingKeys`. A Lambda running the new code under the old policy cannot write the rows: every preflight that changes a Mac's reported groups fails its transaction (with `AccessDeniedException` in the logs), so the Mac's reported groups stay as they were until the policy is applied, when the next preflight writes them. `make deploy` applies the policy and the Lambdas in one apply, in no guaranteed order, so apply the policy on its own first, from a fresh build:
+
+   ```sh
+   export ENV=YOURENV
+   make build tf-init
+   terraform -chdir=deployments/environments/$ENV apply \
+     -target=module.santa_api.module.rule_store.aws_iam_policy.lambda_policy \
+     --var lambda_api_zip="$PWD/build/package/api_deployment.zip" \
+     --var lambda_authorizer_zip="$PWD/build/package/api_authorizer_deployment.zip" \
+     --var lambda_ranker_zip="$PWD/build/package/ranker_deployment.zip"
+   ```
+
+   The plan updates `aws_iam_policy.lambda_policy` in place and nothing else.
+2. **Deploy.** `make deploy`. The rest of the plan is the new Lambda code.
+3. **Backfill the rows, once.** Macs whose groups have not changed since the deploy have no rows yet, so run `rudolph group members --rebuild` (with the new CLI). It scans the table once, shows how many rows it writes, and asks first; `--dry-run` shows the counts without writing. If the CLI's credentials are restricted by partition key, allow `dynamodb:Scan` on the table and `dynamodb:BatchWriteItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem` and `dynamodb:Query` on `GroupMembers#*` first (see [CLI permissions](#cli-permissions)).
+
+- **Costs.** No change on steady-state syncs; a membership change costs about two more write units per group joined or left (transactional writes cost double); see [Group members](costs.md#group-members).
+- **rudolph-web**, if it changes a Mac's assigned groups, must write the member row in the same transaction from the same release; otherwise run `rudolph group members --rebuild` again after such changes.

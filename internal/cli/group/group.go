@@ -320,7 +320,129 @@ func init() {
 	showCmd.Flags().StringVarP(&machineID, "machine", "m", "", "The Mac's machine UUID")
 	_ = showCmd.MarkFlagRequired("machine")
 
-	GroupCmd.AddCommand(createCmd, updateCmd, deleteCmd, listCmd, getCmd, addCmd, removeCmd, showCmd)
+	var rebuild bool
+	membersCmd := &cobra.Command{
+		Use:   "members <group> | --rebuild [--yes|--dry-run]",
+		Short: "List the Macs in a group, or rebuild the group member index from every Mac's groups",
+		Long: `Lists the Macs in a registered group, by machine ID, each marked "assigned" (rudolph group add), "reported" (Santa
+reports the group for it) or both. Macs that only report a group whose reported membership is ignored (--no-reported)
+are left out, as they are not members. The Macs in no group (rudolph:ungrouped) cannot be listed.
+
+With --rebuild, rebuilds the member index of every group from the groups of every Mac (one Scan of the table): writes
+the rows that are missing or wrong and deletes the rows of Macs no longer in the group. Run it once after upgrading to
+a version that keeps the index, so that Macs whose groups have not changed since are listed too.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case rebuild && len(args) > 0:
+				return errors.New("--rebuild rebuilds every group: pass no group with it")
+			case !rebuild && len(args) == 0:
+				return errors.New("pass a group, or --rebuild")
+			}
+			client, err := writer(cmd)
+			if err != nil {
+				return err
+			}
+			if rebuild {
+				return rebuildMembers(cmd, client)
+			}
+			return listMembers(client, args[0])
+		},
+	}
+	membersCmd.Flags().BoolVar(&rebuild, "rebuild", false, "Rebuild the member index of every group from every Mac's groups")
+
+	GroupCmd.AddCommand(createCmd, updateCmd, deleteCmd, listCmd, getCmd, addCmd, removeCmd, showCmd, membersCmd)
+}
+
+func listMembers(client client, group string) error {
+	name, err := groups.NormaliseTarget(group)
+	if err != nil {
+		return err
+	}
+	if name == groups.Ungrouped {
+		return errors.New("the Macs in no group are not indexed: list the Macs in each group instead")
+	}
+	registry, err := groups.GetRegistry(client, true)
+	if err != nil {
+		return err
+	}
+	entry, ok := registry.Groups[name]
+	if !ok {
+		return fmt.Errorf("group %q: %w", name, groups.ErrGroupNotFound)
+	}
+	members, err := groups.ListMembers(client, name)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, m := range members {
+		var how []string
+		if m.Assigned {
+			how = append(how, "assigned")
+		}
+		if m.Reported && entry.AcceptReported {
+			how = append(how, "reported")
+		}
+		if len(how) == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%-38s %s", m.SK, strings.Join(how, ", ")))
+	}
+	if len(lines) == 0 {
+		fmt.Printf("No Macs in group %q.\n", name)
+		return nil
+	}
+	fmt.Printf("%-38s %s\n", "MACHINE", "MEMBERSHIP")
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	fmt.Printf("%d Macs in group %q.\n", len(lines), name)
+	return nil
+}
+
+// rebuildShown bounds the rows rebuildMembers lists; a first rebuild after upgrading writes a row per membership
+const rebuildShown = 20
+
+func rebuildMembers(cmd *cobra.Command, client client) error {
+	plan, err := groups.PlanMembersRebuild(clock.ConcreteTimeProvider{}, client)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Read the groups of %d Macs and %d member rows.\n", plan.Macs, plan.Rows)
+	if plan.Empty() {
+		fmt.Println("Every member row is right; nothing to write.")
+		return nil
+	}
+	fmt.Printf("Writing %d missing or wrong member rows and deleting %d that no Mac's groups back:\n", len(plan.Writes), len(plan.Deletes))
+	shown := 0
+	for _, row := range plan.Writes {
+		if shown++; shown > rebuildShown {
+			break
+		}
+		fmt.Printf("  write  %s / %s (assigned %t, reported %t)\n", row.PK, row.SK, row.Assigned, row.Reported)
+	}
+	for _, key := range plan.Deletes {
+		if shown++; shown > rebuildShown {
+			break
+		}
+		fmt.Printf("  delete %s / %s\n", key.PartitionKey, key.SortKey)
+	}
+	if total := len(plan.Writes) + len(plan.Deletes); total > rebuildShown {
+		fmt.Printf("  and %d more\n", total-rebuildShown)
+	}
+	if apply, err := flags.ApprovalOf(cmd).Confirm(); !apply {
+		return err
+	}
+	summary := fmt.Sprintf("rebuilt the group member rows from %d Macs' groups: wrote %d, deleted %d", plan.Macs, len(plan.Writes), len(plan.Deletes))
+	if err := plan.Apply(client); err != nil {
+		// The rows are sent 25 at a time, so only a failure after the first batch can leave some written
+		if len(plan.Writes)+len(plan.Deletes) <= 25 {
+			return err
+		}
+		return flags.RecordPartial(client, "group.members.rebuild", "groups", "rebuilding the group member rows", err)
+	}
+	fmt.Printf("Wrote %d member rows and deleted %d.\n", len(plan.Writes), len(plan.Deletes))
+	return flags.Record(client, "group.members.rebuild", "groups", summary)
 }
 
 func changeMembership(cmd *cobra.Command, machineID, group string, add bool) error {
@@ -387,6 +509,7 @@ func reportedText(accept bool) string {
 // client is what the group commands need from DynamoDB
 type client interface {
 	groups.RegistryWriter
+	dynamodb.ScanAPI
 	flags.MachineIDLookupAPI
 	audit.Writer
 }

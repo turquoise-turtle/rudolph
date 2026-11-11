@@ -178,6 +178,9 @@ The ranker, which builds the web view's top-blocked, top-allowed and top-unknown
 The number of global rules barely affects cost. A sync with no changes reads only the rules feed since the Mac's last completed syncs, not the global rules, so it costs the same with 100 rules or 80,000. Only clean syncs (a Mac's first sync, then every 7 to 17 days) page through every global rule, in pages of the preflight's `batch_size` (default 50); for 1,000 rules that is about 20 extra small requests per Mac every couple of weeks, about a dollar a month for 5,000 Macs (see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). Machine and group rules are read on every sync (about 150 KB, 20 read units at eventual consistency, for 1,000 of them on one Mac), so a Mac with very many machine rules does cost more per sync.
 
 
+## Group members
+The member rows that `rudolph group members` lists (`GroupMembers#<group>`/`<machine id>`, about 150 bytes each, one per Mac and group it is assigned or reports) cost nothing on a steady-state sync: preflight only touches them when a Mac's reported groups change. Such a change, or a `rudolph group add|remove`, reads the Mac's groups item once, strongly consistent (one read unit), and writes it with the row of each group joined or left in one transaction. Transactional writes cost double, so that is about two extra write units per group joined or left, plus one for the groups item itself. `rudolph group members --rebuild` scans the whole table once (one read unit per 4 KB at strong consistency, so a few dollars at most even for a large table) and writes only the rows that are missing or wrong.
+
 # Examining Costs
 You can use AWS's billing dashboard to explore Rudolph-related costs. All Rudolph resources should be tagged with the
 `Name = Rudolph` tag.

@@ -39,6 +39,20 @@ rudolph group show --machine <machine-uuid>
 
 `group show` lists the Mac's assigned groups, its reported groups that count (as of its last preflight) and its effective groups, or says it is ungrouped. Removing an assigned group does not affect a group the Mac reports. Assigned membership is kept when a group is deleted; it counts again if a group of that name is created later.
 
+### Listing a group's Macs
+
+```
+rudolph group members eng
+rudolph group members --rebuild            # once after upgrading; asks first
+rudolph group members --rebuild --dry-run
+```
+
+`group members` lists the Macs in a registered group by machine ID, each marked `assigned`, `reported` or `assigned, reported`. Reported membership is as of each Mac's last preflight that changed it. While a group does not accept reported membership (`--no-reported`), Macs that only report it are left out, as they are not members. The Macs in no group (`rudolph:ungrouped`) and unregistered groups cannot be listed.
+
+The list comes from a member row per Mac and group (`GroupMembers#<group>`/`<machine id>`), written with the Mac's groups by `group add|remove` and by preflight, in the same transaction. Macs whose groups have not changed since upgrading to a version with these rows have none yet: run `rudolph group members --rebuild` once after the upgrade. It scans the table once, writes the rows that are missing or wrong, deletes the rows no Mac's groups back, and writes nothing when every row is right; it shows the counts and asks first (`--yes` skips the question, `--dry-run` writes nothing), and is audited as `group.members.rebuild`. It is also the repair if the rows ever disagree with the Macs' groups, for example after a Mac changed groups while a rebuild was running.
+
+`machine forget` deletes the Mac's member rows with the rest of its items. `group delete` keeps them, as it keeps assigned membership: the Macs are listed again if the group is created again.
+
 ### Trust: reported membership is advisory
 
 A configuration profile cannot be changed on the Mac, but a plist can be edited by any local administrator. Through `MachineOwnerPlist`, a local administrator could add a group (and gain its allow rules) or remove one (and escape its blocks, when `MachineOwnerGroups` is not set in the profile). Assigned groups cannot be changed from the Mac.
@@ -168,8 +182,8 @@ The mode is stored as `ClientMode` (a number, as on configuration rows: 1 `MONIT
 
 ## Costs
 
-Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes. Group client modes cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) unless the Mac has a temporary or its own client mode.
+Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes, then also reads it first and writes the member row of each group joined or left (see [costs.md](costs.md#group-members)). Group client modes cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) unless the Mac has a temporary or its own client mode.
 
 ## Not built yet
 
-`rudolph group members <group>` and `rudolph rules import|export --group` from the design are not available yet.
+`rudolph rules import|export --group` from the design is not available yet.
