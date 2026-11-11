@@ -46,6 +46,7 @@ data "aws_iam_policy_document" "lambda_permissions" {
         "MachineInfo#*",         # This needs to be consistent with the machineInfoPKPrefix constant
         "MachineRules#*",        # This needs to be consistent with the MachineRulesPKPrefix constant
         "MachineRuleDelivery#*", # This needs to be consistent with the deliveryPKPrefix constant (machinerules)
+        "GroupMembers#*",        # This needs to be consistent with the GroupMembersPKPrefix constant (groups); preflight writes reported members
       ]
     }
   }

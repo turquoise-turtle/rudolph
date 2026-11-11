@@ -38,6 +38,7 @@ Keys (`PK`, `SK`):
 | Group rule | `GroupRules#<group>` | `<RuleType>#<identifier>` |
 | A Mac's groups (assigned, and reported groups Rudolph counts) | `Machine#<machine id>` | `Groups` |
 | A Mac's reported groups as Santa sent them | `Machine#<machine id>` | `ReportedGroups` |
+| A group's member (index of the Macs' `Groups` items) | `GroupMembers#<group>` | `<machine id>` |
 | Audit entry ([docs/cli.md](../../docs/cli.md#the-audit-trail)) | `Audit#<YYYY-MM-DD>` (UTC day) | `<Unix nanoseconds, 19 digits>#<random hex>` |
 
 Machine IDs are canonical UUIDs in the case the Mac reports them; the same UUID in another case is another machine.
@@ -50,7 +51,7 @@ Encodings:
 - `ClientMode` (number): 1 MONITOR, 2 LOCKDOWN, 3 STANDALONE. The sensor data's `ClientMode` is what the Mac reported.
 - `DataType` (string): `GlobalConfig`, `MachineConfig`, `SensorData`, `SyncState`, `RulesFeed`, `GroupRegistry`, `GroupRule`, `Audit`, and others for newer rows.
 - Audit entries carry `Actor` (`cli:<user>@<host>` or `web:<Entra user>`), `Action` (e.g. `rule.add`), `Target` (`global`, `machine:<id>`, `group:<name>`, `ungrouped`), `Summary` and `RecordedAt` (RFC 3339 with nanoseconds), and never expire. Write them only through `pkg/model/audit` (`Record`/`RecordContext`, a conditional put that never overwrites) and read them newest first with `List`/`ListContext`.
-- Group registry: `Groups` maps each group name to `Description`, `AcceptReported` (only then do reported groups count), `RulesVersion`, `CreatedAt`. A Mac's `Groups` item holds `Assigned` (a string set) and `Reported` (registered groups among those it reported); a Mac in neither is in the reserved group `rudolph:ungrouped`. Group rule rows carry the rule fields of a global rule plus `Group`.
+- Group registry: `Groups` maps each group name to `Description`, `AcceptReported` (only then do reported groups count), `RulesVersion`, `CreatedAt`. A Mac's `Groups` item holds `Assigned` (a string set) and `Reported` (registered groups among those it reported); a Mac in neither is in the reserved group `rudolph:ungrouped`. Group rule rows carry the rule fields of a global rule plus `Group`. Group member rows (`DataType` `GroupMember`) mirror the Mac's `Groups` item: `Assigned` and `Reported` are BOOL `true` when the group is in that set and absent otherwise, with `UpdatedAt`; Rudolph writes them in the same transaction as the `Groups` item and deletes a row with neither flag.
 - `OverrideFileAccessAction`: `NONE`, `AUDIT_ONLY`, `DISABLE`; older rows may hold legacy spellings (`AuditOnly`).
 - `RemountUsbMode`: a list of strings; older rows may hold a comma separated string.
 - Optional rule fields: `CustomMessage`, `CustomURL`, `EventDetailButtonLabel`, `NotificationAppName`, `CELExpr`.

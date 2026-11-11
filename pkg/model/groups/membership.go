@@ -3,6 +3,7 @@ package groups
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -78,25 +79,6 @@ func ReportedBasis(reported []string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// SetReported stores the Mac's reported membership. Assigned membership is left as it is. No membership removes the
-// attribute, and creates no item where there is none (a Mac never in a reported group needs none).
-func SetReported(timeProvider clock.TimeProvider, client dynamodb.UpdateExpressionAPI, machineID string, reported []string) error {
-	values := map[string]types.AttributeValue{
-		":t":  &types.AttributeValueMemberS{Value: clock.RFC3339(timeProvider.Now())},
-		":dt": &types.AttributeValueMemberS{Value: machineGroupsDataType},
-	}
-	update, condition := "SET UpdatedAt = :t, DataType = :dt REMOVE Reported", "attribute_exists(Reported)"
-	if len(reported) > 0 {
-		update, condition = "SET UpdatedAt = :t, DataType = :dt, Reported = :r", ""
-		values[":r"] = &types.AttributeValueMemberSS{Value: reported}
-	}
-	_, err := client.UpdateItemExpression(machineGroupsKey(machineID), update, condition, nil, values)
-	if err != nil && !(condition != "" && dynamodb.IsConditionalCheckFailed(err)) {
-		return fmt.Errorf("failed to save the machine's reported groups: %w", err)
-	}
-	return nil
-}
-
 // AddAssigned assigns a registered group to a Mac
 func AddAssigned(timeProvider clock.TimeProvider, client RegistryWriter, machineID, group string) error {
 	registry, err := GetRegistry(client, true)
@@ -114,14 +96,25 @@ func RemoveAssigned(timeProvider clock.TimeProvider, client RegistryWriter, mach
 	return changeAssigned(timeProvider, client, machineID, "DELETE", group)
 }
 
+// changeAssigned adds the group to the Mac's assigned groups, or removes it, and makes the group's member row match, in
+// one transaction. The row is written even when the assignment does not change, which repairs it if it was wrong.
 func changeAssigned(timeProvider clock.TimeProvider, client RegistryWriter, machineID, op, group string) error {
-	_, err := client.UpdateItemExpression(machineGroupsKey(machineID),
-		"SET UpdatedAt = :t, DataType = :dt "+op+" Assigned :g", "", nil,
-		map[string]types.AttributeValue{
-			":t":  &types.AttributeValueMemberS{Value: clock.RFC3339(timeProvider.Now())},
-			":dt": &types.AttributeValueMemberS{Value: machineGroupsDataType},
-			":g":  &types.AttributeValueMemberSS{Value: []string{group}},
-		})
+	var err error
+	for attempt := 0; attempt < maxMembershipAttempts; attempt++ {
+		var read *MachineGroups
+		if read, err = GetMachineGroups(client, machineID, true); err != nil {
+			return err
+		}
+		assigned := withGroup(read.Assigned, group)
+		if op == "DELETE" {
+			assigned = withoutGroup(read.Assigned, group)
+		}
+		values := map[string]types.AttributeValue{":g": &types.AttributeValueMemberSS{Value: []string{group}}}
+		err = writeMembership(timeProvider, client, machineID, read, "SET UpdatedAt = :t, DataType = :dt "+op+" Assigned :g", values, assigned, read.Reported, []string{group})
+		if !errors.Is(err, ErrMembershipChanged) {
+			break
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("failed to change the machine's assigned groups: %w", err)
 	}

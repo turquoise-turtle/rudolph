@@ -40,9 +40,9 @@ type concreteStateTrackingService struct {
 	getter       dynamodb.GetItemAPI
 	putter       dynamodb.PutItemAPI
 	timeProvider clock.TimeProvider
-	// groupsUpdater writes the machine's reported group membership, judged against groupsCache's registry; when
-	// either is nil, reported membership is not recorded
-	groupsUpdater dynamodb.UpdateExpressionAPI
+	// groupsUpdater writes the machine's reported group membership and its member rows, judged against groupsCache's
+	// registry; when either is nil, reported membership is not recorded
+	groupsUpdater groups.MembershipWriter
 	groupsCache   *groups.Cache
 }
 
@@ -52,7 +52,7 @@ func getStateTrackingService(dbClient dynamodb.DynamoDBClient, timeProvider cloc
 		putter:       dbClient,
 		timeProvider: timeProvider,
 	}
-	if updater, ok := dbClient.(dynamodb.UpdateExpressionAPI); ok {
+	if updater, ok := dbClient.(groups.MembershipWriter); ok {
 		service.groupsUpdater = updater
 		service.groupsCache = groups.NewCache(timeProvider)
 	}
@@ -115,7 +115,9 @@ func (c concreteStateTrackingService) saveReportedGroups(machineID string, repor
 // saveReportedMembership stores on the machine's groups item which registered groups the Mac's reported list makes it
 // a member of, when that differs from what the previous sync recorded, and returns the basis to record. The registry
 // comes from a cache, so a group created or changed in the meantime is taken into account within groups.CacheDuration.
-// A failure is not fatal: the previous membership stays in force and the next preflight tries again.
+// Only then does it read the groups item, to know which member rows change: steady-state syncs read and write nothing
+// more. A failure, including a change to the item between the read and the write, is not fatal: the previous
+// membership stays in force and the next preflight tries again.
 func (c concreteStateTrackingService) saveReportedMembership(machineID string, reported []string, prevSyncState *syncstate.SyncStateRow) string {
 	prevBasis := ""
 	if prevSyncState != nil {
