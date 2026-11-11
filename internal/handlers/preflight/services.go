@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/sensordata"
 	"github.com/airbnb/rudolph/pkg/model/syncstate"
+	"github.com/airbnb/rudolph/pkg/types"
 )
 
 type cleanSyncService interface {
@@ -31,6 +32,8 @@ type stateTrackingService interface {
 	saveReportedGroups(machineID string, groups []string, prevSyncState *syncstate.SyncStateRow) (reportedGroupsRecord, error)
 	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord, policies clientPolicies) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
+	// groupClientMode returns the client mode of the Mac's groups, with the groups it reports in this preflight
+	groupClientMode(machineID string, reported []string) (types.ClientMode, bool, error)
 }
 
 type concreteStateTrackingService struct {
@@ -140,6 +143,20 @@ func (c concreteStateTrackingService) saveReportedMembership(machineID string, r
 		return prevBasis
 	}
 	return basis
+}
+
+// groupClientMode returns the strictest client mode among the Mac's groups (groups.ReportedMachineClientMode), from the
+// cached registry. Without a group client mode in the registry it reads nothing more.
+func (c concreteStateTrackingService) groupClientMode(machineID string, reported []string) (types.ClientMode, bool, error) {
+	if c.groupsCache == nil {
+		return 0, false, nil
+	}
+	registry, err := c.groupsCache.Registry(c.getter)
+	if err != nil {
+		return 0, false, err
+	}
+	mode, _, ok, err := groups.ReportedMachineClientMode(c.getter, registry, machineID, reported)
+	return mode, ok, err
 }
 
 // saveReportedGroupsItem writes the reported groups item (see saveReportedGroups)

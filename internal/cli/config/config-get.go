@@ -19,13 +19,24 @@ func init() {
 	tf := flags.TargetFlags{}
 
 	var configGetCmd = &cobra.Command{
-		Use:   "get [-m <machine-id>|--global]",
+		Use:   "get [-m <machine-id>|--global|--group <group>|--ungrouped]",
 		Short: "Show the global configuration, or the configuration a machine gets (this Mac without --machine)",
 		Long: `Show the global configuration, or the configuration a machine gets: its own settings, marked (machine), and
-the global value of every other setting, marked (inherited). Without --global or --machine, this Mac's configuration
-is shown.`,
+the global value of every other setting, marked (inherited). A client mode from the machine's device groups is marked
+(group <group>). Without --global or --machine, this Mac's configuration is shown. --group <group> and --ungrouped show
+a device group's client mode.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if tf.IsGroup() {
+				if err := tf.RequireExplicitTarget(); err != nil {
+					return err
+				}
+				client, err := groupWriter(cmd)
+				if err != nil {
+					return err
+				}
+				return getGroupConfig(client, tf.Group)
+			}
 			if err := tf.RequireAtMostOneTarget(); err != nil {
 				return err
 			}
@@ -52,6 +63,7 @@ is shown.`,
 	}
 
 	tf.AddTargetFlags(configGetCmd)
+	tf.AddGroupTargetFlags(configGetCmd)
 
 	ConfigCmd.AddCommand(configGetCmd)
 }
@@ -73,6 +85,16 @@ func machineOrigin(stored map[string]awstypes.AttributeValue) settingOrigin {
 			return " (machine, but the stored value cannot be read, so none is sent)"
 		}
 		return " (inherited)"
+	}
+}
+
+// withClientModeOrigin marks the client mode with clientModeOrigin, and every other setting as origin does
+func withClientModeOrigin(origin settingOrigin, clientModeOrigin string) settingOrigin {
+	return func(attribute string) string {
+		if attribute == "ClientMode" {
+			return clientModeOrigin
+		}
+		return origin(attribute)
 	}
 }
 
@@ -116,6 +138,17 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 			return
 		}
 		origin = machineOrigin(stored.Item)
+		if !machineconfiguration.OwnClientMode(stored.Item) {
+			mode, group, ok, eerr := groupClientModeOrigin(client, machineID)
+			if eerr != nil {
+				err = fmt.Errorf("failed to read the machine's groups: %w", eerr)
+				return
+			}
+			if ok {
+				config = machineconfiguration.ApplyGroupClientMode(config, false, mode)
+				origin = withClientModeOrigin(origin, " (group "+group+")")
+			}
+		}
 	}
 
 	// A stored client mode Santa does not know is shown, not fatal (preflight leaves it out)

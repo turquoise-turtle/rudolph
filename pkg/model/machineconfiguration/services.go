@@ -8,6 +8,9 @@ import (
 // This service exposes all machineconfiguration access methods
 type MachineConfigurationService interface {
 	GetIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error)
+	// GetIntendedConfigWithOrigin is GetIntendedConfig, also reporting whether the client mode is set by the machine's
+	// own config row (OwnClientMode), so that a group's client mode does not replace it
+	GetIntendedConfigWithOrigin(machineID string) (intendedConfig MachineConfiguration, ownClientMode bool, err error)
 	GetIntendedGlobalConfig() (intendedConfig MachineConfiguration, isDefaultConfig bool, err error)
 	SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 	SetMachineConfig(machineID string, config MachineConfiguration) error
@@ -61,6 +64,10 @@ func GetUncachedMachineConfigurationService(dynamodb dynamodb.DynamoDBClient, ti
 // Machine
 func (s ConcreteMachineConfigurationService) GetIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
 	return s.fetcher.getIntendedConfig(machineID)
+}
+
+func (s ConcreteMachineConfigurationService) GetIntendedConfigWithOrigin(machineID string) (MachineConfiguration, bool, error) {
+	return s.fetcher.getIntendedConfigWithOrigin(machineID)
 }
 
 // Global

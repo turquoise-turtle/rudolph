@@ -29,6 +29,13 @@ func (t *TargetFlags) AddTargetFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&t.MachineID, "machine", "m", "", "Apply to the machine with this UUID. Pass at most one of --global and --machine; without either, the command applies to this Mac.")
 }
 
+// AddGroupTargetFlags adds --group and --ungrouped to a config command, besides AddTargetFlags. When IsGroup, call
+// RequireExplicitTarget instead of RequireAtMostOneTarget.
+func (t *TargetFlags) AddGroupTargetFlags(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&t.Group, "group", "", "Apply to the client mode of this device group (see rudolph group). Not with --global or --machine.")
+	cmd.Flags().BoolVar(&t.Ungrouped, "ungrouped", false, "Apply to the client mode of the Macs in no device group. Not with --global or --machine.")
+}
+
 // AddTargetFlagsRules adds --global and --machine to the command that lists rules; call RequireAtMostOneTarget
 // before using them
 func (t *TargetFlags) AddTargetFlagsRules(cmd *cobra.Command) {

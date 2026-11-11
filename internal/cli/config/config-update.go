@@ -28,12 +28,13 @@ func init() {
 		inheritArgs           []string
 		temporaryModeArgs     temporaryModeFlags
 		baseSettingsArgs      baseSettingsFlags
+		confirmGroupLockdown  bool
 	)
 
 	tf := flags.TargetFlags{}
 
 	var configUpdateClientModeCmd = &cobra.Command{
-		Use:   "update [-m <machine-id>|--global] [-c <client-mode>] [<setting flags>] [--clean-sync] [--inherit <setting>]... [-c <mode> (--for <duration>|--until <time>)] [--end-temporary-mode]",
+		Use:   "update [-m <machine-id>|--global|--group <group>|--ungrouped] [-c <client-mode>] [<setting flags>] [--clean-sync] [--inherit <setting>]... [-c <mode> (--for <duration>|--until <time>)] [--end-temporary-mode]",
 		Short: "Update settings globally or for a specific machine UUID, keeping all settings that are not given",
 		Long: `Update settings globally or for a specific machine UUID, keeping all settings that are not given.
 
@@ -49,9 +50,28 @@ from a machine-specific configuration, so that the machine follows the global va
 -c <mode> with --for <duration> or --until <RFC 3339 time> sets a temporary client mode for a machine, for at most 30
 days: the Mac gets it at its next sync, and its usual client mode (its own or the global one, which this leaves as it
 is) again at its first sync after the end. --end-temporary-mode ends it early. A temporary lockdown or standalone mode
-asks for confirmation; Santa blocks unknown binaries in them.`,
+asks for confirmation; Santa blocks unknown binaries in them.
+
+--group <group> or --ungrouped (the Macs in no group) sets the client mode of a device group: -c <mode>, or
+--inherit client-mode to remove it. A group has no other setting. A Mac gets its temporary client mode, else its own,
+else the strictest client mode of its groups, else the global one. Lockdown and standalone need
+--confirm-group-lockdown.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if tf.IsGroup() {
+				request, err := parseGroupClientModeRequest(cmd, &tf, clientModeArg, inheritArgs, confirmGroupLockdown)
+				if err != nil {
+					return err
+				}
+				client, err := groupWriter(cmd)
+				if err != nil {
+					return err
+				}
+				return updateGroupClientMode(client, request, flags.ApprovalOf(cmd))
+			}
+			if cmd.Flags().Changed(flagConfirmGroupLockdown) {
+				return fmt.Errorf("--%s is only for --group or --ungrouped", flagConfirmGroupLockdown)
+			}
 			if err := tf.RequireAtMostOneTarget(); err != nil {
 				return err
 			}
@@ -135,6 +155,8 @@ asks for confirmation; Santa blocks unknown binaries in them.`,
 	}
 
 	tf.AddTargetFlags(configUpdateClientModeCmd)
+	tf.AddGroupTargetFlags(configUpdateClientModeCmd)
+	configUpdateClientModeCmd.Flags().BoolVar(&confirmGroupLockdown, flagConfirmGroupLockdown, false, "Confirm setting the client mode of a device group (--group or --ungrouped) to lockdown or standalone, which blocks unknown executions on every Mac of the group without a client mode of its own")
 
 	// client-mode should be one of "monitor", "lockdown" or "standalone"; it is only changed when given
 	configUpdateClientModeCmd.Flags().VarP(&clientModeArg, "client-mode", "c", `type of client mode being applied. valid options are: "monitor", "lockdown" or "standalone"`)

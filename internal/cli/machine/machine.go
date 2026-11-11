@@ -76,6 +76,8 @@ type Summary struct {
 	Config     machineconfiguration.MachineConfiguration
 	Registry   *groups.Registry
 	Membership *groups.MachineGroups
+	// ClientModeGroup is the group whose client mode Config holds, or "" when the mode is not a group's
+	ClientModeGroup string
 }
 
 // Load reads what Rudolph knows about a Mac, under the machine ID exactly as given (see flags.ResolveMachineID)
@@ -89,7 +91,8 @@ func Load(client dynamodb.DynamoDBClient, machineID string) (*Summary, error) {
 		return nil, fmt.Errorf("failed to read the machine's sync state: %w", err)
 	}
 	service := machineconfiguration.GetMachineConfigurationService(client, clock.ConcreteTimeProvider{})
-	if s.Config, err = service.GetIntendedConfig(machineID); err != nil {
+	var ownClientMode bool
+	if s.Config, ownClientMode, err = service.GetIntendedConfigWithOrigin(machineID); err != nil {
 		return nil, fmt.Errorf("failed to read the machine's configuration: %w", err)
 	}
 	if s.Registry, err = groups.GetRegistry(client, false); err != nil {
@@ -97,6 +100,10 @@ func Load(client dynamodb.DynamoDBClient, machineID string) (*Summary, error) {
 	}
 	if s.Membership, err = groups.GetMachineGroups(client, machineID, false); err != nil {
 		return nil, err
+	}
+	if mode, group, ok := groups.MachineClientMode(s.Registry, s.Membership); ok && !ownClientMode {
+		s.Config = machineconfiguration.ApplyGroupClientMode(s.Config, false, mode)
+		s.ClientModeGroup = group
 	}
 	return s, nil
 }
@@ -133,7 +140,11 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 
 	fmt.Fprintln(w, "Configuration Rudolph sends:")
 	effective := machineconfiguration.ApplyTemporaryClientMode(s.Config, now)
-	fmt.Fprintf(w, "  Client mode:     %s\n", modeName(effective.ClientMode))
+	modeSource := ""
+	if _, temporary := s.Config.TemporaryClientModeAt(now); !temporary && s.ClientModeGroup != "" {
+		modeSource = " (group " + s.ClientModeGroup + ")"
+	}
+	fmt.Fprintf(w, "  Client mode:     %s%s\n", modeName(effective.ClientMode), modeSource)
 	if s.Config.TemporaryClientMode != 0 || s.Config.TemporaryClientModeExpiresAt != 0 {
 		mode := modeName(s.Config.TemporaryClientMode)
 		end := s.Config.TemporaryClientModeEnd()

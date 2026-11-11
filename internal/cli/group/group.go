@@ -209,14 +209,14 @@ func init() {
 				fmt.Println("No groups. Create one with rudolph group create <group>.")
 				return nil
 			}
-			fmt.Printf("%-32s %-10s %-8s %s\n", "GROUP", "REPORTED", "VERSION", "DESCRIPTION")
+			fmt.Printf("%-32s %-10s %-11s %-8s %s\n", "GROUP", "REPORTED", "CLIENTMODE", "VERSION", "DESCRIPTION")
 			for _, name := range registry.Names() {
 				entry := registry.Groups[name]
 				reported := "counts"
 				if !entry.AcceptReported {
 					reported = "ignored"
 				}
-				fmt.Printf("%-32s %-10s %-8d %s\n", name, reported, entry.RulesVersion, entry.Description)
+				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", name, reported, clientModeText(entry), entry.RulesVersion, entry.Description)
 			}
 			return nil
 		},
@@ -250,6 +250,7 @@ func init() {
 			fmt.Println("Group:          ", name)
 			fmt.Println("Description:    ", entry.Description)
 			fmt.Println("AcceptReported: ", entry.AcceptReported)
+			fmt.Println("ClientMode:     ", clientModeText(entry))
 			fmt.Println("RulesVersion:   ", entry.RulesVersion)
 			fmt.Println("CreatedAt:      ", entry.CreatedAt)
 			fmt.Printf("Rules (%d):\n", len(rows))
@@ -409,4 +410,17 @@ func list(names []string) string {
 		return "(none)"
 	}
 	return strings.Join(names, ", ")
+}
+
+// clientModeText shows a group's client mode (set with rudolph config update --group)
+func clientModeText(entry groups.Entry) string {
+	mode, ok := entry.ClientModeOf()
+	switch {
+	case ok:
+		text, _ := mode.MarshalText()
+		return string(text)
+	case entry.ClientMode.Stored():
+		return "unreadable"
+	}
+	return "-"
 }
