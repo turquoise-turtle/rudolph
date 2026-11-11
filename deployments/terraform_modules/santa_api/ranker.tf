@@ -1,8 +1,8 @@
 #
 # Ranker: a scheduled Lambda (hourly by default, see ranker_schedule_expression) that rebuilds the web view's
-# top-blocked and top-allowed lists (snapshots and pointers in the events table) from the day counters and machine
-# markers. Code: cmd/ranker, internal/ranker. Layout and cost:
-# docs/events-table.md.
+# top-blocked, top-allowed and top-unknown lists (snapshots and pointers in the events table) from the day counters and
+# machine markers, marking unknown binaries that a global rule in the store table now covers. Code: cmd/ranker,
+# internal/ranker. Layout and cost: docs/events-table.md.
 #
 
 locals {
@@ -41,8 +41,8 @@ resource "aws_iam_role_policy_attachment" "ranker_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Reads only the day counters and machine markers, writes only snapshots and pointers, on the events table alone (not
-# its indexes, not the store table). No Scan: the job reads partitions it can name.
+# Reads only the day counters and machine markers, writes only snapshots and pointers, on the events table (not its
+# indexes); on the store table, only point reads of global rules. No Scan: the job reads items it can name.
 data "aws_iam_policy_document" "ranker" {
   statement {
     actions = [
@@ -76,6 +76,25 @@ data "aws_iam_policy_document" "ranker" {
       values   = ["TopSnapshot#*", "Top#*"]
     }
   }
+
+  # Not the store module's lambda_permissions policy: that one allows Query and Scan of the whole table. The ranker only
+  # asks whether a global rule exists for a binary, signing ID or team ID, so it gets GetItem on that one partition.
+  # No KMS statement: the store key's policy already lets the account's principals use it through DynamoDB.
+  statement {
+    actions = [
+      "dynamodb:GetItem",
+    ]
+
+    resources = [
+      module.rule_store.dynamodb_table_arn,
+    ]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["GlobalRules"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "ranker" {
@@ -100,19 +119,22 @@ resource "aws_lambda_function" "ranker" {
   s3_bucket        = aws_s3_object.ranker_source.bucket
   s3_key           = aws_s3_object.ranker_source.key
   source_code_hash = local.lambda_ranker_hash
-  # A run holds one small total per binary seen in 90 days (about 300 bytes each, so ~30 MB for 100,000 binaries),
+  # A run holds one small total per binary seen in 90 days (about 400 bytes each, so ~40 MB for 100,000 binaries),
   # never the counter rows or the markers themselves.
   memory_size = 256
 
-  # A run reads 90 day partitions and the markers of up to 800 binaries, 16 calls at a time: seconds for a small fleet,
-  # up to about a minute when popular binaries have markers on 100,000 Macs (~6 MB each). The margin covers throttling
-  # retries; a run that still times out leaves the previous lists in place.
+  # A run reads 90 day partitions and the markers of up to 2,000 binaries (the first 100 rows of 20 lists; in practice
+  # far fewer, as the unknown lists mostly repeat binaries already in the blocked and allowed ones), plus up to three
+  # rule lookups for each binary in the unknown lists, 16 calls at a time: seconds for a small fleet, a minute or two
+  # when popular binaries have markers on 100,000 Macs (~6 MB each). The margin covers throttling retries; a run that
+  # still times out leaves the previous lists in place.
   timeout = 300
 
   environment {
     variables = {
       REGION               = var.region
       EVENTS_DYNAMODB_NAME = module.rule_store.events_dynamodb_table_name
+      DYNAMODB_NAME        = local.dynamodb_table_name
     }
   }
 
@@ -123,7 +145,7 @@ resource "aws_lambda_function" "ranker" {
 # follows its daylight saving, so a run limited to local working hours stays on them all year.
 resource "aws_scheduler_schedule" "ranker" {
   name                         = "${var.prefix}_rudolph_ranker"
-  description                  = "Rebuilds Rudolph's top-blocked and top-allowed binary lists for the web view"
+  description                  = "Rebuilds Rudolph's top-blocked, top-allowed and top-unknown binary lists for the web view"
   schedule_expression          = var.ranker_schedule_expression
   schedule_expression_timezone = var.ranker_schedule_timezone
 

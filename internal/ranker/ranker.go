@@ -1,7 +1,8 @@
-// Package ranker builds the web view's lists of the most blocked and most allowed binaries (R8 of rudolph-web's
-// docs/data-layer-design.md) from the events table's day counters and machine markers, so that a page view reads one
-// pointer and one snapshot instead of up to 90 days of counters. It runs on a schedule as its own Lambda (cmd/ranker).
-// Layout and cost: docs/events-table.md.
+// Package ranker builds the web view's lists of the most blocked, most allowed and most often unknown binaries (R8 of
+// rudolph-web's docs/data-layer-design.md) from the events table's day counters and machine markers, so that a page
+// view reads one pointer and one snapshot instead of up to 90 days of counters. The unknown lists also name any global
+// rule (from the store table) that now covers a binary. It runs on a schedule as its own Lambda (cmd/ranker). Layout
+// and cost: docs/events-table.md.
 package ranker
 
 import (
@@ -20,6 +21,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/airbnb/rudolph/pkg/model/rules"
+	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 )
 
 const (
@@ -30,6 +34,9 @@ const (
 	snapshotPKPrefix = "TopSnapshot#"
 	pointerPKPrefix  = "Top#"
 	pointerSK        = "Current"
+
+	// The store table's partition of global rules (pkg/model/globalrules).
+	globalRulesPK = "GlobalRules"
 
 	// MaxRows bounds each list.
 	MaxRows = 500
@@ -56,11 +63,19 @@ const (
 // Windows are the lengths of the lists, in days ending today (UTC).
 var Windows = []int{1, 7, 30, 90}
 
-// Kinds are the counter attributes ranked.
-var Kinds = []string{"Blocked", "Allowed"}
+// Kinds are the lists built. Blocked and Allowed count every stored decision; the unknown kinds count only Santa's
+// BLOCK_UNKNOWN and ALLOW_UNKNOWN, the executions no rule decided, and Unknown is their sum.
+var Kinds = []string{"Blocked", "Allowed", "Unknown", "UnknownBlocked", "UnknownAllowed"}
+
+// unknownKind reports whether the list is one an admin reads to decide what rule to add next: its first MachineRows
+// rows are ordered by Macs and marked with any global rule.
+func unknownKind(kind string) bool {
+	return kind == "Unknown" || kind == "UnknownBlocked" || kind == "UnknownAllowed"
+}
 
 // Client is the part of *dynamodb.Client the ranker uses. It never scans.
 type Client interface {
+	GetItem(ctx context.Context, in *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	Query(ctx context.Context, in *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	BatchWriteItem(ctx context.Context, in *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error)
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
@@ -70,14 +85,18 @@ type Options struct {
 	Client Client
 	// Table is the events table (EVENTS_DYNAMODB_NAME).
 	Table string
+	// StoreTable is the rules table (DYNAMODB_NAME), read only for global rules. When empty, no unknown row is marked
+	// with GlobalRule.
+	StoreTable string
 	// Now defaults to time.Now.
 	Now func() time.Time
 }
 
 type counter struct {
-	SK                          string
-	Blocked, Allowed            int64
-	FileName, SigningID, TeamID string
+	SK                             string
+	Blocked, Allowed               int64
+	UnknownBlocked, UnknownAllowed int64
+	FileName, SigningID, TeamID    string
 }
 
 // field keeps a display attribute from the newest day that has it.
@@ -95,7 +114,7 @@ func (f *field) offer(value string, day int) {
 // binary holds one binary's totals for every window, folded in as the day partitions are read, so a run never holds
 // 90 days of counter rows.
 type binary struct {
-	counts                      [2][]int64 // by kind index, then window index
+	counts                      [][]int64 // by kind index (as Kinds), then window index
 	fileName, signingID, teamID field
 }
 
@@ -103,6 +122,8 @@ type entry struct {
 	sha                         string
 	count                       int64
 	fileName, signingID, teamID string
+	machines                    int64  // in the list's window; set on the first MachineRows rows of unknown lists
+	globalRule                  string // sort key of a global rule covering the binary; unknown lists only
 }
 
 type list struct {
@@ -138,7 +159,7 @@ func Run(ctx context.Context, opts Options) error {
 	var mu sync.Mutex
 	err := parallel(ctx, maxWindow, func(ctx context.Context, d int) error {
 		day := today.AddDate(0, 0, -d).Format(dateLayout)
-		err := query(ctx, opts, dayCounterPKPrefix+day, "SK, Blocked, Allowed, FileName, SigningID, TeamID", func(item map[string]types.AttributeValue) error {
+		err := query(ctx, opts, dayCounterPKPrefix+day, "SK, Blocked, Allowed, UnknownBlocked, UnknownAllowed, FileName, SigningID, TeamID", func(item map[string]types.AttributeValue) error {
 			var c counter
 			if err := attributevalue.UnmarshalMap(item, &c); err != nil {
 				return err
@@ -147,13 +168,20 @@ func Run(ctx context.Context, opts Options) error {
 			defer mu.Unlock()
 			b := binaries[c.SK]
 			if b == nil {
-				b = &binary{counts: [2][]int64{make([]int64, len(Windows)), make([]int64, len(Windows))}}
+				b = &binary{counts: make([][]int64, len(Kinds))}
+				for ki := range b.counts {
+					b.counts[ki] = make([]int64, len(Windows))
+				}
 				binaries[c.SK] = b
 			}
+			// In the order of Kinds. Counters written before the writer counted unknown decisions have neither
+			// attribute, so the unknown lists fill only from that day.
+			add := []int64{c.Blocked, c.Allowed, c.UnknownBlocked + c.UnknownAllowed, c.UnknownBlocked, c.UnknownAllowed}
 			for wi, w := range Windows {
 				if d < w {
-					b.counts[0][wi] += c.Blocked
-					b.counts[1][wi] += c.Allowed
+					for ki, n := range add {
+						b.counts[ki][wi] += n
+					}
 				}
 			}
 			b.fileName.offer(c.FileName, d)
@@ -202,6 +230,38 @@ func Run(ctx context.Context, opts Options) error {
 		machines[sha] = perSHA[i]
 	}
 
+	globalRules, err := findGlobalRules(ctx, opts, lists)
+	if err != nil {
+		return err
+	}
+	for i := range lists {
+		l := &lists[i]
+		if !unknownKind(l.kind) {
+			continue
+		}
+		first := l.rows[:min(MachineRows, len(l.rows))]
+		for j := range first {
+			first[j].machines = machines[first[j].sha][l.wi]
+			first[j].globalRule = globalRules[first[j].sha]
+		}
+		// An admin works down this list adding rules: binaries a global rule already covers are done, and a binary
+		// on many Macs matters more than one Mac running something in a loop. Only rows that have Machines are
+		// reordered, so no row moves into or out of the first MachineRows.
+		sort.SliceStable(first, func(i, j int) bool {
+			a, b := first[i], first[j]
+			if (a.globalRule == "") != (b.globalRule == "") {
+				return a.globalRule == ""
+			}
+			if a.machines != b.machines {
+				return a.machines > b.machines
+			}
+			if a.count != b.count {
+				return a.count > b.count
+			}
+			return a.sha < b.sha
+		})
+	}
+
 	snapshot, err := snapshotID(now)
 	if err != nil {
 		return err
@@ -220,6 +280,9 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			if i < MachineRows {
 				item["Machines"] = num(machines[r.sha][l.wi])
+			}
+			if r.globalRule != "" {
+				item["GlobalRule"] = str(r.globalRule)
 			}
 			for name, value := range map[string]string{"FileName": r.fileName, "SigningID": r.signingID, "TeamID": r.teamID} {
 				if value != "" {
@@ -284,6 +347,74 @@ func top(binaries map[string]*binary, ki, wi int) []entry {
 		rows = rows[:MaxRows]
 	}
 	return rows
+}
+
+// findGlobalRules returns, for each binary in the first MachineRows rows of the unknown lists, the sort key of the
+// global rule that now covers it, if any. Each binary is looked up once, however many lists it is in. Only binary,
+// signing ID and team ID rules can be matched: the counters hold no certificate or CDHash. Machine and group rules are
+// left out because the admin reading the list decides for the whole fleet.
+func findGlobalRules(ctx context.Context, opts Options, lists []list) (map[string]string, error) {
+	found := map[string]string{}
+	if opts.StoreTable == "" {
+		return found, nil
+	}
+	var candidates []entry
+	seen := map[string]bool{}
+	for _, l := range lists {
+		if !unknownKind(l.kind) {
+			continue
+		}
+		for _, r := range l.rows[:min(MachineRows, len(l.rows))] {
+			if !seen[r.sha] {
+				seen[r.sha] = true
+				candidates = append(candidates, r)
+			}
+		}
+	}
+	keys := make([]string, len(candidates))
+	err := parallel(ctx, len(candidates), func(ctx context.Context, i int) error {
+		var err error
+		keys[i], err = globalRule(ctx, opts, candidates[i])
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	for i, r := range candidates {
+		if keys[i] != "" {
+			found[r.sha] = keys[i]
+		}
+	}
+	return found, nil
+}
+
+// globalRule tries the most specific rule first, as Santa does, and stops at the first that exists.
+func globalRule(ctx context.Context, opts Options, r entry) (string, error) {
+	for _, candidate := range []struct {
+		identifier string
+		ruleType   rudolphtypes.RuleType
+	}{
+		{r.sha, rudolphtypes.RuleTypeBinary},
+		{r.signingID, rudolphtypes.RuleTypeSigningID},
+		{r.teamID, rudolphtypes.RuleTypeTeamID},
+	} {
+		if candidate.identifier == "" {
+			continue
+		}
+		sk := rules.RuleSortKeyFromTypeIdentifier(candidate.identifier, candidate.ruleType)
+		out, err := opts.Client.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName:            aws.String(opts.StoreTable),
+			Key:                  map[string]types.AttributeValue{"PK": str(globalRulesPK), "SK": str(sk)},
+			ProjectionExpression: aws.String("SK"),
+		})
+		if err != nil {
+			return "", fmt.Errorf("ranker: global rule %s: %w", sk, err)
+		}
+		if len(out.Item) > 0 {
+			return sk, nil
+		}
+	}
+	return "", nil
 }
 
 // countMachines counts, for each window start, the binary's machine markers whose LastSeenDay is on or after it,
