@@ -100,6 +100,9 @@ rudolph config set [-m <machine-id>|--global] -c <client-mode> [<setting flags>]
 rudolph config update [-m <machine-id>|--global] [-c <client-mode>] [<setting flags>] [--clean-sync] [--inherit <setting>]...
 rudolph config update -m <machine-id> -c <mode> (--for <duration>|--until <time>)
 rudolph config update -m <machine-id> --end-temporary-mode
+rudolph config get (--group <group>|--ungrouped)
+rudolph config update (--group <group>|--ungrouped) -c <client-mode> [--confirm-group-lockdown]
+rudolph config update (--group <group>|--ungrouped) --inherit client-mode
 ```
 
 - `get` shows the global configuration, or the one a machine gets; for a machine, each setting is marked `(machine)` when the machine gets it from its own configuration and `(inherited)` when it follows the global one (a stored value that cannot be read is inherited, except remount flags, which are then not sent at all).
@@ -107,6 +110,7 @@ rudolph config update -m <machine-id> --end-temporary-mode
 - `update` changes only the settings given. Setting flags (both commands): `--allowed-paths`/`-a`, `--blocked-paths`/`-b` (repeatable regexes), `--batch-size`, `--bundles`, `--transitive-rules`, `--full-sync-interval`, `--upload-logs`, `--enable-all-event-upload`, `--disable-unknown-event-upload`, `--override-file-access-action`, `--block-usb-mount`, `--remount-usb-mode`, `--event-detail-url`, `--event-detail-text`.
 - `--inherit <setting>` makes a machine follow the global value of a setting again; `--clean-sync` requests one clean sync of a machine; `--for`/`--until`/`--end-temporary-mode` manage a temporary client mode.
 - A global client mode that blocks unknown executions needs `--confirm-global-lockdown` as well.
+- `--group <group>` and `--ungrouped` set or remove (`--inherit client-mode`) the client mode of a device group; a group has no other setting. `lockdown` and `standalone` need `--confirm-group-lockdown`. A Mac's temporary or own client mode beats its groups', the strictest of its groups' beats the global one, and `get --machine` marks a mode from a group `(group <name>)`. See [groups.md](groups.md#client-mode-per-group).
 
 What each setting does, and how machine configurations inherit from the global one, is in [sync.md](sync.md) and [lockdown.md](lockdown.md).
 
@@ -123,7 +127,7 @@ rudolph group remove -m <machine-id> <group>
 rudolph group show -m <machine-id>
 ```
 
-`delete` asks for confirmation. See [groups.md](groups.md).
+`delete` asks for confirmation. `list` and `get` show each group's client mode (set with `config update --group`). See [groups.md](groups.md).
 
 ## Finding machines
 
@@ -143,7 +147,7 @@ rudolph info
 - what it reported at its last preflight: hostname, serial number, primary user, model, macOS version and build, Santa version, the client mode it was in, and the number of rules it holds, in total and by type;
 - when it last synced (local time, then UTC in brackets, then how long ago), when a sync last completed (postflight) and when its last clean sync started;
 - a legacy client note when its Santa is older than 2026.8, the oldest release Rudolph fully supports (see [Supported Santa releases](sync.md#supported-santa-releases));
-- the configuration Rudolph sends it: the client mode in effect now and its temporary client mode with its end (local time, then UTC in brackets, then the time remaining or how long since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
+- the configuration Rudolph sends it: the client mode in effect now (marked `(group <name>)` when it comes from a device group) and its temporary client mode with its end (local time, then UTC in brackets, then the time remaining or how long since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
 - its assigned, reported and effective groups, as `group show` prints them.
 
 The machine ID is found in any case, as for `--machine` elsewhere (see [Conventions](#conventions)). A Mac that never synced, or whose data expired (90 days after its last sync), is an error: `no machine with ID … has synced`.

@@ -66,7 +66,20 @@ type ConcreteConfigurationFetcher struct {
 // withoutCleanSyncRequest), nor is a temporary client mode. A temporary client mode of the machine is returned as
 // stored, whatever the time: preflight applies it while it lasts (ApplyTemporaryClientMode).
 func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error) {
-	machineItem, err := f.machine.getMachineSpecificItem(machineID)
+	intendedConfig, _, err = f.getIntendedConfigAndItem(machineID)
+	return
+}
+
+// getIntendedConfigWithOrigin is getIntendedConfig, also reporting whether the client mode comes from the machine's
+// own config row (see OwnClientMode)
+func (f ConcreteConfigurationFetcher) getIntendedConfigWithOrigin(machineID string) (MachineConfiguration, bool, error) {
+	config, machineItem, err := f.getIntendedConfigAndItem(machineID)
+	return config, OwnClientMode(machineItem), err
+}
+
+// getIntendedConfigAndItem is getIntendedConfig, also returning the machine's stored config row (nil without one)
+func (f ConcreteConfigurationFetcher) getIntendedConfigAndItem(machineID string) (intendedConfig MachineConfiguration, machineItem map[string]awstypes.AttributeValue, err error) {
+	machineItem, err = f.machine.getMachineSpecificItem(machineID)
 	if err != nil {
 		err = fmt.Errorf("failed to get machine config: %w", err)
 		return
@@ -92,7 +105,8 @@ func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (inten
 		return
 	}
 
-	return mergeMachineConfig(global, machineItem)
+	intendedConfig, err = mergeMachineConfig(global, machineItem)
+	return
 }
 
 // withoutCleanSyncRequest returns a global config without its clean sync flag. The flag is refused for the global

@@ -132,9 +132,43 @@ rudolph rule deny -t signingid -i EQHXZ8M8AV:com.google.GeminiMacOS --group eng 
 
 Then put `eng` in `MachineOwnerGroups` in the Santa profile scoped to the engineering Macs, or `rudolph group add --machine <uuid> eng` for each.
 
+## Client mode per group
+
+A registered group can hold a client mode, which its Macs get instead of the global one:
+
+```
+rudolph config update --group pilot -c lockdown --confirm-group-lockdown
+rudolph config update --group lab -c monitor
+rudolph config update --ungrouped -c monitor
+rudolph config update --group pilot --inherit client-mode     # removes the group's mode
+rudolph config get --group pilot
+rudolph config get --ungrouped
+```
+
+- Only the client mode can be set for a group; other settings, `--clean-sync` and temporary modes (`--for`, `--until`, `--end-temporary-mode`) are refused with `--group` and `--ungrouped`, and `config set` takes no group.
+- `lockdown` and `standalone` need `--confirm-group-lockdown`, as a group may hold many Macs.
+- The group must be registered. `--ungrouped` registers the reserved group `rudolph:ungrouped` when it is not, as its first rule does.
+- `group list` and `group get` show each group's client mode. `config get --machine <uuid>` marks a client mode that comes from a group with `(group <name>)`, the group whose mode wins, using the Mac's assigned groups and the reported groups recorded at its last preflight.
+- The change reaches each Mac at its next sync (up to a minute later, as the server caches the group list), and is audited as `config.update` on `group:<name>` (or `ungrouped`).
+
+### Precedence of client modes
+
+The client mode preflight sends a Mac is the first of:
+
+1. its temporary client mode, while it lasts (see [temporary client modes](sync.md#temporary-client-modes));
+2. the client mode stored on its own configuration (`config update --machine <uuid> -c <mode>`); a machine configuration without a client mode, such as one holding only a batch size, does not stop a group's mode;
+3. the strictest client mode among its effective groups that have one: `LOCKDOWN`, then `STANDALONE`, then `MONITOR`. A Mac in no group is in `rudolph:ungrouped`, which can hold a mode like any group;
+4. the global configuration's (or the default `MONITOR`).
+
+So a single Mac is exempted from its group's lockdown by giving it a mode of its own, or a temporary one, and a group's mode can loosen the global one (a `MONITOR` group on a `LOCKDOWN` fleet) as a group rule can loosen a global rule. A Mac's groups are worked out as for rules: its assigned groups, plus the groups it reports in this very preflight that accept reported membership, so joining or leaving a group by reporting it changes the mode in the same sync. A group mode that cannot be decoded (not a number, or not 1 to 3) is ignored, as if the group had none.
+
+The mode is stored as `ClientMode` (a number, as on configuration rows: 1 `MONITOR`, 2 `LOCKDOWN`, 3 `STANDALONE`) in the group's entry of the registry's `Groups` map (`PK` `GroupRegistry`, `SK` `Current`). Tools writing it, such as rudolph-web, must bump `MembershipVersion` in the same update; the Go package `pkg/model/groups` (`SetClientMode`, `MachineClientMode`, `StrictestClientMode`) does both.
+
+**Security.** A local administrator can edit a plist, so a Mac whose groups come from `MachineOwnerPlist` could drop out of a `LOCKDOWN` group (and get a looser mode) by removing the group from it. For lockdown groups, report membership through `MachineOwnerGroups` in a configuration profile, which cannot be changed on the Mac, or assign the Macs with `rudolph group add` and create the group with `--no-reported`.
+
 ## Costs
 
-Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes.
+Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes. Group client modes cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) unless the Mac has a temporary or its own client mode.
 
 ## Not built yet
 

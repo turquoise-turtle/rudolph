@@ -29,6 +29,9 @@ type Entry struct {
 	// can cache a group's rules by version
 	RulesVersion int    `dynamodbav:"RulesVersion"`
 	CreatedAt    string `dynamodbav:"CreatedAt"`
+	// ClientMode is the client mode the group's Macs get, unless they have their own (see client_mode.go); nil when
+	// the group has none
+	ClientMode *StoredClientMode `dynamodbav:"ClientMode,omitempty"`
 }
 
 // Registry is the one item that lists every registered group

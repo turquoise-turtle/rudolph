@@ -87,15 +87,10 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	}
 
 	// Retrieve the intended configuration for the machine
-	machineConfiguration, err := h.machineConfigurationService.GetIntendedConfig(machineID)
+	machineConfiguration, ownClientMode, err := h.machineConfigurationService.GetIntendedConfigWithOrigin(machineID)
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
-	// A temporary client mode applies until it expires; the machine config is read on every preflight, so an expired
-	// one is never served from a cache
-	machineConfiguration = machineconfiguration.ApplyTemporaryClientMode(machineConfiguration, h.timeProvider.Now())
-	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
-	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
 
 	// Get the previous sync state
 	prevSyncState, err := h.stateTrackingService.getSyncState(machineID)
@@ -112,6 +107,26 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("saving the reported groups: %w", err), response.ErrInternalServerErrorResponse)
 	}
+
+	// The client mode: the temporary one while it lasts, the machine's own, its groups' strictest, then the global one.
+	// The groups are only looked at when they could decide it.
+	now := h.timeProvider.Now()
+	if _, temporary := machineConfiguration.TemporaryClientModeAt(now); !temporary && !ownClientMode {
+		groupMode, ok, err := h.stateTrackingService.groupClientMode(machineID, preflightRequest.PrimaryUserGroups)
+		if err != nil {
+			// Failing the sync keeps the mode Santa has; sending the global one could drop a Mac out of its group's
+			// lockdown until the next sync
+			return response.InternalServerError(fmt.Errorf("resolving the client mode of the machine's groups: %w", err), response.ErrInternalServerErrorResponse)
+		}
+		if ok {
+			machineConfiguration = machineconfiguration.ApplyGroupClientMode(machineConfiguration, false, groupMode)
+		}
+	}
+	// A temporary client mode applies until it expires; the machine config is read on every preflight, so an expired
+	// one is never served from a cache
+	machineConfiguration = machineconfiguration.ApplyTemporaryClientMode(machineConfiguration, now)
+	// A stored value Santa cannot use is replaced by a safe default instead of failing every machine using it
+	machineConfiguration = machineconfiguration.SanitizeForSanta(machineConfiguration)
 
 	// The clean sync flag of a machine-specific config asks for one clean sync of that machine, until one is confirmed
 	configCleanSync, configCleanSyncConfirmed := configCleanSyncDue(machineID, machineConfiguration, prevSyncState)
