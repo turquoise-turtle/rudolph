@@ -39,6 +39,13 @@ data "aws_iam_policy_document" "firehose_assume_role_policy" {
       type        = "Service"
       identifiers = ["firehose.amazonaws.com"]
     }
+
+    # Only delivery streams of this account may use the role (confused-deputy guard)
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.aws_account_id]
+    }
   }
 }
 
@@ -62,6 +69,8 @@ data "aws_iam_policy_document" "firehose_s3_policy" {
     ]
   }
 
+  # The bucket's default encryption is SSE-KMS with the module's key. S3 calls KMS on the role's behalf when Firehose
+  # writes an object, so the role needs the key only through S3; the key policy delegates to IAM (its root statement).
   statement {
     sid = ""
 
@@ -98,6 +107,7 @@ resource "aws_iam_role_policy_attachment" "eventsupload_firehose_s3_policy_attac
   policy_arn = aws_iam_policy.eventsupload_firehose_s3_policy.arn
 }
 
+# Terraform creates the group and the stream Firehose logs to, so the role only writes log events, to its own group
 resource "aws_cloudwatch_log_stream" "s3_delivery" {
   name           = "S3Delivery"
   log_group_name = aws_cloudwatch_log_group.eventsupload_firehose.name
@@ -108,25 +118,11 @@ data "aws_iam_policy_document" "firehose_cloudwatch_policy" {
     effect = "Allow"
 
     actions = [
-      "logs:DescribeLogStreams",
-    ]
-
-    resources = [
-      "arn:aws:logs:*:*:*",
-    ]
-  }
-
-  statement {
-    effect = "Allow"
-
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
 
     resources = [
-      "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/aws/kinesisfirehose/${var.prefix}-rudolph-eventsupload-firehose:*",
+      "${aws_cloudwatch_log_group.eventsupload_firehose.arn}:*",
     ]
   }
 }
@@ -142,15 +138,12 @@ resource "aws_iam_role_policy_attachment" "eventsupload_firehose_cloudwatch_poli
 }
 
 #
-# Policy to be attached to specified Lambda function roles
+# Policy to be attached to specified Lambda function roles: eventupload only sends batches (pkg/firehose)
 #
 data "aws_iam_policy_document" "rudolph_firehose_eventupload" {
   statement {
     actions = [
-      "firehose:DeleteDeliveryStream",
-      "firehose:PutRecord",
       "firehose:PutRecordBatch",
-      "firehose:UpdateDestination"
     ]
 
     resources = [

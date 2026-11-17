@@ -59,6 +59,8 @@ resource "aws_lambda_alias" "api_handler" {
 
 # Grant API Gateway permission to invoke the Lambda, via its execution ARN
 resource "aws_lambda_permission" "api_handler_permissions" {
+  count = var.allow_api_gateway_invoke ? 1 : 0
+
   statement_id  = "AllowExecutionFromAPIGateway"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.api_handler.function_name

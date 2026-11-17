@@ -15,6 +15,15 @@ resource "aws_s3_bucket" "santa_api_source" {
   force_destroy = true
 }
 
+resource "aws_s3_bucket_public_access_block" "santa_api_source" {
+  bucket = aws_s3_bucket.santa_api_source.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_policy" "santa_api_source" {
   bucket = aws_s3_bucket.santa_api_source.id
   policy = format(
@@ -22,6 +31,9 @@ resource "aws_s3_bucket_policy" "santa_api_source" {
     local.source_bucket_name,
     local.source_bucket_name
   )
+
+  # S3 refuses concurrent changes to a bucket's policy and its public access block
+  depends_on = [aws_s3_bucket_public_access_block.santa_api_source]
 }
 
 resource "aws_s3_bucket_versioning" "santa_api_source" {

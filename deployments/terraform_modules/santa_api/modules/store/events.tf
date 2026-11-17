@@ -109,13 +109,17 @@ resource "aws_dynamodb_table" "events" {
 }
 
 #
-# Writes from the eventupload Lambda: items only, on this table only, plus reading the index of flagged rules and the
-# rule rows it names in the store table, and taking stale entries out of that index. Kept apart from
-# lambda_permissions, which is scoped to the store table and its machine partitions.
+# Writes from the eventupload Lambda: items of its own partitions of this table only, plus reading the index of
+# flagged rules and the rule rows it names in the store table, and taking stale entries out of that index. Kept apart
+# from lambda_permissions, which is scoped to the store table and its machine partitions.
 # TransactWriteItems (an event with its day counter) has no IAM action of its own: it needs PutItem and UpdateItem on
-# the table.
+# the table. Every ForAllValues condition on dynamodb:LeadingKeys has a Null check beside it: ForAllValues is also
+# true when the request names no partition at all.
 #
 data "aws_iam_policy_document" "events_write" {
+  # Execution events (Exec#, in a transaction with their day counter's UpdateItem), file access events (FileAccess#),
+  # day counters (BinaryDay#) and machine markers (BinarySeen#). The ranker's TopSnapshot# and Top# rows are not
+  # eventupload's to write.
   statement {
     actions = [
       "dynamodb:PutItem",
@@ -125,6 +129,18 @@ data "aws_iam_policy_document" "events_write" {
     resources = [
       aws_dynamodb_table.events.arn,
     ]
+
+    condition {
+      test     = "ForAllValues:StringLike"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["Exec#*", "FileAccess#*", "BinaryDay#*", "BinarySeen#*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
+    }
   }
 
   # Which rules have their allowed executions stored is read from one item of the store table (PK "EventCollection",
@@ -142,6 +158,12 @@ data "aws_iam_policy_document" "events_write" {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
       values   = ["EventCollection", "GlobalRules", "MachineRules#*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
     }
   }
 
@@ -161,6 +183,12 @@ data "aws_iam_policy_document" "events_write" {
       variable = "dynamodb:LeadingKeys"
       values   = ["EventCollection"]
     }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
+    }
   }
 
   statement {
@@ -176,6 +204,12 @@ data "aws_iam_policy_document" "events_write" {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
       values   = ["GlobalRules", "MachineRules#*"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
     }
   }
 }

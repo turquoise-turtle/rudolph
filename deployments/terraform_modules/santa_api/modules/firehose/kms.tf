@@ -6,33 +6,8 @@ resource "aws_kms_key" "rudolph_eventsupload_kms_key" {
 }
 
 data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
-  statement {
-    sid    = "Allow principals in the account to use the key"
-    effect = "Allow"
-
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "kms:CallerAccount"
-      values   = [var.aws_account_id]
-    }
-
-    actions = [
-      "kms:CreateGrant",
-      "kms:Decrypt",
-      "kms:DescribeKey",
-      "kms:Encrypt",
-      "kms:GenerateDataKey*",
-      "kms:ReEncrypt*",
-    ]
-
-    resources = ["*"]
-  }
-
+  # No statement for every principal of the account: the Firehose role's IAM policy grants it the key through S3 only,
+  # which the root statement below lets IAM policies do.
   statement {
     sid    = "Allow access for root user"
     effect = "Allow"
@@ -88,14 +63,11 @@ data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
         "kms:UntagResource",
         "kms:ScheduleKeyDeletion",
         "kms:CancelKeyDeletion",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:ReEncrypt*",
-        "kms:GenerateDataKey*",
         "kms:DescribeKey"
       ]
       resources = ["*"]
 
+      # Administrators manage the key; they cannot encrypt, decrypt or make data keys with it
       principals {
         type        = "AWS"
         identifiers = var.kms_key_administrators_arns

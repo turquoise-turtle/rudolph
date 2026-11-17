@@ -16,9 +16,10 @@ resource "aws_kinesis_firehose_delivery_stream" "eventsupload_firehose" {
     bucket_arn  = aws_s3_bucket.rudolph_eventsupload_firehose.arn
     kms_key_arn = aws_kms_key.rudolph_eventsupload_kms_key.arn
     cloudwatch_logging_options {
-      enabled         = true
-      log_group_name  = aws_cloudwatch_log_group.eventsupload_firehose.name
-      log_stream_name = "S3Delivery"
+      enabled        = true
+      log_group_name = aws_cloudwatch_log_group.eventsupload_firehose.name
+      # By reference, so the stream exists first: the role may not create streams
+      log_stream_name = aws_cloudwatch_log_stream.s3_delivery.name
     }
     // TODO (@ryan) add logic here to tranform data for athena usage
     # processing_configuration {
