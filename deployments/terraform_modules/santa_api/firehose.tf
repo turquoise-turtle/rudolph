@@ -14,6 +14,9 @@ module "firehose" {
   aws_account_id = var.aws_account_id
   region         = var.region
 
+  eventupload_firehose_name   = var.eventupload_firehose_name
+  kms_key_administrators_arns = var.kms_key_administrators_arns
+
   existing_logging_bucket_name = var.existing_logging_bucket_name
   enable_logging               = var.enable_s3_logging
   log_retention_in_days        = var.log_retention_in_days

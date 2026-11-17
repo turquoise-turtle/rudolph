@@ -1,4 +1,5 @@
-# This is a convenience IAM policy allowing Rudolph to call kinesis:PutRecords to the desired firehose.
+# This is a convenience IAM policy allowing the eventupload Lambda to call lambda:InvokeFunction on the Lambda named
+# by var.eventupload_output_lambda_name, when that is set.
 # Enable this using the var.eventupload_autocreate_policies variable.
 # Alternatively, specify "false" and create the policies elsewhere.
 locals {

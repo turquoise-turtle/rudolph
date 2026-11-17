@@ -21,12 +21,24 @@ data "aws_iam_policy_document" "lambda_execution_policy" {
   }
 }
 
-# Attach write permissions for CloudWatch logs
-data "aws_iam_policy" "basic_execution_role" {
-  arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+# Logs go to the function's own group only. Not AWSLambdaBasicExecutionRole, which allows writing to every log group
+# of the account and creating any. Terraform creates the group before the function (lambda.tf), so Lambda never
+# needs logs:CreateLogGroup.
+data "aws_iam_policy_document" "logs" {
+  statement {
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+
+    resources = [
+      "${aws_cloudwatch_log_group.api_handler.arn}:*",
+    ]
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "basic_execution_role" {
-  role       = aws_iam_role.api_handler_role.id
-  policy_arn = data.aws_iam_policy.basic_execution_role.arn
+resource "aws_iam_role_policy" "logs" {
+  name   = "${var.prefix}_rudolph_${var.endpoint}_logs"
+  role   = aws_iam_role.api_handler_role.id
+  policy = data.aws_iam_policy_document.logs.json
 }

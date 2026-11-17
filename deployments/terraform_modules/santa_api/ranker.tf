@@ -36,9 +36,25 @@ data "aws_iam_policy_document" "ranker_assume_role" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "ranker_basic_execution" {
-  role       = aws_iam_role.ranker.id
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+# Logs go to the ranker's own group only (not AWSLambdaBasicExecutionRole, which allows every group of the account).
+# Terraform creates the group before the function, so Lambda never needs logs:CreateLogGroup.
+data "aws_iam_policy_document" "ranker_logs" {
+  statement {
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+
+    resources = [
+      "${aws_cloudwatch_log_group.ranker.arn}:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "ranker_logs" {
+  name   = "${var.prefix}_rudolph_ranker_logs"
+  role   = aws_iam_role.ranker.id
+  policy = data.aws_iam_policy_document.ranker_logs.json
 }
 
 # Reads only the day counters and machine markers, writes only snapshots and pointers, on the events table (not its
@@ -58,6 +74,12 @@ data "aws_iam_policy_document" "ranker" {
       variable = "dynamodb:LeadingKeys"
       values   = ["BinaryDay#*", "BinarySeen#*"]
     }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
+    }
   }
 
   statement {
@@ -75,9 +97,15 @@ data "aws_iam_policy_document" "ranker" {
       variable = "dynamodb:LeadingKeys"
       values   = ["TopSnapshot#*", "Top#*"]
     }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
+    }
   }
 
-  # Not the store module's lambda_permissions policy: that one allows Query and Scan of the whole table. The ranker only
+  # Not the store module's lambda_permissions policy: that one allows Query of every partition. The ranker only
   # asks whether a global rule exists for a binary, signing ID or team ID, so it gets GetItem on that one partition.
   # No KMS statement: the store key's policy already lets the account's principals use it through DynamoDB.
   statement {
@@ -93,6 +121,12 @@ data "aws_iam_policy_document" "ranker" {
       test     = "ForAllValues:StringEquals"
       variable = "dynamodb:LeadingKeys"
       values   = ["GlobalRules"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
     }
   }
 }
@@ -144,6 +178,7 @@ resource "aws_lambda_function" "ranker" {
 # EventBridge Scheduler rather than an EventBridge rule: rules only know UTC, while a schedule takes a time zone and
 # follows its daylight saving, so a run limited to local working hours stays on them all year.
 resource "aws_scheduler_schedule" "ranker" {
+  # The scheduler role's trust policy names this schedule's ARN: keep the two in step
   name                         = "${var.prefix}_rudolph_ranker"
   description                  = "Rebuilds Rudolph's top-blocked, top-allowed and top-unknown binary lists for the web view"
   schedule_expression          = var.ranker_schedule_expression
@@ -170,7 +205,8 @@ resource "aws_iam_role" "ranker_scheduler" {
   assume_role_policy = data.aws_iam_policy_document.ranker_scheduler_assume_role.json
 }
 
-# Only schedules in this account may use the role (confused-deputy guard).
+# Only the ranker's schedule may use the role (confused-deputy guard). The schedule has no group_name, so it is in the
+# default group. Its ARN is built rather than read from aws_scheduler_schedule.ranker, which needs this role first.
 data "aws_iam_policy_document" "ranker_scheduler_assume_role" {
   statement {
     effect  = "Allow"
@@ -185,6 +221,12 @@ data "aws_iam_policy_document" "ranker_scheduler_assume_role" {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
       values   = [var.aws_account_id]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:scheduler:${var.region}:${var.aws_account_id}:schedule/default/${var.prefix}_rudolph_ranker"]
     }
   }
 }

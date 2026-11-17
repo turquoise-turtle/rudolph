@@ -10,8 +10,8 @@ variable "dynamodb_table_name" {
 }
 
 variable "read_lambda_role_names" {
-  type        = list(string)
-  description = "List of IAM Role names that should be allowed to read from rule store tables"
+  type        = map(string)
+  description = "IAM role names of the sync Lambdas, by a fixed key, that get the store policy: reads of the store table and writes to its per-machine partitions (Machine#, MachineRules#, MachineRuleDelivery#, GroupMembers#)"
 }
 
 variable "aws_account_id" {

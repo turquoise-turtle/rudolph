@@ -75,3 +75,8 @@ variable "lambda_timeout_seconds" {
     error_message = "lambda_timeout_seconds must be a whole number of seconds from 3 to 900 (the Lambda maximum)."
   }
 }
+variable "allow_api_gateway_invoke" {
+  type        = bool
+  description = "Let API Gateway invoke the function's alias through a resource policy. False for the authoriser, which API Gateway invokes with its own role (authorizer_credentials)."
+  default     = true
+}

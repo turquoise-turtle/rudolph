@@ -35,6 +35,9 @@ module "authorizer_function" {
   api_gateway_execution_arn = var.api_gateway_execution_arn
   log_retention_in_days     = var.log_retention_in_days
 
+  # API Gateway invokes the authoriser with invocation_role (authorizer_credentials), not through a resource policy
+  allow_api_gateway_invoke = false
+
   env_vars = var.env_vars
 
 }

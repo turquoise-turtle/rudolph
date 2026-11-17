@@ -18,6 +18,8 @@ data "aws_iam_policy_document" "store_sse_permissions" {
       ]
     }
   }
+  # Every principal of the account may use the key, but only through DynamoDB: reading or writing the tables is
+  # governed by their IAM policies, so the Lambdas, the CLI and rudolph-web need no KMS grant of their own.
   statement {
     sid    = "Allow principals in the account to use the key"
     effect = "Allow"
@@ -38,12 +40,44 @@ data "aws_iam_policy_document" "store_sse_permissions" {
     }
 
     actions = [
-      "kms:CreateGrant",
       "kms:Decrypt",
       "kms:DescribeKey",
       "kms:Encrypt",
       "kms:GenerateDataKey*",
       "kms:ReEncrypt*",
+    ]
+
+    resources = ["*"]
+  }
+
+  # Grants in a statement of their own: kms:GrantIsForAWSResource is only present on grant requests, so in the
+  # statement above it would deny every other action. DynamoDB creates grants on the key for the tables.
+  statement {
+    sid    = "Allow DynamoDB to create grants for principals in the account"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["dynamodb.${var.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+    condition {
+      test     = "Bool"
+      variable = "kms:GrantIsForAWSResource"
+      values   = ["true"]
+    }
+
+    actions = [
+      "kms:CreateGrant",
     ]
 
     resources = ["*"]
@@ -88,14 +122,11 @@ data "aws_iam_policy_document" "store_sse_permissions" {
         "kms:UntagResource",
         "kms:ScheduleKeyDeletion",
         "kms:CancelKeyDeletion",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:ReEncrypt*",
-        "kms:GenerateDataKey*",
         "kms:DescribeKey"
       ]
       resources = ["*"]
 
+      # Administrators manage the key; they cannot encrypt, decrypt or make data keys with it
       principals {
         type        = "AWS"
         identifiers = var.kms_key_administrators_arns

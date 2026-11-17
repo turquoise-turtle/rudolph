@@ -45,4 +45,5 @@ Use the cli to sync rules ([docs/rules.md](docs/rules.md)). Every command and fl
 * [Device groups](docs/groups.md)
 * [Events table](docs/events-table.md) (executions and file access events), which the read-only web view, rudolph-web, lists events and top binaries from
 * [Costs](docs/costs.md) and [security risks](docs/security-risks.md)
+* [IAM for operators and deployers](docs/cli-iam.md): example policies for the CLI (read-only and rule administrator) and the deployer's `iam:PassRole`
 

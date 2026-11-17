@@ -1,21 +1,20 @@
 #
-# Policy to be attached to specified Lambda function roles
+# Policy of the sync Lambdas that read and write the store table (preflight, ruledownload, postflight)
 #
 data "aws_iam_policy_document" "lambda_permissions" {
+  # Point reads, batch reads and partition queries only. No Scan, DescribeTable or index: only the CLI scans the table
+  # (repair, group members --rebuild) or queries its indexes (lookup, machines), with the operator's own credentials.
   statement {
     actions = [
       "dynamodb:BatchGetItem",
-      "dynamodb:DescribeTable",
       "dynamodb:GetItem",
       "dynamodb:Query",
-      "dynamodb:Scan",
     ]
 
-    # Only this deployment's table and its indexes. A pattern such as table/*_rudolph_store would let every Rudolph
-    # deployment in the account read every other deployment's table.
+    # Only this deployment's table. A pattern such as table/*_rudolph_store would let every Rudolph deployment in the
+    # account read every other deployment's table.
     resources = [
       aws_dynamodb_table.store.arn,
-      "${aws_dynamodb_table.store.arn}/index/*",
     ]
   }
 
@@ -43,11 +42,17 @@ data "aws_iam_policy_document" "lambda_permissions" {
 
       values = [
         "Machine#*",             # This needs to be consistent with the machineInfoPKPrefix constant
-        "MachineInfo#*",         # This needs to be consistent with the machineInfoPKPrefix constant
         "MachineRules#*",        # This needs to be consistent with the MachineRulesPKPrefix constant
         "MachineRuleDelivery#*", # This needs to be consistent with the deliveryPKPrefix constant (machinerules)
         "GroupMembers#*",        # This needs to be consistent with the GroupMembersPKPrefix constant (groups); preflight writes reported members
       ]
+    }
+
+    # ForAllValues is also true when the request names no partition at all, so the key must be present
+    condition {
+      test     = "Null"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["false"]
     }
   }
 }
@@ -57,10 +62,10 @@ resource "aws_iam_policy" "lambda_policy" {
   policy = data.aws_iam_policy_document.lambda_permissions.json
 }
 
-# Ideally the below resource would use for_each but
-# terraform cannot use for_each with computed properties
+# Keyed by the caller's fixed names, as the role names are only known after apply. Not count: removing a role from
+# the middle of a list renumbered the rest, and replacing an attachment detaches the policy from a role that keeps it.
 resource "aws_iam_role_policy_attachment" "lambda_policy" {
-  count      = length(var.read_lambda_role_names)
-  role       = element(var.read_lambda_role_names, count.index)
+  for_each   = var.read_lambda_role_names
+  role       = each.value
   policy_arn = aws_iam_policy.lambda_policy.arn
 }

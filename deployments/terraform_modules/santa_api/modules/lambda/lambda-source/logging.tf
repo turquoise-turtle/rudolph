@@ -10,11 +10,27 @@ resource "aws_s3_bucket" "s3_logging" {
   force_destroy = true
 }
 
+# No public access. The bucket policy grants only the S3 logging service, for this account and the source bucket
+# (aws:SourceAccount, aws:SourceArn), which AWS does not count as public, and ACLs are disabled.
+resource "aws_s3_bucket_public_access_block" "s3_logging" {
+  count = local.create_s3_logging_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_logging[0].id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_policy" "s3_logging" {
   count = local.create_s3_logging_bucket ? 1 : 0
 
   bucket = aws_s3_bucket.s3_logging[0].id
   policy = data.aws_iam_policy_document.s3_logging[0].json
+
+  # S3 refuses concurrent changes to a bucket's policy and its public access block
+  depends_on = [aws_s3_bucket_public_access_block.s3_logging]
 }
 
 data "aws_caller_identity" "current" {}
