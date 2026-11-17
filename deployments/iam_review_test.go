@@ -193,8 +193,13 @@ func TestIAMReview_HealthOnlyQueriesGlobalRules(t *testing.T) {
 	ok := false
 	for _, doc := range docs {
 		d := squash(blockText(t, dfiles, doc))
-		if strings.Contains(d, `"dynamodb:Query"`) && strings.Contains(d, `"GlobalRules"`) && strings.Contains(d, "dynamodb:LeadingKeys") &&
-			len(regexp.MustCompile(`"dynamodb:[A-Za-z]+"`).FindAllString(d, -1)) == 1 {
+		var actions []string
+		for _, st := range statementsOf(doc) {
+			if a, has := st.Body.Attributes["actions"]; has {
+				actions = append(actions, regexp.MustCompile(`"[a-z0-9]+:[A-Za-z*]+"`).FindAllString(sourceOf(t, dfiles, a.Expr), -1)...)
+			}
+		}
+		if strings.Join(actions, ",") == `"dynamodb:Query"` && strings.Contains(d, `"GlobalRules"`) && strings.Contains(d, "dynamodb:LeadingKeys") {
 			ok = true
 		}
 	}
@@ -236,7 +241,8 @@ func TestIAMReview_EventuploadWritesOnlyItsPartitions(t *testing.T) {
 		}
 		var keys []string
 		for _, cond := range nested(st, "condition") {
-			if v, _ := literal(cond.Body.Attributes["variable"]); v == "dynamodb:LeadingKeys" {
+			test, _ := literal(cond.Body.Attributes["test"])
+			if v, _ := literal(cond.Body.Attributes["variable"]); v == "dynamodb:LeadingKeys" && strings.HasPrefix(test, "ForAllValues:") {
 				val, diags := cond.Body.Attributes["values"].Expr.Value(nil)
 				if diags.HasErrors() {
 					t.Fatal(diags.Error())

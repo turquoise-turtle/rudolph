@@ -46,6 +46,10 @@ func TestRanker_ReadsOnlyGlobalRulesFromTheStoreTable(t *testing.T) {
 		var leading string
 		for _, c := range nested(st, "condition") {
 			if v, _ := literal(c.Body.Attributes["variable"]); v == "dynamodb:LeadingKeys" {
+				// The Null check beside it (iam_review_test.go) carries no partitions.
+				if test, _ := literal(c.Body.Attributes["test"]); test == "Null" {
+					continue
+				}
 				if test, _ := literal(c.Body.Attributes["test"]); test != "ForAllValues:StringEquals" && test != "ForAllValues:StringLike" {
 					t.Errorf("LeadingKeys condition test %q, want ForAllValues:StringEquals", test)
 				}
