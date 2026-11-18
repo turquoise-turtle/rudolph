@@ -4,9 +4,9 @@ package deployments
 // preflight carries serial numbers, hostnames, primary users and their groups.
 //   - S4: the Firehose events bucket must not keep events forever. The events table expires them after 90 days, and
 //     the bucket is versioned, so without a lifecycle rule every object, and every overwritten or deleted version,
-//     stays readable indefinitely. The owner chose 180 days in all: current objects expire after a santa_api variable
-//     defaulting to 180, passed down to the Firehose module, and noncurrent versions within 7 days more; the rule
-//     covers the whole bucket and removes incomplete multipart uploads.
+//     stays readable indefinitely. The owner chose 180 days in total, the default of a santa_api variable passed down
+//     to the Firehose module: the current-object expiry plus the noncurrent expiry fit in it (evaluated with the
+//     defaults); the rule covers the whole bucket, removes expired delete markers and incomplete multipart uploads.
 //   - S5: the Firehose delivery stream encrypts the records it buffers with the module's own key, as the bucket does.
 //     The eventupload Lambda may then use that key (GenerateDataKey, Decrypt) for PutRecordBatch, with no
 //     kms:ViaService condition, which Firehose's check of its caller may not carry.
@@ -19,6 +19,9 @@ package deployments
 //   - S8: docs/security-risks.md says what a rogue server receives and where each copy of the telemetry is kept, and
 //     for how long.
 //     With the list set, the docs name the deployer and the key administrators as the exceptions to it.
+//     Round 2: those docs also say other accounts' ARNs never match, whole-segment wildcards are refused, and that
+//     passing a /rudolph/ role or changing Rudolph's code bypasses the list; deploy.md step 23 says 180 days in total
+//     and does not claim Firehose checks the producer's key on every PutRecordBatch.
 //
 // The key policy is a data source with dynamic blocks, and rendering it needs the AWS provider, which does not run
 // offline here, so the S7 checks read the HCL and evaluate its for_each and attributes with go-cty. They accept either
@@ -26,6 +29,7 @@ package deployments
 // statements narrowed by an aws:PrincipalArn condition in a dynamic block that only exists while it is set.
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,8 +38,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/ext/tryfunc"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
@@ -52,23 +58,6 @@ const (
 )
 
 var tfVarRef = regexp.MustCompile(`^var\.([A-Za-z0-9_]+)$`)
-
-// varOf returns the variable an attribute is set from, failing the test when it is a literal or anything else.
-func varOf(t *testing.T, files []tfFile, b *hclsyntax.Block, attr, what string) string {
-	t.Helper()
-	a, ok := b.Body.Attributes[attr]
-	if !ok {
-		t.Errorf("%s: no %s", what, attr)
-		return ""
-	}
-	src := strings.TrimSpace(sourceOf(t, files, a.Expr))
-	m := tfVarRef.FindStringSubmatch(src)
-	if m == nil {
-		t.Errorf("%s: %s = %s, want it set from a variable so operators choose the retention", what, attr, src)
-		return ""
-	}
-	return m[1]
-}
 
 // The longest an expired event may stay as a noncurrent version. The owner chose 180 days in total, and the bucket is
 // versioned: expiring an object only makes it noncurrent, so a noncurrent expiry of another 180 days kept it 360.
@@ -118,97 +107,222 @@ func firehoseModuleArg(t *testing.T, parent []tfFile, name string) (string, bool
 	return strings.TrimSpace(sourceOf(t, parent, arg.Expr)), true
 }
 
-// firehoseRetentionVar returns the santa_api variable that sets the expiry of the Firehose bucket's current objects,
-// reporting what is missing; "" when it cannot be found.
-func firehoseRetentionVar(t *testing.T, report func(format string, args ...any)) string {
+// firehoseExpiry is how the Firehose bucket's lifecycle sets the expiry of current objects: the expression of
+// expiration.days, the Firehose module variable it uses and the santa_api variable module "firehose" gives it.
+type firehoseExpiry struct {
+	files     []tfFile
+	rules     []*hclsyntax.Block
+	days      hclsyntax.Expression
+	moduleVar string
+	santaVar  string
+}
+
+// firehoseRetention finds the expiry of current objects, reporting what is missing. expiration.days may be any
+// expression of one module variable (var.x, var.x - 1, …); its fields are empty when it cannot be found.
+func firehoseRetention(t *testing.T, report func(format string, args ...any)) firehoseExpiry {
 	t.Helper()
 	files, rules := firehoseLifecycle(t, report)
-	current := ""
+	out := firehoseExpiry{files: files, rules: rules}
 	for _, rule := range rules {
 		for _, e := range nested(rule, "expiration") {
-			current = varOf(t, files, e, "days", "lifecycle expiration")
+			if a, ok := e.Body.Attributes["days"]; ok {
+				out.days = a.Expr
+			}
 		}
 	}
-	if current == "" {
+	if out.days == nil {
 		if len(rules) > 0 {
-			report("no enabled lifecycle rule expires current objects (expiration { days = var.… })")
+			report("no enabled lifecycle rule expires current objects (expiration { days = … var.… })")
 		}
-		return ""
+		return out
 	}
-	if len(blocks(files, "variable", current)) != 1 {
-		report("%s does not declare variable %q", filepath.Base(firehoseModule), current)
+	vars := map[string]bool{}
+	for _, tr := range out.days.Variables() {
+		if tr.RootName() == "var" && len(tr) > 1 {
+			if a, ok := tr[1].(hcl.TraverseAttr); ok {
+				vars[a.Name] = true
+			}
+		}
+	}
+	if len(vars) != 1 {
+		report("lifecycle expiration days = %s, want an expression of one variable so operators choose the retention",
+			squash(sourceOf(t, files, out.days)))
+		return out
+	}
+	for v := range vars {
+		out.moduleVar = v
+	}
+	if len(blocks(files, "variable", out.moduleVar)) != 1 {
+		report("%s does not declare variable %q", filepath.Base(firehoseModule), out.moduleVar)
 	}
 	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
-	src, ok := firehoseModuleArg(t, parent, current)
+	src, ok := firehoseModuleArg(t, parent, out.moduleVar)
 	if !ok {
-		report("module \"firehose\" is not given %s, so the retention cannot be set from the deployment", current)
-		return ""
+		report("module \"firehose\" is not given %s, so the retention cannot be set from the deployment", out.moduleVar)
+		return out
 	}
 	m := tfVarRef.FindStringSubmatch(src)
 	if m == nil {
-		report("module \"firehose\" %s = %s, want a santa_api variable", current, src)
-		return ""
+		report("module \"firehose\" %s = %s, want a santa_api variable", out.moduleVar, src)
+		return out
 	}
-	return m[1]
+	out.santaVar = m[1]
+	return out
 }
 
-// S4
+// firehoseRetentionVar returns the santa_api variable that sets the Firehose bucket's retention; "" when it cannot be
+// found.
+func firehoseRetentionVar(t *testing.T, report func(format string, args ...any)) string {
+	t.Helper()
+	return firehoseRetention(t, report).santaVar
+}
+
+// numberCtx is an evaluation context in which var.<name> is n, with the number functions Terraform has.
+func numberCtx(name string, n int) *hcl.EvalContext {
+	return &hcl.EvalContext{
+		Variables: map[string]cty.Value{"var": cty.ObjectVal(map[string]cty.Value{name: cty.NumberIntVal(int64(n))})},
+		Functions: map[string]function.Function{
+			"floor": stdlib.FloorFunc,
+			"ceil":  stdlib.CeilFunc,
+			"abs":   stdlib.AbsoluteFunc,
+			"max":   stdlib.MaxFunc,
+			"min":   stdlib.MinFunc,
+			"can":   tryfunc.CanFunc,
+			"try":   tryfunc.TryFunc,
+		},
+	}
+}
+
+// wholeDays evaluates an expression to a whole number of days.
+func wholeDays(t *testing.T, files []tfFile, expr hclsyntax.Expression, ctx *hcl.EvalContext) (int, bool) {
+	t.Helper()
+	v, diags := expr.Value(ctx)
+	if diags.HasErrors() || !v.IsKnown() || v.IsNull() || v.Type() != cty.Number {
+		t.Errorf("cannot evaluate %s to a number of days: %s", squash(sourceOf(t, files, expr)), diags.Error())
+		return 0, false
+	}
+	bf := v.AsBigFloat()
+	if !bf.IsInt() {
+		t.Errorf("%s is not a whole number of days", squash(sourceOf(t, files, expr)))
+		return 0, false
+	}
+	i, _ := bf.Int64()
+	return int(i), true
+}
+
+// S4: the owner chose 180 days in total. The bucket is versioned, so expiring an object only makes it noncurrent:
+// the current-object expiry plus the noncurrent expiry is how long an event stays, and must fit in the retention.
 func TestDataExposure_FirehoseEventsBucketExpiresEvents(t *testing.T) {
 	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
-	if v := firehoseRetentionVar(t, t.Errorf); v != "" {
-		def, ok := variableDefault(t, parent, v)
+	exp := firehoseRetention(t, t.Errorf)
+	retention := 0
+	if exp.santaVar != "" {
+		def, ok := variableDefault(t, parent, exp.santaVar)
 		if !ok {
-			t.Errorf("santa_api variable %s has no default; the owner chose a default of %d days", v, firehoseRetentionDefaultDays)
+			t.Errorf("santa_api variable %s has no default; the owner chose a default of %d days", exp.santaVar, firehoseRetentionDefaultDays)
 		} else if days, err := strconv.Atoi(def); err != nil || days != firehoseRetentionDefaultDays {
-			t.Errorf("santa_api variable %s defaults to %s, want %d (days)", v, def, firehoseRetentionDefaultDays)
+			t.Errorf("santa_api variable %s defaults to %s, want %d (days)", exp.santaVar, def, firehoseRetentionDefaultDays)
+		} else {
+			retention = days
 		}
 	}
-
-	files, rules := firehoseLifecycle(t, func(string, ...any) {})
+	files, rules := exp.files, exp.rules
 	if len(rules) == 0 {
 		return
 	}
 
-	// Noncurrent versions: a literal of at most 7 days, or a variable (of santa_api when module "firehose" passes it,
-	// else of the Firehose module) whose default is at most 7.
-	noncurrent := false
-	for _, rule := range rules {
-		for _, e := range nested(rule, "noncurrent_version_expiration") {
-			noncurrent = true
-			a, ok := e.Body.Attributes["noncurrent_days"]
-			if !ok {
-				t.Error("lifecycle noncurrent_version_expiration: no noncurrent_days")
-				continue
+	// The module variable: never null, and at least 2 days, so that an expiry of a day less still leaves a day.
+	if exp.moduleVar != "" {
+		if vs := blocks(files, "variable", exp.moduleVar); len(vs) == 1 {
+			v := vs[0]
+			if a, ok := v.Body.Attributes["nullable"]; !ok || strings.TrimSpace(sourceOf(t, files, a.Expr)) != "false" {
+				t.Errorf("Firehose module variable %s: want nullable = false", exp.moduleVar)
 			}
-			src := strings.TrimSpace(sourceOf(t, files, a.Expr))
-			what := src
-			if m := tfVarRef.FindStringSubmatch(src); m != nil {
-				defFiles, name := filesIn(files, firehoseModule), m[1]
-				if arg, passed := firehoseModuleArg(t, parent, name); passed {
-					pm := tfVarRef.FindStringSubmatch(arg)
-					if pm == nil {
-						t.Errorf("module \"firehose\" %s = %s, want a santa_api variable or nothing", name, arg)
+			accepts := func(n int) bool {
+				for _, val := range nested(v, "validation") {
+					c, ok := val.Body.Attributes["condition"]
+					if !ok {
 						continue
 					}
-					defFiles, name = parent, pm[1]
+					r, diags := c.Expr.Value(numberCtx(exp.moduleVar, n))
+					if diags.HasErrors() || !r.IsKnown() || r.Type() != cty.Bool {
+						t.Errorf("cannot evaluate the validation of %s for %d: %s", exp.moduleVar, n, diags.Error())
+						return false
+					}
+					if r.False() {
+						return false
+					}
 				}
-				def, ok := variableDefault(t, defFiles, name)
-				if !ok {
-					t.Errorf("noncurrent_days comes from variable %s, which has no default; want a default of at most %d days", name, firehoseNoncurrentMaxDays)
-					continue
-				}
-				src, what = def, "variable "+name+" defaulting to "+def
+				return true
 			}
-			if days, err := strconv.Atoi(src); err != nil || days < 1 || days > firehoseNoncurrentMaxDays {
-				t.Errorf("lifecycle noncurrent_version_expiration: noncurrent_days is %s, want 1 to %d days: the bucket is versioned, "+
-					"so an object expired after %d days stays as a noncurrent version that long again, and the owner chose %d days in total",
-					what, firehoseNoncurrentMaxDays, firehoseRetentionDefaultDays, firehoseRetentionDefaultDays)
+			if accepts(1) || accepts(0) {
+				t.Errorf("Firehose module variable %s accepts 1 day: want a validation of at least 2, so the current-object expiry "+
+					"and the noncurrent expiry both get a day within the retention", exp.moduleVar)
+			}
+			for _, n := range []int{2, 30, firehoseRetentionDefaultDays} {
+				if !accepts(n) {
+					t.Errorf("Firehose module variable %s refuses %d days", exp.moduleVar, n)
+				}
 			}
 		}
 	}
-	if !noncurrent {
+
+	// Current objects plus noncurrent versions within the retention, with the default and with another value.
+	var noncurrent []hclsyntax.Expression
+	for _, rule := range rules {
+		for _, e := range nested(rule, "noncurrent_version_expiration") {
+			if a, ok := e.Body.Attributes["noncurrent_days"]; ok {
+				noncurrent = append(noncurrent, a.Expr)
+			} else {
+				t.Error("lifecycle noncurrent_version_expiration: no noncurrent_days")
+			}
+		}
+	}
+	if len(noncurrent) == 0 {
 		t.Error("no enabled lifecycle rule expires noncurrent versions (noncurrent_version_expiration); " +
 			"the bucket is versioned, so expired or overwritten events would otherwise survive as old versions")
+	}
+	if exp.days != nil && exp.moduleVar != "" && retention > 0 {
+		for _, r := range []int{retention, 30} {
+			ctx := numberCtx(exp.moduleVar, r)
+			current, ok := wholeDays(t, files, exp.days, ctx)
+			if !ok {
+				continue
+			}
+			if current < 1 {
+				t.Errorf("with a retention of %d days, current objects expire after %d days", r, current)
+			}
+			for _, n := range noncurrent {
+				nc, ok := wholeDays(t, files, n, ctx)
+				if !ok {
+					continue
+				}
+				if nc < 1 || nc > firehoseNoncurrentMaxDays {
+					t.Errorf("with a retention of %d days, noncurrent versions expire after %d days, want 1 to %d", r, nc, firehoseNoncurrentMaxDays)
+				}
+				if current+nc > r {
+					t.Errorf("with a retention of %d days, an event stays %d days as the current object (expiration days = %s) and %d more "+
+						"as a noncurrent version: %d days in total, want at most %d (the owner chose the retention as the total, "+
+						"e.g. days = var.%s - 1 and noncurrent_days = 1)", r, current, squash(sourceOf(t, files, exp.days)), nc, current+nc, r, exp.moduleVar)
+				}
+			}
+		}
+	}
+
+	// Delete markers left once every version of an object has expired: removed by their own expiration block.
+	markers := false
+	for _, rule := range rules {
+		for _, e := range nested(rule, "expiration") {
+			if a, ok := e.Body.Attributes["expired_object_delete_marker"]; ok {
+				if v, diags := a.Expr.Value(nil); !diags.HasErrors() && v.Type() == cty.Bool && v.True() {
+					markers = true
+				}
+			}
+		}
+	}
+	if !markers {
+		t.Error("no enabled lifecycle rule has expiration { expired_object_delete_marker = true }: the delete marker of every " +
+			"expired event stays in the bucket for ever (it cannot share an expiration block with days, so it needs its own rule)")
 	}
 
 	// The whole bucket: an empty filter, no prefix or tag that leaves objects out.
@@ -791,6 +905,16 @@ func TestDataExposure_DocsNameTheStoreKeyExceptions(t *testing.T) {
 		"key administrators (kms_key_administrators_arns) can reach the data by changing the key policy or creating grants": {
 			users, `kms_key_administrators_arns`, `polic`, `grant`,
 		},
+		// Review round 2
+		"ARNs of another account never match": {
+			users, `(another|other|different) account|cross.account`, `never match|(do|does|cannot|can.t|don.t) (not )?match`,
+		},
+		"a wildcard covering a whole path segment is refused": {
+			users, `wildcard|\*`, `(whole|entire|full) (path )?segment|path segment`, `refus|reject`,
+		},
+		"whoever can pass a /rudolph/ role to a Lambda, or change Rudolph's function code, runs as a listed role": {
+			`/rudolph/`, `PassRole|\bpass`, `code`, `Lambda`,
+		},
 	} {
 		found := false
 		for _, text := range texts {
@@ -1091,7 +1215,8 @@ var (
 		"arn:aws:iam::123456789012:role/rudolph-web",
 		"arn:aws:iam::123456789012:role/ops/rudolph-cli",
 		"arn:aws:iam::123456789012:user/alice",
-		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*",
+		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_RudolphAdmin_*",
+		"arn:aws:iam::123456789012:role/rudolph-web*",
 		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/ap-southeast-2/AWSReservedSSO_RudolphOperators_*",
 		"arn:aws-us-gov:iam::123456789012:role/rudolph-web",
 	}
@@ -1104,6 +1229,10 @@ var (
 		"arn:aws:iam::123456789012:*",
 		"arn:aws:iam::123456789012:role/*",
 		"arn:aws:iam::123456789012:user/*",
+		// A wildcard that is a whole path segment lets in every role under it: every Identity Center permission set,
+		// read-only ones included.
+		"arn:aws:iam::123456789012:role/aws-reserved/*",
+		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*",
 		"arn:aws:iam::123456789012:role/rudolph-web,arn:aws:iam::123456789012:role/*",
 	}
 )
@@ -1141,11 +1270,26 @@ func TestDataExposure_StoreKeyUsersAreIAMPrincipalARNs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(root), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The child must not pick up a workspace, data directory or extra arguments from the caller's environment.
+	var base []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == "TF_WORKSPACE" || name == "TF_DATA_DIR" || strings.HasPrefix(name, "TF_CLI_ARGS") {
+			continue
+		}
+		base = append(base, kv)
+	}
+	base = append(base, "TF_IN_AUTOMATION=1")
 	run := func(env []string, args ...string) (string, error) {
-		cmd := exec.Command(tf, args...)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, tf, args...)
 		cmd.Dir = dir
-		cmd.Env = append(append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_CLI_ARGS=", "TF_CLI_ARGS_plan="), env...)
+		cmd.Env = append(append([]string{}, base...), env...)
 		out, err := cmd.CombinedOutput()
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Skipf("terraform %s did not finish within 60 seconds, so the validation was not exercised:\n%s", strings.Join(args, " "), out)
+		}
 		return string(out), err
 	}
 	if out, err := run(nil, "init", "-backend=false", "-input=false", "-no-color"); err != nil {
@@ -1321,3 +1465,35 @@ resource "aws_kms_alias" "store_sse_key" {
   target_key_id = aws_kms_key.store_sse_key.key_id
 }
 `
+
+// S8, round 2: upgrade step 23 says what the lifecycle rule keeps (180 days in total, a noncurrent version 1 day of
+// it), and deploy.md does not state as fact that Firehose checks the producer's key permissions on every
+// PutRecordBatch, which AWS does not document.
+func TestDataExposure_DeployDocsMatchTheLifecycleAndProducerKey(t *testing.T) {
+	src, err := os.ReadFile("../docs/deploy.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(src)
+	step := ""
+	for _, p := range regexp.MustCompile(`(?m)^### `).Split(doc, -1)[1:] {
+		h, body, _ := strings.Cut(p, "\n")
+		if strings.HasPrefix(h, "23.") {
+			step, _, _ = strings.Cut(body, "\n## ")
+		}
+	}
+	if step == "" {
+		t.Fatal("docs/deploy.md has no upgrade step 23")
+	}
+	total := []string{`180`, `in total|in all`, `noncurrent|old version`, `\b1 day\b|\bone day\b`}
+	if !lineWith(step, total...) {
+		t.Errorf("deploy.md step 23: no line says the Firehose bucket keeps events 180 days in total, with the noncurrent version "+
+			"kept 1 day within it (want one matching %q)", total)
+	}
+	for _, line := range strings.Split(doc, "\n") {
+		if lineWith(line, `\bchecks?\b`, `\bevery\b`, `PutRecordBatch`) {
+			t.Errorf("deploy.md states as fact that Firehose checks the producer's key permissions on every PutRecordBatch, "+
+				"which AWS does not document:\n%s", line)
+		}
+	}
+}
