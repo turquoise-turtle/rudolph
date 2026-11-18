@@ -41,7 +41,9 @@ func (t *TargetFlags) RequireExplicitTarget() error {
 	case t.Ungrouped:
 		t.Group = groups.Ungrouped
 	case t.Group != "":
-		group, err := groups.Normalise(t.Group)
+		// Names registered before the format-character rule are accepted so their rules can still be managed; adding
+		// or removing a rule, or setting a client mode, fails for a group that is not registered.
+		group, err := groups.NormaliseExisting(t.Group)
 		if err != nil {
 			return fmt.Errorf("--group: %w", err)
 		}

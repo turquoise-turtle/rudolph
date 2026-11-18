@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -159,7 +160,7 @@ func groupText(group string) string {
 	if group == groups.Ungrouped {
 		return "the Macs in no group (ungrouped)"
 	}
-	return "group " + group
+	return "group " + termsafe.String(group)
 }
 
 // groupClientModeOrigin returns the client mode a machine gets from its groups, and the group, using the membership

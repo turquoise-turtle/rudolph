@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
@@ -70,7 +71,7 @@ deleted. Running forget again lists and deletes whatever is left.`,
 				}
 				return flags.RecordPartial(client, "machine.forget", flags.MachineTarget(id), "forgetting the machine"+serial, err)
 			}
-			fmt.Printf("Forgot %s: deleted %d items. If the Mac syncs again, it starts afresh.\n", id, len(plan.keys()))
+			fmt.Printf("Forgot %s: deleted %d items. If the Mac syncs again, it starts afresh.\n", termsafe.String(id), len(plan.keys()))
 			return flags.Record(client, "machine.forget", flags.MachineTarget(id), fmt.Sprintf("forgot the machine: deleted %d items%s", len(plan.keys()), serial))
 		},
 	}
@@ -197,7 +198,7 @@ func machineItemKinds() []struct{ sk, name string } {
 }
 
 func (p *forgetPlan) print() {
-	fmt.Printf("Forgetting machine %s", p.machineID)
+	fmt.Printf("Forgetting machine %s", termsafe.String(p.machineID))
 	if p.sensor != nil {
 		fmt.Printf(" (hostname %s, serial number %s)", orNone(p.sensor.Hostname), orNone(p.sensor.SerialNum))
 	}
@@ -218,7 +219,7 @@ func (p *forgetPlan) print() {
 		}
 	}
 	if len(others) > 0 {
-		fmt.Printf("  %-34s %s (%s)\n", "other items of the Mac:", items(len(others)), strings.Join(others, ", "))
+		fmt.Printf("  %-34s %s (%s)\n", "other items of the Mac:", items(len(others)), strings.Join(termsafe.Strings(others), ", "))
 	}
 	if len(p.assigned) > 0 || len(p.reported) > 0 {
 		fmt.Printf("  %-34s assigned %s; reported %s\n", "groups it leaves:", list(p.assigned), list(p.reported))

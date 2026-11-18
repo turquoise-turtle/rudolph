@@ -6,6 +6,7 @@ import (
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
@@ -170,8 +171,8 @@ func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, app
 		return errors.New("this DynamoDB client cannot write group rules")
 	}
 	fmt.Println("Removing the following rule:")
-	fmt.Println("  Group:       ", group)
-	fmt.Println("  Identifier/SHA256:      ", ruleName)
+	fmt.Println("  Group:       ", termsafe.String(group))
+	fmt.Println("  Identifier/SHA256:      ", termsafe.String(ruleName))
 	fmt.Println("")
 	if apply, err := approval.Confirm(); !apply {
 		return err
@@ -179,7 +180,7 @@ func removeGroupRule(client dynamodb.DynamoDBClient, group, ruleName string, app
 	if err := groups.RemoveRule(writer, group, ruleName); err != nil {
 		return fmt.Errorf("rule %s of group %s: %w", ruleName, group, err)
 	}
-	fmt.Printf("Removed rule %s from group %s; member Macs drop it, or get the global rule back, at their next sync\n", ruleName, group)
+	fmt.Printf("Removed rule %s from group %s; member Macs drop it, or get the global rule back, at their next sync\n", termsafe.String(ruleName), termsafe.String(group))
 	return nil
 }
 
@@ -192,9 +193,9 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 	if tf.IsGlobal {
 		fmt.Println("  MachineID:    (Global)")
 	} else {
-		fmt.Println("  MachineID:   ", tf.MachineID)
+		fmt.Println("  MachineID:   ", termsafe.String(tf.MachineID))
 	}
-	fmt.Println("  Rule:        ", ruleName)
+	fmt.Println("  Rule:        ", termsafe.String(ruleName))
 	fmt.Println("")
 	if apply, err := approval.Confirm(); !apply {
 		return err
@@ -208,14 +209,14 @@ func removeRule(globalRemover globalrules.RuleRemovalService, machineRuleRemover
 		if err != nil {
 			return fmt.Errorf("failed to remove rule %s of machine %s: %w", ruleName, tf.MachineID, err)
 		}
-		fmt.Printf("Removed rule %s of machine %s; the Mac drops it, or gets the global rule back, at its next sync\n", ruleName, tf.MachineID)
+		fmt.Printf("Removed rule %s of machine %s; the Mac drops it, or gets the global rule back, at its next sync\n", termsafe.String(ruleName), termsafe.String(tf.MachineID))
 		return nil
 	}
 
 	if err := globalRemover.RemoveGlobalRule(ruleName, uuid.NewString()); err != nil {
 		return fmt.Errorf("failed to remove global rule %s: %w", ruleName, err)
 	}
-	fmt.Printf("Removed global rule %s; Macs drop it at their next sync\n", ruleName)
+	fmt.Printf("Removed global rule %s; Macs drop it at their next sync\n", termsafe.String(ruleName))
 	return nil
 }
 

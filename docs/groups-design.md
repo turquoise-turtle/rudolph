@@ -38,7 +38,7 @@ Per rule type and identifier: an applying machine rule wins; otherwise the stron
 
 ## Names and limits
 
-Names are NFC-normalised, trimmed and lower-cased; empty names, the names `.` and `..` (path segments that browsers and routers resolve away in rudolph-web's `/groups/<name>`), control characters, names over 128 bytes and the `rudolph:` prefix are refused at the CLI and ignored (logged) when reported. At most 64 registered groups and 5,000 rules per group. Santa may still report up to 256 groups; only registered ones count.
+Names are NFC-normalised, trimmed and lower-cased; empty names, the names `.` and `..` (path segments that browsers and routers resolve away in rudolph-web's `/groups/<name>`), control characters, invisible format characters (Unicode Cf other than the zero-width joiner and non-joiner), names over 128 bytes and the `rudolph:` prefix are refused at the CLI and ignored (logged) when reported. Groups registered before format characters were refused stay manageable: every command on an existing group (not `group create`) accepts such a name when it is registered (`groups.NormaliseExisting`). At most 64 registered groups and 5,000 rules per group. Santa may still report up to 256 groups; only registered ones count.
 
 ## Commands
 

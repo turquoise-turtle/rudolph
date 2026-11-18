@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"strings"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/airbnb/rudolph/pkg/model/groups"
@@ -39,7 +40,7 @@ func Record(client audit.Writer, action, target, summary string) error {
 	if err == nil {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "[WARNING] the change was made but not audited (%s on %s: %s): %v\n", action, target, summary, err)
+	fmt.Fprintf(os.Stderr, "[WARNING] the change was made but not audited (%s on %s: %s): %v\n", action, termsafe.String(target), termsafe.String(summary), err)
 	return fmt.Errorf("the change was made but not recorded in the audit trail: %w", err)
 }
 

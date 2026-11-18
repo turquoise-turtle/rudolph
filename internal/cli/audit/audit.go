@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/clitime"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	modelaudit "github.com/airbnb/rudolph/pkg/model/audit"
 	"github.com/spf13/cobra"
@@ -57,7 +58,7 @@ most 400 days back.`,
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "LOCAL TIME\tTIME (UTC)\tACTOR\tACTION\tTARGET\tSUMMARY")
 		for _, e := range entries {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Time.Local().Format("2006-01-02 15:04:05 MST"), e.Time.UTC().Format(time.RFC3339), e.Actor, e.Action, e.Target, e.Summary)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Time.Local().Format("2006-01-02 15:04:05 MST"), e.Time.UTC().Format(time.RFC3339), termsafe.String(e.Actor), termsafe.String(e.Action), termsafe.String(e.Target), termsafe.String(e.Summary))
 		}
 		if err := w.Flush(); err != nil {
 			return err

@@ -3,6 +3,7 @@ package lookup
 import (
 	"fmt"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/spf13/cobra"
 )
 
@@ -20,7 +21,7 @@ func printMachineIDs(machineIDs []string, limit int32) {
 		return
 	}
 	for _, machineID := range machineIDs {
-		fmt.Println(machineID)
+		fmt.Println(termsafe.String(machineID))
 	}
 	if int32(len(machineIDs)) >= limit {
 		fmt.Printf("(showing the first %d; raise --limit to see more)\n", limit)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
@@ -79,7 +80,7 @@ func ResolveMachineID(client MachineIDLookupAPI, machineID string) (string, erro
 		}
 	}
 	if len(synced) > 1 {
-		fmt.Printf("[WARNING] Macs have synced as %s; using %s\n", strings.Join(synced, " and "), synced[0])
+		fmt.Printf("[WARNING] Macs have synced as %s; using %s\n", strings.Join(termsafe.Strings(synced), " and "), termsafe.String(synced[0]))
 	}
 	if len(synced) > 0 {
 		return synced[0], nil

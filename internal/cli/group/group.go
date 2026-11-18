@@ -5,9 +5,11 @@ package group
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -83,7 +85,7 @@ func init() {
 		Short: "Change a group's description, or whether Macs that report it are members",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -143,7 +145,7 @@ func init() {
 		Short: "Delete a group; refused while it has rules, unless --force, which deletes them too",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -169,7 +171,7 @@ func init() {
 					return fmt.Errorf("group %q: the group has %d rules; remove them first, or pass --force to delete them with the group", name, len(rows))
 				}
 				for _, row := range rows {
-					fmt.Println("  Rule:", row.SortKey)
+					fmt.Println("  Rule:", termsafe.String(row.SortKey))
 				}
 			}
 			if apply, err := approval.Confirm(); !apply {
@@ -216,7 +218,7 @@ func init() {
 				if !entry.AcceptReported {
 					reported = "ignored"
 				}
-				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", name, reported, clientModeText(entry), entry.RulesVersion, entry.Description)
+				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", termsafe.String(name), reported, clientModeText(entry), entry.RulesVersion, termsafe.String(entry.Description))
 			}
 			return nil
 		},
@@ -227,7 +229,7 @@ func init() {
 		Short: "Show a group and its rules",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -247,16 +249,16 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Group:          ", name)
-			fmt.Println("Description:    ", entry.Description)
+			fmt.Println("Group:          ", termsafe.String(name))
+			fmt.Println("Description:    ", termsafe.String(entry.Description))
 			fmt.Println("AcceptReported: ", entry.AcceptReported)
 			fmt.Println("ClientMode:     ", clientModeText(entry))
 			fmt.Println("RulesVersion:   ", entry.RulesVersion)
-			fmt.Println("CreatedAt:      ", entry.CreatedAt)
+			fmt.Println("CreatedAt:      ", termsafe.String(entry.CreatedAt))
 			fmt.Printf("Rules (%d):\n", len(rows))
 			for _, row := range rows {
 				policy, _ := row.Policy.MarshalText()
-				fmt.Printf("  %-12s %s\n", policy, row.SortKey)
+				fmt.Printf("  %-12s %s\n", policy, termsafe.String(row.SortKey))
 			}
 			return nil
 		},
@@ -305,7 +307,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Machine:   ", id)
+			fmt.Println("Machine:   ", termsafe.String(id))
 			fmt.Println("Assigned:  ", list(membership.Assigned))
 			fmt.Println("Reported:  ", list(membership.Reported), " (registered groups that count, as of the Mac's last preflight)")
 			effective := groups.Effective(registry, membership)
@@ -355,7 +357,7 @@ a version that keeps the index, so that Macs whose groups have not changed since
 }
 
 func listMembers(client client, group string) error {
-	name, err := groups.NormaliseTarget(group)
+	name, err := groups.NormaliseExistingTarget(group)
 	if err != nil {
 		return err
 	}
@@ -386,7 +388,7 @@ func listMembers(client client, group string) error {
 		if len(how) == 0 {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%-38s %s", m.SK, strings.Join(how, ", ")))
+		lines = append(lines, fmt.Sprintf("%-38s %s", termsafe.String(m.SK), strings.Join(how, ", ")))
 	}
 	if len(lines) == 0 {
 		fmt.Printf("No Macs in group %q.\n", name)
@@ -419,13 +421,13 @@ func rebuildMembers(cmd *cobra.Command, client client) error {
 		if shown++; shown > rebuildShown {
 			break
 		}
-		fmt.Printf("  write  %s / %s (assigned %t, reported %t)\n", row.PK, row.SK, row.Assigned, row.Reported)
+		fmt.Printf("  write  %s / %s (assigned %t, reported %t)\n", termsafe.String(row.PK), termsafe.String(row.SK), row.Assigned, row.Reported)
 	}
 	for _, key := range plan.Deletes {
 		if shown++; shown > rebuildShown {
 			break
 		}
-		fmt.Printf("  delete %s / %s\n", key.PartitionKey, key.SortKey)
+		fmt.Printf("  delete %s / %s\n", termsafe.String(key.PartitionKey), termsafe.String(key.SortKey))
 	}
 	if total := len(plan.Writes) + len(plan.Deletes); total > rebuildShown {
 		fmt.Printf("  and %d more\n", total-rebuildShown)
@@ -446,7 +448,7 @@ func rebuildMembers(cmd *cobra.Command, client client) error {
 }
 
 func changeMembership(cmd *cobra.Command, machineID, group string, add bool) error {
-	name, err := groups.Normalise(group)
+	name, err := groups.NormaliseExisting(group)
 	if err != nil {
 		return err
 	}
@@ -457,6 +459,11 @@ func changeMembership(cmd *cobra.Command, machineID, group string, add bool) err
 	id, err := flags.ResolveMachineID(client, machineID)
 	if err != nil {
 		return err
+	}
+	if _, strictErr := groups.Normalise(group); strictErr != nil && !add {
+		if err := requireRemovable(client, id, name, strictErr); err != nil {
+			return err
+		}
 	}
 	if approval := flags.ApprovalOf(cmd); approval.DryRun {
 		if add {
@@ -484,6 +491,28 @@ func changeMembership(cmd *cobra.Command, machineID, group string, add bool) err
 	}
 	fmt.Printf("Removed group %q from %s (if it reports the group, it stays a member)\n", name, id)
 	return flags.Record(client, "group.remove", flags.MachineTarget(id), "removed assigned group "+name)
+}
+
+// requireRemovable allows removing an assignment whose name only groups registered before the format-character rule
+// may have (strictErr is Normalise's error for it) when the group is still registered or the Mac has it assigned:
+// deleting a group leaves its assignments on the Macs, and those must stay removable. Removing writes the group's
+// member row too, so any other such name is refused with strictErr. (AddAssigned checks registration itself.)
+func requireRemovable(client client, machineID, name string, strictErr error) error {
+	err := requireGroup(client, name)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, groups.ErrGroupNotFound) {
+		return err
+	}
+	membership, err := groups.GetMachineGroups(client, machineID, true)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(membership.Assigned, name) {
+		return nil
+	}
+	return strictErr
 }
 
 // requireGroup returns an error unless the group is registered
@@ -532,7 +561,7 @@ func list(names []string) string {
 	if len(names) == 0 {
 		return "(none)"
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(termsafe.Strings(names), ", ")
 }
 
 // clientModeText shows a group's client mode (set with rudolph config update --group)

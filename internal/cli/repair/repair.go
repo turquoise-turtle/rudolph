@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/spf13/cobra"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -96,7 +97,7 @@ func repair(scanService scan.ScanService, deleter dynamodb.DeleteItemAPI, delete
 
 		for _, item := range items {
 			if strings.HasPrefix(item.PartitionKey, "MachineInfo#") || strings.HasPrefix(item.PartitionKey, "MachineConfig#") {
-				fmt.Printf("    ++ LEGACY ITEM LOCATED: (%+v | %+v) ++\n", item.PartitionKey, item.SortKey)
+				fmt.Printf("    ++ LEGACY ITEM LOCATED: (%s | %s) ++\n", termsafe.String(item.PartitionKey), termsafe.String(item.SortKey))
 				if delete {
 					_, err := deleter.DeleteItem(item.PrimaryKey)
 					if err != nil {
