@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
@@ -170,11 +171,11 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 	}
 
 	fmt.Println("Uploading the following rule:")
-	fmt.Println("  MachineID:   ", machineID, suffix)
-	fmt.Println("  Identifier/SHA256:      ", identifier)
+	fmt.Println("  MachineID:   ", termsafe.String(machineID), suffix)
+	fmt.Println("  Identifier/SHA256:      ", termsafe.String(identifier))
 	fmt.Println("  Policy:      ", policy, "  (", string(policyDescription), ")")
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
-	fmt.Println("  Description: ", description)
+	fmt.Println("  Description: ", termsafe.String(description))
 	if !tf.IsGlobal {
 		fmt.Println("  Expires:     ", clitime.Expiry(expires, timeProvider.Now()))
 	}
@@ -193,9 +194,9 @@ func applyPolicyForPath(timeProvider clock.TimeProvider, client dynamodb.DynamoD
 		return fmt.Errorf("could not upload rule to DynamoDB: %w", err)
 	}
 	if tf.IsGlobal {
-		fmt.Printf("Added %s %s rule %s for every machine\n", policyDescription, ruleTypeDescription, identifier)
+		fmt.Printf("Added %s %s rule %s for every machine\n", policyDescription, ruleTypeDescription, termsafe.String(identifier))
 	} else {
-		fmt.Printf("Added %s %s rule %s for machine %s, expires %s\n", policyDescription, ruleTypeDescription, identifier, machineID, clitime.Expiry(expires, timeProvider.Now()))
+		fmt.Printf("Added %s %s rule %s for machine %s, expires %s\n", policyDescription, ruleTypeDescription, termsafe.String(identifier), termsafe.String(machineID), clitime.Expiry(expires, timeProvider.Now()))
 	}
 	// The new row replaced any earlier one without its CollectAllowedEvents flag
 	indexMachineID := ""
@@ -269,12 +270,12 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 	if group == groups.Ungrouped {
 		fmt.Println("  Group:        (Macs in no group)")
 	} else {
-		fmt.Println("  Group:       ", group)
+		fmt.Println("  Group:       ", termsafe.String(group))
 	}
-	fmt.Println("  Identifier/SHA256:      ", identifier)
+	fmt.Println("  Identifier/SHA256:      ", termsafe.String(identifier))
 	fmt.Println("  Policy:      ", policy, "  (", string(policyDescription), ")")
 	fmt.Println("  RuleType:    ", ruleType, "  (", string(ruleTypeDescription), ")")
-	fmt.Println("  Description: ", description)
+	fmt.Println("  Description: ", termsafe.String(description))
 	printRuleOptions(options)
 	fmt.Println("")
 	if apply, err := approval.Confirm(); !apply {
@@ -296,11 +297,11 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 		}
 		return err
 	}
-	target := fmt.Sprintf("group %s", group)
+	target := fmt.Sprintf("group %s", termsafe.String(group))
 	if group == groups.Ungrouped {
 		target = "the Macs in no group"
 	}
-	fmt.Printf("Added %s %s rule %s for %s\n", policyDescription, ruleTypeDescription, identifier, target)
+	fmt.Printf("Added %s %s rule %s for %s\n", policyDescription, ruleTypeDescription, termsafe.String(identifier), target)
 	return flags.Record(client, "rule.add", flags.GroupTarget(group), ruleSummary(ruleType, identifier, policy, ""))
 }
 
@@ -310,11 +311,11 @@ func applyGroupRule(client dynamodb.DynamoDBClient, policy types.Policy, group s
 func warnIfMachineNeverSynced(client dynamodb.GetItemAPI, machineID string) {
 	sensorData, err := sensordata.GetSensorData(client, machineID)
 	if err != nil {
-		fmt.Printf("[WARNING] could not check whether %s has ever synced: %v\n", machineID, err)
+		fmt.Printf("[WARNING] could not check whether %s has ever synced: %v\n", termsafe.String(machineID), err)
 		return
 	}
 	if sensorData == nil {
-		fmt.Printf("[WARNING] no sensor has ever synced as %s. Check the machine UUID: a rule for a machine\n", machineID)
+		fmt.Printf("[WARNING] no sensor has ever synced as %s. Check the machine UUID: a rule for a machine\n", termsafe.String(machineID))
 		fmt.Println("          that never syncs has no effect, and machine IDs are matched exactly, including case.")
 	}
 }
@@ -324,19 +325,19 @@ func printRuleOptions(options []rules.RuleOption) {
 	var rule rules.SantaRule
 	rule.ApplyOptions(options...)
 	if rule.CustomMessage != "" {
-		fmt.Println("  CustomMsg:   ", rule.CustomMessage)
+		fmt.Println("  CustomMsg:   ", termsafe.String(rule.CustomMessage))
 	}
 	if rule.CustomURL != "" {
-		fmt.Println("  CustomURL:   ", rule.CustomURL)
+		fmt.Println("  CustomURL:   ", termsafe.String(rule.CustomURL))
 	}
 	if rule.EventDetailButtonLabel != "" {
-		fmt.Println("  ButtonLabel: ", rule.EventDetailButtonLabel)
+		fmt.Println("  ButtonLabel: ", termsafe.String(rule.EventDetailButtonLabel))
 	}
 	if rule.NotificationAppName != "" {
-		fmt.Println("  NotifyApp:   ", rule.NotificationAppName)
+		fmt.Println("  NotifyApp:   ", termsafe.String(rule.NotificationAppName))
 	}
 	if rule.CELExpr != "" {
-		fmt.Println("  CELExpr:     ", rule.CELExpr)
+		fmt.Println("  CELExpr:     ", termsafe.String(rule.CELExpr))
 	}
 }
 

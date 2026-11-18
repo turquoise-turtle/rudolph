@@ -34,7 +34,8 @@ const (
 var ErrReservedName = fmt.Errorf("group names starting with %q are reserved", ReservedPrefix)
 
 // Normalise returns the canonical form of a group name: Unicode NFC, trimmed, lower case. It refuses names that are
-// empty, are "." or "..", contain control characters, are longer than MaxNameBytes or use the reserved prefix.
+// empty, are "." or "..", contain control characters or invisible format characters (Unicode Cf), are longer than
+// MaxNameBytes or use the reserved prefix.
 func Normalise(name string) (string, error) {
 	n := strings.ToLower(strings.TrimSpace(norm.NFC.String(name)))
 	switch {
@@ -47,11 +48,18 @@ func Normalise(name string) (string, error) {
 		return "", fmt.Errorf("a group name is at most %d bytes", MaxNameBytes)
 	case strings.IndexFunc(n, unicode.IsControl) >= 0:
 		return "", errors.New("a group name cannot contain control characters")
+	case strings.IndexFunc(n, isFormat) >= 0:
+		return "", errors.New("a group name cannot contain invisible format characters (such as bidi or zero-width characters)")
 	case strings.HasPrefix(n, ReservedPrefix):
 		return "", ErrReservedName
 	}
 	return n, nil
 }
+
+// isFormat reports invisible format characters (Unicode Cf): bidi overrides and isolates, zero-width characters, soft
+// hyphens and the like, which would make a name display as something it is not. All of Cf is refused, zero-width
+// joiners included: group names come from directory services and have no need of them.
+func isFormat(r rune) bool { return unicode.Is(unicode.Cf, r) }
 
 // NormaliseTarget is Normalise, except that it also accepts Ungrouped, which rules (but not members) can target.
 func NormaliseTarget(name string) (string, error) {

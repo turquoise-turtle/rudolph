@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
@@ -120,11 +121,11 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 			return
 		}
 		if tf.IsTargetSelf() {
-			fmt.Printf("Retrieving the configuration of this Mac (%s)\n", machineID)
-			subject = fmt.Sprintf("Machine (%s) (This Machine)", machineID)
+			fmt.Printf("Retrieving the configuration of this Mac (%s)\n", termsafe.String(machineID))
+			subject = fmt.Sprintf("Machine (%s) (This Machine)", termsafe.String(machineID))
 		} else {
-			fmt.Printf("Retrieving the configuration of machine %s\n", machineID)
-			subject = fmt.Sprintf("Machine (%s)", machineID)
+			fmt.Printf("Retrieving the configuration of machine %s\n", termsafe.String(machineID))
+			subject = fmt.Sprintf("Machine (%s)", termsafe.String(machineID))
 		}
 		tmpconfig, eerr := service.GetIntendedConfig(machineID)
 		if eerr != nil {
@@ -146,7 +147,7 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 			}
 			if ok {
 				config = machineconfiguration.ApplyGroupClientMode(config, false, mode)
-				origin = withClientModeOrigin(origin, " (group "+group+")")
+				origin = withClientModeOrigin(origin, " (group "+termsafe.String(group)+")")
 			}
 		}
 	}

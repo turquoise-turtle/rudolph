@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -169,7 +170,7 @@ func init() {
 					return fmt.Errorf("group %q: the group has %d rules; remove them first, or pass --force to delete them with the group", name, len(rows))
 				}
 				for _, row := range rows {
-					fmt.Println("  Rule:", row.SortKey)
+					fmt.Println("  Rule:", termsafe.String(row.SortKey))
 				}
 			}
 			if apply, err := approval.Confirm(); !apply {
@@ -216,7 +217,7 @@ func init() {
 				if !entry.AcceptReported {
 					reported = "ignored"
 				}
-				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", name, reported, clientModeText(entry), entry.RulesVersion, entry.Description)
+				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", termsafe.String(name), reported, clientModeText(entry), entry.RulesVersion, termsafe.String(entry.Description))
 			}
 			return nil
 		},
@@ -247,16 +248,16 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Group:          ", name)
-			fmt.Println("Description:    ", entry.Description)
+			fmt.Println("Group:          ", termsafe.String(name))
+			fmt.Println("Description:    ", termsafe.String(entry.Description))
 			fmt.Println("AcceptReported: ", entry.AcceptReported)
 			fmt.Println("ClientMode:     ", clientModeText(entry))
 			fmt.Println("RulesVersion:   ", entry.RulesVersion)
-			fmt.Println("CreatedAt:      ", entry.CreatedAt)
+			fmt.Println("CreatedAt:      ", termsafe.String(entry.CreatedAt))
 			fmt.Printf("Rules (%d):\n", len(rows))
 			for _, row := range rows {
 				policy, _ := row.Policy.MarshalText()
-				fmt.Printf("  %-12s %s\n", policy, row.SortKey)
+				fmt.Printf("  %-12s %s\n", policy, termsafe.String(row.SortKey))
 			}
 			return nil
 		},
@@ -305,7 +306,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Machine:   ", id)
+			fmt.Println("Machine:   ", termsafe.String(id))
 			fmt.Println("Assigned:  ", list(membership.Assigned))
 			fmt.Println("Reported:  ", list(membership.Reported), " (registered groups that count, as of the Mac's last preflight)")
 			effective := groups.Effective(registry, membership)
@@ -386,7 +387,7 @@ func listMembers(client client, group string) error {
 		if len(how) == 0 {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%-38s %s", m.SK, strings.Join(how, ", ")))
+		lines = append(lines, fmt.Sprintf("%-38s %s", termsafe.String(m.SK), strings.Join(how, ", ")))
 	}
 	if len(lines) == 0 {
 		fmt.Printf("No Macs in group %q.\n", name)
@@ -419,13 +420,13 @@ func rebuildMembers(cmd *cobra.Command, client client) error {
 		if shown++; shown > rebuildShown {
 			break
 		}
-		fmt.Printf("  write  %s / %s (assigned %t, reported %t)\n", row.PK, row.SK, row.Assigned, row.Reported)
+		fmt.Printf("  write  %s / %s (assigned %t, reported %t)\n", termsafe.String(row.PK), termsafe.String(row.SK), row.Assigned, row.Reported)
 	}
 	for _, key := range plan.Deletes {
 		if shown++; shown > rebuildShown {
 			break
 		}
-		fmt.Printf("  delete %s / %s\n", key.PartitionKey, key.SortKey)
+		fmt.Printf("  delete %s / %s\n", termsafe.String(key.PartitionKey), termsafe.String(key.SortKey))
 	}
 	if total := len(plan.Writes) + len(plan.Deletes); total > rebuildShown {
 		fmt.Printf("  and %d more\n", total-rebuildShown)
@@ -532,7 +533,7 @@ func list(names []string) string {
 	if len(names) == 0 {
 		return "(none)"
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(termsafe.Strings(names), ", ")
 }
 
 // clientModeText shows a group's client mode (set with rudolph config update --group)

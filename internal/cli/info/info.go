@@ -8,6 +8,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/machine"
 	"github.com/airbnb/rudolph/internal/cli/santa_sensor"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/spf13/cobra"
 )
 
@@ -37,7 +38,7 @@ func info(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to get MachineUUID: %w", err)
 	}
 
-	fmt.Println("Your machine ID is:", machineID)
+	fmt.Println("Your machine ID is:", termsafe.String(machineID))
 
 	region, _ := cmd.Flags().GetString("region")
 	table, _ := cmd.Flags().GetString("dynamodb_table")

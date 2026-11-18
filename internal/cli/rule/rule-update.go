@@ -9,6 +9,7 @@ import (
 	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
@@ -154,12 +155,12 @@ func (rh *ruleHandler) readRule(global bool, machineID, identifier string, ruleT
 func printRule(heading, machineID, suffix string, rule rules.SantaRule, description string, global bool, expires time.Time, collecting bool, now time.Time) {
 	policyDescription, _ := rule.Policy.MarshalText()
 	ruleTypeDescription, _ := rule.RuleType.MarshalText()
-	fmt.Println(heading)
-	fmt.Println("  MachineID:   ", machineID, suffix)
-	fmt.Println("  Identifier/SHA256:      ", rule.Identifier)
+	fmt.Println(termsafe.String(heading))
+	fmt.Println("  MachineID:   ", termsafe.String(machineID), suffix)
+	fmt.Println("  Identifier/SHA256:      ", termsafe.String(rule.Identifier))
 	fmt.Println("  Policy:      ", rule.Policy, "  (", string(policyDescription), ")")
 	fmt.Println("  RuleType:    ", rule.RuleType, "  (", string(ruleTypeDescription), ")")
-	fmt.Println("  Description: ", description)
+	fmt.Println("  Description: ", termsafe.String(description))
 	if !global {
 		fmt.Println("  Expires:     ", clitime.Expiry(expires, now))
 	}
@@ -232,7 +233,7 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 	collectionChanged := collecting != current.collecting
 	if !policyChanged && !rewrite && !collectionChanged {
 		// Not an error: a command copied from rudolph-web (e.g. collection off) may already have been applied
-		fmt.Printf("The rule %s already is as given; nothing was changed.\n", current.key.SortKey)
+		fmt.Printf("The rule %s already is as given; nothing was changed.\n", termsafe.String(current.key.SortKey))
 		return nil
 	}
 
@@ -308,9 +309,9 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 		}
 	}
 	if tf.IsGlobal {
-		fmt.Printf("Updated global rule %s\n", current.key.SortKey)
+		fmt.Printf("Updated global rule %s\n", termsafe.String(current.key.SortKey))
 	} else {
-		fmt.Printf("Updated rule %s of machine %s, expires %s\n", current.key.SortKey, machineID, clitime.Expiry(expires, rh.timeProvider.Now()))
+		fmt.Printf("Updated rule %s of machine %s, expires %s\n", termsafe.String(current.key.SortKey), termsafe.String(machineID), clitime.Expiry(expires, rh.timeProvider.Now()))
 	}
 	return flags.Record(rh.dynamodbClient, "rule.update", target, summary)
 }

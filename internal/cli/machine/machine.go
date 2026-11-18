@@ -11,6 +11,7 @@ import (
 
 	"github.com/airbnb/rudolph/internal/cli/clitime"
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/groups"
@@ -110,7 +111,7 @@ func Load(client dynamodb.DynamoDBClient, machineID string) (*Summary, error) {
 
 // Print writes the summary as a readable block
 func (s *Summary) Print(w io.Writer, now time.Time) {
-	fmt.Fprintf(w, "Machine ID:        %s\n", s.MachineID)
+	fmt.Fprintf(w, "Machine ID:        %s\n", termsafe.String(s.MachineID))
 	if sd := s.Sensor; sd != nil {
 		fmt.Fprintf(w, "Hostname:          %s\n", orNone(sd.Hostname))
 		fmt.Fprintf(w, "Serial number:     %s\n", orNone(sd.SerialNum))
@@ -132,7 +133,7 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 			sd.RuleCount, sd.BinaryRuleCount, sd.CertificateRuleCount, sd.TeamIDRuleCount, sd.SigningIDRuleCount, sd.CDHashRuleCount,
 			sd.CompilerRuleCount, sd.TransitiveRuleCount)
 		if v := types.ParseSantaVersion(sd.SantaVersion); v.Before(types.SantaVersionEmptyRegexClears) {
-			fmt.Fprintf(w, "Legacy client:     Santa %s is older than 2026.8, the oldest release Rudolph fully supports; see \"Supported Santa releases\" in docs/sync.md\n", sd.SantaVersion)
+			fmt.Fprintf(w, "Legacy client:     Santa %s is older than 2026.8, the oldest release Rudolph fully supports; see \"Supported Santa releases\" in docs/sync.md\n", termsafe.String(sd.SantaVersion))
 		}
 	} else {
 		fmt.Fprintln(w, "Last sync:         never (no machine with this ID has synced, or its data expired)")
@@ -142,7 +143,7 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 	effective := machineconfiguration.ApplyTemporaryClientMode(s.Config, now)
 	modeSource := ""
 	if _, temporary := s.Config.TemporaryClientModeAt(now); !temporary && s.ClientModeGroup != "" {
-		modeSource = " (group " + s.ClientModeGroup + ")"
+		modeSource = " (group " + termsafe.String(s.ClientModeGroup) + ")"
 	}
 	fmt.Fprintf(w, "  Client mode:     %s%s\n", modeName(effective.ClientMode), modeSource)
 	if s.Config.TemporaryClientMode != 0 || s.Config.TemporaryClientModeExpiresAt != 0 {
@@ -197,16 +198,17 @@ func timeText(stored string, now time.Time) string {
 	return clitime.Since(t, now)
 }
 
+// orNone shows a reported value, escaped for the terminal, or that none was reported
 func orNone(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "(none reported)"
 	}
-	return s
+	return termsafe.String(s)
 }
 
 func list(names []string) string {
 	if len(names) == 0 {
 		return "(none)"
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(termsafe.Strings(names), ", ")
 }

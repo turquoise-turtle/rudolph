@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/spf13/cobra"
 
 	"github.com/airbnb/rudolph/internal/cli/clitime"
@@ -143,9 +144,9 @@ func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, filter ruleFilter) er
 	}
 
 	if tf.IsTargetSelf() {
-		fmt.Printf("current machine, %s\n", machineID)
+		fmt.Printf("current machine, %s\n", termsafe.String(machineID))
 	} else {
-		fmt.Printf("target machine, %s\n", machineID)
+		fmt.Printf("target machine, %s\n", termsafe.String(machineID))
 	}
 	fmt.Println("")
 
@@ -186,10 +187,10 @@ func rules(client dynamodb.QueryAPI, tf flags.TargetFlags, filter ruleFilter) er
 }
 
 func printRule(i int, sortKey string, rule modelrules.SantaRule, description, state string, collecting bool) {
-	fmt.Println("----- [", i, "] (", sortKey, ")")
+	fmt.Println("----- [", i, "] (", termsafe.String(sortKey), ")")
 	fmt.Println(renderRule(rule))
 	if description != "" {
-		fmt.Println("  Description:", description)
+		fmt.Println("  Description:", termsafe.String(description))
 	}
 	if state != "" {
 		fmt.Println(" ", state)
@@ -251,7 +252,7 @@ func renderRule(item modelrules.SantaRule) string {
 		item.Identifier = item.SHA256
 	}
 
-	rendered := fmt.Sprintf("Rule %v %v (%s)", verb, predicate, item.Identifier)
+	rendered := fmt.Sprintf("Rule %v %v (%s)", verb, predicate, termsafe.String(item.Identifier))
 	if item.CELExpr != "" {
 		rendered = fmt.Sprintf("%s with CEL expression %q", rendered, item.CELExpr)
 	}

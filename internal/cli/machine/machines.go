@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/sensordata"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -46,7 +47,7 @@ rudolph lookup machine-ids. Sensor data expires 90 days after a Mac's last sync.
 		}
 		fmt.Printf("%-36s  %-24s  %-14s  %-12s  %s\n", "MACHINE ID", "HOSTNAME", "SERIAL", "SANTA", "LAST SEEN (UTC)")
 		for _, r := range rows {
-			fmt.Printf("%-36s  %-24s  %-14s  %-12s  %s\n", r.MachineID, dash(r.Hostname), dash(r.SerialNum), dash(r.SantaVersion), dash(r.LastSeenDay))
+			fmt.Printf("%-36s  %-24s  %-14s  %-12s  %s\n", termsafe.String(r.MachineID), dash(r.Hostname), dash(r.SerialNum), dash(r.SantaVersion), dash(r.LastSeenDay))
 		}
 		if more {
 			fmt.Printf("(showing the first %d; raise --limit to see more)\n", limit)
@@ -100,9 +101,10 @@ func listMachines(client dynamodb.QueryAPI, limit int) (rows []machineRow, more 
 	}
 }
 
+// dash shows a reported value, escaped for the terminal, or a dash when there is none
 func dash(s string) string {
 	if s == "" {
 		return "-"
 	}
-	return s
+	return termsafe.String(s)
 }

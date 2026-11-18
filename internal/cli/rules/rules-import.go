@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/spf13/cobra"
 
 	"github.com/airbnb/rudolph/internal/cli/clockcheck"
@@ -204,9 +205,9 @@ func printImportPlan(client dynamodb.BatchGetItemAPI, rules []fileRule) error {
 		ruleName := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
 		switch rule.Policy {
 		case types.RulePolicyAllowlistTransitive:
-			fmt.Printf("  Skip (ALLOWLIST_TRANSITIVE): %s\n", ruleName)
+			fmt.Printf("  Skip (ALLOWLIST_TRANSITIVE): %s\n", termsafe.String(ruleName))
 		case types.RulePolicyRemove:
-			fmt.Printf("  Remove: %s\n", ruleName)
+			fmt.Printf("  Remove: %s\n", termsafe.String(ruleName))
 		default:
 			current, unchanged, err := storedRule(client, rule)
 			if err != nil {
@@ -220,7 +221,7 @@ func printImportPlan(client dynamodb.BatchGetItemAPI, rules []fileRule) error {
 				action = "Replace"
 			}
 			policy, _ := rule.Policy.MarshalText()
-			fmt.Printf("  %s: %s %s\n", action, ruleName, policy)
+			fmt.Printf("  %s: %s %s\n", action, termsafe.String(ruleName), policy)
 		}
 	}
 	fmt.Println()
@@ -404,11 +405,11 @@ func ddbWriter(
 		switch rule.Policy {
 		case types.RulePolicyAllowlistTransitive:
 			// Legacy rows in older backups; Santa has no such policy, so skip them instead of failing the import
-			fmt.Printf("  [WARNING] Skipping rule with the ALLOWLIST_TRANSITIVE policy: %s%s\n", rule.Identifier, suffix)
+			fmt.Printf("  [WARNING] Skipping rule with the ALLOWLIST_TRANSITIVE policy: %s%s\n", termsafe.String(rule.Identifier), suffix)
 			atomic.AddUint64(&result.skipped, 1)
 			continue
 		case types.RulePolicyRemove:
-			fmt.Printf("  Removing rule: [%s]\n", rule.Identifier)
+			fmt.Printf("  Removing rule: [%s]\n", termsafe.String(rule.Identifier))
 			sortkey := rudolphrules.RuleSortKeyFromTypeIdentifier(rule.Identifier, rule.RuleType)
 			err = globalrules.RemoveGlobalRule(
 				timeProvider,
@@ -434,7 +435,7 @@ func ddbWriter(
 				atomic.AddUint64(&result.unchanged, 1)
 				continue
 			}
-			fmt.Printf("  Writing rule: [%+v] %s%s\n", rule.Policy, rule.Identifier, suffix)
+			fmt.Printf("  Writing rule: [%+v] %s%s\n", rule.Policy, termsafe.String(rule.Identifier), suffix)
 			err = globalrules.AddNewGlobalRule(
 				timeProvider,
 				client,
