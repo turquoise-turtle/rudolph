@@ -202,7 +202,7 @@ variable "ranker_schedule_timezone" {
 
 variable "firehose_events_retention_in_days" {
   type        = number
-  description = "Days the Firehose events bucket keeps each object before expiring it; S3 deletes the expired version 7 days later"
+  description = "Days the Firehose events bucket keeps each event in total (at least 2): the object expires a day before this, and S3 deletes its noncurrent version 1 day later"
   default     = 180
 }
 

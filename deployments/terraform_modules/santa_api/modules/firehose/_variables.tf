@@ -54,11 +54,13 @@ variable "kms_key_administrators_arns" {
 
 variable "firehose_events_retention_in_days" {
   type        = number
-  description = "Days the events bucket keeps an object before expiring it; S3 deletes the expired, noncurrent version 7 days later"
+  description = "Days the events bucket keeps an event in total: the object expires a day before this, and S3 deletes its noncurrent version 1 day later"
   default     = 180
+  nullable    = false
 
+  # Current objects expire a day early to leave the noncurrent version its one day, so both need a day each.
   validation {
-    condition     = var.firehose_events_retention_in_days >= 1 && floor(var.firehose_events_retention_in_days) == var.firehose_events_retention_in_days
-    error_message = "firehose_events_retention_in_days must be a whole number of days, at least 1."
+    condition     = var.firehose_events_retention_in_days >= 2 && floor(var.firehose_events_retention_in_days) == var.firehose_events_retention_in_days
+    error_message = "firehose_events_retention_in_days must be a whole number of days, at least 2."
   }
 }
