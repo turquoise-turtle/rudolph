@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -42,3 +44,32 @@ func TestD1_ExampleEnvironmentInitsAndValidates(t *testing.T) {
 	run("init", "-backend=false", "-input=false", "-no-color")
 	run("validate", "-no-color")
 }
+
+// pluginCache returns the Terraform plugin cache shared by every test run on this computer, locked for the rest of the
+// test. Without the lock, two runs at once (parallel test packages, several checkouts) let one terraform init write a
+// provider binary while another starts it: terraform then fails on a checksum or plugin handshake, and Santa blocks
+// the binary as "changed during launch".
+func pluginCache(t *testing.T) string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return t.TempDir()
+	}
+	cache := filepath.Join(dir, "rudolph-terraform-plugins")
+	_ = os.MkdirAll(cache, 0o755)
+	if _, locked := pluginCacheLocks.LoadOrStore(t, true); !locked {
+		lock, err := os.OpenFile(filepath.Join(cache, ".lock"), os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			lock.Close()
+			pluginCacheLocks.Delete(t)
+		})
+	}
+	return cache
+}
+
+var pluginCacheLocks sync.Map

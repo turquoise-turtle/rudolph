@@ -1073,3 +1073,60 @@ func TestTFA6_WAFDocsSayWhatToDoWhenTheReputationListBlocksYou(t *testing.T) {
 		t.Error("the WAF section has no paragraph on an office or VPN address blocked by the IP reputation list: how to see it (the PREFIX_rudolph_ip_reputation metric, sampled requests) and what to do (enable_waf off, or the group's override_action to count)")
 	}
 }
+
+// AWS WAFv2 checks these patterns only when the request reaches it, so a name or description it refuses (an
+// apostrophe, a space in a metric name) passes validate and plan and fails the apply that turns the WAF on.
+var wafNamePatterns = map[string]*regexp.Regexp{
+	"description": regexp.MustCompile(`^[\w+=:#@/\-,\.][\w+=:#@/\-,\.\s]+[\w+=:#@/\-,\.]$`),
+	"name":        regexp.MustCompile(`^[\w\-]+$`),
+	"metric_name": regexp.MustCompile(`^[\w#:\.\-/]+$`),
+}
+
+func TestTFA4_WAFNamesAreAcceptedByAWS(t *testing.T) {
+	waf, all := wafResources(t)
+	if len(waf) == 0 {
+		t.Fatal("the santa_api module has no aws_wafv2_* resources")
+	}
+	// A typical prefix; the prefix variable's own validation allows lowercase letters, digits and dashes.
+	ctx := &hcl.EvalContext{Variables: map[string]cty.Value{"var": cty.ObjectVal(map[string]cty.Value{"prefix": cty.StringVal("prod")})}}
+	checked := 0
+	var walk func(owner string, b *hclsyntax.Body)
+	walk = func(owner string, b *hclsyntax.Body) {
+		for name, a := range b.Attributes {
+			pattern, ok := wafNamePatterns[name]
+			if !ok {
+				continue
+			}
+			v, diags := a.Expr.Value(ctx)
+			if diags.HasErrors() || !v.IsKnown() || v.IsNull() || !v.Type().Equals(cty.String) {
+				t.Errorf("%s %s = %s cannot be checked with var.prefix = \"prod\": %s", owner, name, sourceOf(t, all, a.Expr), diags.Error())
+				continue
+			}
+			checked++
+			if !pattern.MatchString(v.AsString()) {
+				t.Errorf("%s %s %q does not match AWS WAFv2's pattern %s, so the apply that enables the WAF fails", owner, name, v.AsString(), pattern)
+			}
+		}
+		for _, nb := range b.Blocks {
+			walk(owner, nb.Body)
+		}
+	}
+	for _, b := range waf {
+		walk(b.Labels[0]+"."+b.Labels[1], b.Body)
+	}
+	if checked == 0 {
+		t.Error("no WAF name, metric_name or description was checked")
+	}
+}
+
+// The smoke test's plan breakdown lists what the default plan creates per bucket; the access-log bucket's lifecycle is
+// part of it now.
+func TestTFA5_SmokeTestCountsTheLogBucketLifecycle(t *testing.T) {
+	row := regexp.MustCompile("(?m)^\\| Lambda source buckets \\(`module.lambda_source\\[0\\]`\\) \\|.*$").FindString(readDoc(t, "docs/smoke-test.md"))
+	if row == "" {
+		t.Fatal("docs/smoke-test.md has no Lambda source buckets row in the plan breakdown")
+	}
+	if !strings.Contains(row, "lifecycle") {
+		t.Errorf("docs/smoke-test.md's Lambda source buckets row does not count the logging bucket's lifecycle configuration:\n%s", row)
+	}
+}
