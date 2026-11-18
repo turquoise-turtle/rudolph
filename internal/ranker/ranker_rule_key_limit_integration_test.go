@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/airbnb/rudolph/internal/ranker"
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
@@ -115,4 +116,94 @@ func TestRanker_IdentifierAtTheRuleKeyLimitStillFindsItsRule_R1(t *testing.T) {
 	if got, _ := ruleOf(rows, 2); got != "TeamID#"+teamID {
 		t.Errorf("binary 2 has GlobalRule of %d bytes, want its 1,024-byte team ID rule", len(got))
 	}
+}
+
+// Review finding 3: an identifier too long for a rule key has no rule, but the binary's other identifiers may. The
+// lookup must go on to the next, less specific candidate rather than give up on the row, or a long signing ID would
+// hide the team ID rule that covers the binary.
+func TestRanker_TooLongIdentifierFallsThroughToTheNextRule_R1(t *testing.T) {
+	longSigningID := "TEAM1:" + strings.Repeat("s", maxRuleSortKeyBytes)
+	longTeamID := strings.Repeat("T", maxRuleSortKeyBytes)
+	for _, c := range []struct {
+		name, signingID, teamID, rule string
+	}{
+		{"signing ID too long, team ID rule", longSigningID, "TEAM1", "TeamID#TEAM1"},
+		{"team ID too long, binary rule", "TEAM1:bin1", longTeamID, "Binary#" + sha(1)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ddblocal.Reset(t)
+			identifierCounter(t, 1, c.signingID, c.teamID)
+			marker(t, 1, "MAC-A", 0)
+			storeRule(t, "GlobalRules", c.rule)
+
+			if err := runStoreErr(t); err != nil {
+				t.Fatalf("ranker: %v", truncate(err.Error()))
+			}
+			if got, _ := ruleOf(unknownList(t, "Unknown", 1), 1); got != c.rule {
+				t.Errorf("binary 1 has GlobalRule %q, want %s", truncate(got), c.rule)
+			}
+		})
+	}
+}
+
+// Review finding 4: DynamoDB's limit is 1,024 bytes of UTF-8, not 1,024 characters. A signing ID of 2- or 3-byte
+// characters whose rule key is exactly 1,024 bytes is a rule an admin can add and must be found; one more character
+// takes the key over the limit while it is still well under 1,024 characters, and that row must simply have no rule.
+func TestRanker_MultiByteIdentifierAtTheRuleKeyLimit_R1(t *testing.T) {
+	signingPrefix := "SigningID#"
+	room := maxRuleSortKeyBytes - len(signingPrefix)
+	for _, c := range []struct {
+		name, char string
+	}{
+		{"2-byte characters", "\u00e9"},
+		{"3-byte characters", "\u4e2d"},
+	} {
+		atLimit := strings.Repeat(c.char, room/len(c.char))
+		over := strings.Repeat(c.char, room/len(c.char)+1)
+		t.Run(c.name+" at the limit", func(t *testing.T) {
+			if n := len(signingPrefix + atLimit); n != maxRuleSortKeyBytes {
+				t.Fatalf("fixture: rule key is %d bytes", n)
+			}
+			ddblocal.Reset(t)
+			identifierCounter(t, 1, atLimit, "TEAM1")
+			marker(t, 1, "MAC-A", 0)
+			storeRule(t, "GlobalRules", signingPrefix+atLimit)
+
+			if err := runStoreErr(t); err != nil {
+				t.Fatalf("ranker: %v", truncate(err.Error()))
+			}
+			if got, _ := ruleOf(unknownList(t, "Unknown", 1), 1); got != signingPrefix+atLimit {
+				t.Errorf("binary 1 has GlobalRule of %d bytes, want its 1,024-byte signing ID rule", len(got))
+			}
+		})
+		t.Run(c.name+" one character over", func(t *testing.T) {
+			if n, runes := len(signingPrefix+over), utf8.RuneCountInString(signingPrefix+over); n <= maxRuleSortKeyBytes || runes >= maxRuleSortKeyBytes {
+				t.Fatalf("fixture: rule key is %d bytes and %d characters", n, runes)
+			}
+			ddblocal.Reset(t)
+			identifierCounter(t, 1, over, "TEAM1")
+			marker(t, 1, "MAC-A", 0)
+			identifierCounter(t, 2, "TEAM2:bin2", "TEAM2")
+			marker(t, 2, "MAC-B", 0)
+			storeRule(t, "GlobalRules", "SigningID#TEAM2:bin2")
+
+			if err := runStoreErr(t); err != nil {
+				t.Fatalf("a %d-byte, %d-character signing ID stopped the ranker run: %v", len(over), utf8.RuneCountInString(over), truncate(err.Error()))
+			}
+			rows := unknownList(t, "Unknown", 1)
+			if got, ok := ruleOf(rows, 1); !ok || got != "" {
+				t.Errorf("binary 1 present %v with GlobalRule of %d bytes, want present without one", ok, len(got))
+			}
+			if got, _ := ruleOf(rows, 2); got != "SigningID#TEAM2:bin2" {
+				t.Errorf("binary 2 has GlobalRule %q, want SigningID#TEAM2:bin2", got)
+			}
+		})
+	}
+}
+
+func truncate(s string) string {
+	if len(s) > 120 {
+		return s[:80] + fmt.Sprintf("... (%d bytes)", len(s))
+	}
+	return s
 }
