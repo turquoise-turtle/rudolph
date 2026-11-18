@@ -4,23 +4,30 @@ package deployments
 // preflight carries serial numbers, hostnames, primary users and their groups.
 //   - S4: the Firehose events bucket must not keep events forever. The events table expires them after 90 days, and
 //     the bucket is versioned, so without a lifecycle rule every object, and every overwritten or deleted version,
-//     stays readable indefinitely. The owner chose 180 days by default, set by a santa_api variable passed down to
-//     the Firehose module.
+//     stays readable indefinitely. The owner chose 180 days in all: current objects expire after a santa_api variable
+//     defaulting to 180, passed down to the Firehose module, and noncurrent versions within 7 days more; the rule
+//     covers the whole bucket and removes incomplete multipart uploads.
 //   - S5: the Firehose delivery stream encrypts the records it buffers with the module's own key, as the bucket does.
+//     The eventupload Lambda may then use that key (GenerateDataKey, Decrypt) for PutRecordBatch, with no
+//     kms:ViaService condition, which Firehose's check of its caller may not carry.
 //   - S7: the store key lets every principal of the account use it through DynamoDB, so any role with DynamoDB read
 //     access (AWS ReadOnlyAccess, say) reads all telemetry. The owner chose an optional restriction: santa_api
 //     variable store_kms_key_user_arns, empty by default (the policy is unchanged); when set, "*" may only use the key
 //     or create grants when narrowed to Rudolph's own Lambda roles and the listed ARNs.
+//     Round 1: the roles are passed as ARNs (lambda_role_arn, the role's .arn); with the list empty the policy renders
+//     as before; the list refuses entries that are not IAM principal ARNs or that re-open the key to everyone.
 //   - S8: docs/security-risks.md says what a rogue server receives and where each copy of the telemetry is kept, and
 //     for how long.
+//     With the list set, the docs name the deployer and the key administrators as the exceptions to it.
 //
-// The key policy is a data source with dynamic blocks, and rendering it needs terraform init with the AWS provider,
-// so the S7 check reads the HCL. It accepts either shape of fix: the "*" statements in a dynamic block that only
-// exists while the variable is empty, or "*" statements narrowed by an aws:PrincipalArn condition (static or in a
-// dynamic block on the variable).
+// The key policy is a data source with dynamic blocks, and rendering it needs the AWS provider, which does not run
+// offline here, so the S7 checks read the HCL and evaluate its for_each and attributes with go-cty. They accept either
+// shape of fix: the "*" statements in a dynamic block that only exists while the variable is empty, or "*"
+// statements narrowed by an aws:PrincipalArn condition in a dynamic block that only exists while it is set.
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -28,7 +35,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
+	"github.com/zclconf/go-cty/cty/function/stdlib"
 )
 
 const (
@@ -58,12 +70,15 @@ func varOf(t *testing.T, files []tfFile, b *hclsyntax.Block, attr, what string) 
 	return m[1]
 }
 
-// firehoseRetentionVars returns the santa_api variables that set the Firehose bucket's expiry of current objects and
-// of noncurrent versions, reporting what is missing. Either is "" when it cannot be found.
-func firehoseRetentionVars(t *testing.T, report func(format string, args ...any)) (current, noncurrent string) {
+// The longest an expired event may stay as a noncurrent version. The owner chose 180 days in total, and the bucket is
+// versioned: expiring an object only makes it noncurrent, so a noncurrent expiry of another 180 days kept it 360.
+const firehoseNoncurrentMaxDays = 7
+
+// firehoseLifecycle returns the enabled rules of the Firehose events bucket's lifecycle configuration, reporting
+// when there are none.
+func firehoseLifecycle(t *testing.T, report func(format string, args ...any)) ([]tfFile, []*hclsyntax.Block) {
 	t.Helper()
 	files := loadTerraform(t, firehoseModule)
-
 	var lifecycle *hclsyntax.Block
 	for _, b := range blocks(files, "resource", "aws_s3_bucket_lifecycle_configuration") {
 		if bucket, ok := b.Body.Attributes["bucket"]; ok && strings.Contains(sourceOf(t, files, bucket.Expr), "aws_s3_bucket.rudolph_eventsupload_firehose.") {
@@ -73,77 +88,154 @@ func firehoseRetentionVars(t *testing.T, report func(format string, args ...any)
 	if lifecycle == nil {
 		report("the Firehose events bucket (aws_s3_bucket.rudolph_eventsupload_firehose) has no lifecycle configuration: " +
 			"its events, with user names, hostnames and paths, are kept forever while the events table keeps them 90 days")
-		return "", ""
+		return files, nil
 	}
-
-	var currentVar, noncurrentVar string
+	var rules []*hclsyntax.Block
 	for _, rule := range nested(lifecycle, "rule") {
-		if s, ok := rule.Body.Attributes["status"]; !ok {
-			continue
-		} else if v, _ := literal(s); v != "Enabled" {
-			continue
-		}
-		for _, e := range nested(rule, "expiration") {
-			currentVar = varOf(t, files, e, "days", "lifecycle expiration")
-		}
-		for _, e := range nested(rule, "noncurrent_version_expiration") {
-			noncurrentVar = varOf(t, files, e, "noncurrent_days", "lifecycle noncurrent_version_expiration")
+		if s, ok := rule.Body.Attributes["status"]; ok {
+			if v, _ := literal(s); v == "Enabled" {
+				rules = append(rules, rule)
+			}
 		}
 	}
-	if currentVar == "" {
-		report("no enabled lifecycle rule expires current objects (expiration { days = var.… })")
+	if len(rules) == 0 {
+		report("the Firehose events bucket's lifecycle configuration has no enabled rule")
 	}
-	if noncurrentVar == "" {
-		report("no enabled lifecycle rule expires noncurrent versions (noncurrent_version_expiration { noncurrent_days = var.… }); " +
-			"the bucket is versioned, so expired or overwritten events would otherwise survive as old versions")
-	}
+	return files, rules
+}
 
-	// Each module variable must be given a santa_api variable through module "firehose".
-	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
+// firehoseModuleArg returns the source of the argument module "firehose" gives a variable of the Firehose module.
+func firehoseModuleArg(t *testing.T, parent []tfFile, name string) (string, bool) {
+	t.Helper()
 	calls := blocks(parent, "module", "firehose")
 	if len(calls) != 1 {
 		t.Fatalf("module \"firehose\" called %d times in %s, want once", len(calls), santaAPI)
 	}
-	resolve := func(v string) string {
-		if v == "" {
-			return ""
-		}
-		if len(blocks(files, "variable", v)) != 1 {
-			report("%s does not declare variable %q", filepath.Base(firehoseModule), v)
-		}
-		arg, ok := calls[0].Body.Attributes[v]
-		if !ok {
-			report("module \"firehose\" is not given %s, so the retention cannot be set from the deployment", v)
-			return ""
-		}
-		m := tfVarRef.FindStringSubmatch(strings.TrimSpace(sourceOf(t, parent, arg.Expr)))
-		if m == nil {
-			report("module \"firehose\" %s = %s, want a santa_api variable", v, sourceOf(t, parent, arg.Expr))
-			return ""
-		}
-		return m[1]
+	arg, ok := calls[0].Body.Attributes[name]
+	if !ok {
+		return "", false
 	}
-	return resolve(currentVar), resolve(noncurrentVar)
+	return strings.TrimSpace(sourceOf(t, parent, arg.Expr)), true
+}
+
+// firehoseRetentionVar returns the santa_api variable that sets the expiry of the Firehose bucket's current objects,
+// reporting what is missing; "" when it cannot be found.
+func firehoseRetentionVar(t *testing.T, report func(format string, args ...any)) string {
+	t.Helper()
+	files, rules := firehoseLifecycle(t, report)
+	current := ""
+	for _, rule := range rules {
+		for _, e := range nested(rule, "expiration") {
+			current = varOf(t, files, e, "days", "lifecycle expiration")
+		}
+	}
+	if current == "" {
+		if len(rules) > 0 {
+			report("no enabled lifecycle rule expires current objects (expiration { days = var.… })")
+		}
+		return ""
+	}
+	if len(blocks(files, "variable", current)) != 1 {
+		report("%s does not declare variable %q", filepath.Base(firehoseModule), current)
+	}
+	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
+	src, ok := firehoseModuleArg(t, parent, current)
+	if !ok {
+		report("module \"firehose\" is not given %s, so the retention cannot be set from the deployment", current)
+		return ""
+	}
+	m := tfVarRef.FindStringSubmatch(src)
+	if m == nil {
+		report("module \"firehose\" %s = %s, want a santa_api variable", current, src)
+		return ""
+	}
+	return m[1]
 }
 
 // S4
 func TestDataExposure_FirehoseEventsBucketExpiresEvents(t *testing.T) {
-	current, noncurrent := firehoseRetentionVars(t, t.Errorf)
 	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
-	seen := map[string]bool{}
-	for _, v := range []string{current, noncurrent} {
-		if v == "" || seen[v] {
-			continue
-		}
-		seen[v] = true
+	if v := firehoseRetentionVar(t, t.Errorf); v != "" {
 		def, ok := variableDefault(t, parent, v)
 		if !ok {
 			t.Errorf("santa_api variable %s has no default; the owner chose a default of %d days", v, firehoseRetentionDefaultDays)
-			continue
-		}
-		if days, err := strconv.Atoi(def); err != nil || days != firehoseRetentionDefaultDays {
+		} else if days, err := strconv.Atoi(def); err != nil || days != firehoseRetentionDefaultDays {
 			t.Errorf("santa_api variable %s defaults to %s, want %d (days)", v, def, firehoseRetentionDefaultDays)
 		}
+	}
+
+	files, rules := firehoseLifecycle(t, func(string, ...any) {})
+	if len(rules) == 0 {
+		return
+	}
+
+	// Noncurrent versions: a literal of at most 7 days, or a variable (of santa_api when module "firehose" passes it,
+	// else of the Firehose module) whose default is at most 7.
+	noncurrent := false
+	for _, rule := range rules {
+		for _, e := range nested(rule, "noncurrent_version_expiration") {
+			noncurrent = true
+			a, ok := e.Body.Attributes["noncurrent_days"]
+			if !ok {
+				t.Error("lifecycle noncurrent_version_expiration: no noncurrent_days")
+				continue
+			}
+			src := strings.TrimSpace(sourceOf(t, files, a.Expr))
+			what := src
+			if m := tfVarRef.FindStringSubmatch(src); m != nil {
+				defFiles, name := filesIn(files, firehoseModule), m[1]
+				if arg, passed := firehoseModuleArg(t, parent, name); passed {
+					pm := tfVarRef.FindStringSubmatch(arg)
+					if pm == nil {
+						t.Errorf("module \"firehose\" %s = %s, want a santa_api variable or nothing", name, arg)
+						continue
+					}
+					defFiles, name = parent, pm[1]
+				}
+				def, ok := variableDefault(t, defFiles, name)
+				if !ok {
+					t.Errorf("noncurrent_days comes from variable %s, which has no default; want a default of at most %d days", name, firehoseNoncurrentMaxDays)
+					continue
+				}
+				src, what = def, "variable "+name+" defaulting to "+def
+			}
+			if days, err := strconv.Atoi(src); err != nil || days < 1 || days > firehoseNoncurrentMaxDays {
+				t.Errorf("lifecycle noncurrent_version_expiration: noncurrent_days is %s, want 1 to %d days: the bucket is versioned, "+
+					"so an object expired after %d days stays as a noncurrent version that long again, and the owner chose %d days in total",
+					what, firehoseNoncurrentMaxDays, firehoseRetentionDefaultDays, firehoseRetentionDefaultDays)
+			}
+		}
+	}
+	if !noncurrent {
+		t.Error("no enabled lifecycle rule expires noncurrent versions (noncurrent_version_expiration); " +
+			"the bucket is versioned, so expired or overwritten events would otherwise survive as old versions")
+	}
+
+	// The whole bucket: an empty filter, no prefix or tag that leaves objects out.
+	for _, rule := range rules {
+		filters := nested(rule, "filter")
+		if len(filters) != 1 {
+			t.Errorf("lifecycle rule has %d filter blocks, want one empty filter {} so it covers every object of the bucket", len(filters))
+			continue
+		}
+		if len(filters[0].Body.Attributes) > 0 || len(filters[0].Body.Blocks) > 0 {
+			t.Errorf("lifecycle rule filter is %s, want filter {} so it covers every object of the bucket (no prefix or tag)",
+				squash(blockText(t, files, filters[0])))
+		}
+	}
+
+	// Parts of uploads Firehose never completed hold events too and do not expire with the objects.
+	abort := false
+	for _, rule := range rules {
+		for _, a := range nested(rule, "abort_incomplete_multipart_upload") {
+			if _, ok := a.Body.Attributes["days_after_initiation"]; ok {
+				abort = true
+			}
+		}
+	}
+	if !abort {
+		t.Error("no enabled lifecycle rule has abort_incomplete_multipart_upload { days_after_initiation = … }: " +
+			"parts of uploads Firehose never completed hold events, are invisible to listings and never expire")
 	}
 }
 
@@ -177,16 +269,121 @@ func TestDataExposure_FirehoseStreamEncryptsBufferedRecords(t *testing.T) {
 	}
 }
 
+// conditionsOf returns the conditions of a statement, static or in dynamic "condition" blocks, with the for_each of
+// the dynamic block ("" for a static one).
+func conditionsOf(t *testing.T, files []tfFile, st *hclsyntax.Block) (conds []*hclsyntax.Block, forEach []string) {
+	for _, c := range nested(st, "condition") {
+		conds, forEach = append(conds, c), append(forEach, "")
+	}
+	for _, d := range nested(st, "dynamic") {
+		if len(d.Labels) != 1 || d.Labels[0] != "condition" {
+			continue
+		}
+		fe := ""
+		if a, ok := d.Body.Attributes["for_each"]; ok {
+			fe = sourceOf(t, files, a.Expr)
+		}
+		for _, c := range nested(d, "content") {
+			conds, forEach = append(conds, c), append(forEach, fe)
+		}
+	}
+	return conds, forEach
+}
+
+var (
+	policyDocRef = regexp.MustCompile(`data\.aws_iam_policy_document\.([A-Za-z0-9_]+)\b`)
+	iamPolicyRef = regexp.MustCompile(`aws_iam_policy\.([A-Za-z0-9_]+)\b`)
+)
+
+// producerPolicyDocs returns the policy documents of the Firehose module that reach the roles in
+// var.firehose_upload_lambda_role_names (the eventupload Lambda), through an attached aws_iam_policy or an inline
+// aws_iam_role_policy.
+func producerPolicyDocs(t *testing.T, files []tfFile) map[string]bool {
+	t.Helper()
+	docs := map[string]bool{}
+	policies := map[string]string{} // aws_iam_policy name -> its policy source
+	for _, p := range blocks(files, "resource", "aws_iam_policy") {
+		if a, ok := p.Body.Attributes["policy"]; ok {
+			policies[p.Labels[1]] = sourceOf(t, files, a.Expr)
+		}
+	}
+	for _, typ := range []string{"aws_iam_role_policy_attachment", "aws_iam_role_policy", "aws_iam_policy_attachment"} {
+		for _, r := range blocks(files, "resource", typ) {
+			text := blockText(t, files, r)
+			if !strings.Contains(text, "var.firehose_upload_lambda_role_names") {
+				continue
+			}
+			for _, m := range policyDocRef.FindAllStringSubmatch(text, -1) {
+				docs[m[1]] = true
+			}
+			for _, m := range iamPolicyRef.FindAllStringSubmatch(text, -1) {
+				for _, d := range policyDocRef.FindAllStringSubmatch(policies[m[1]], -1) {
+					docs[d[1]] = true
+				}
+			}
+		}
+	}
+	return docs
+}
+
+// S5: PutRecordBatch on a stream encrypted with a customer managed key needs the caller to be allowed
+// kms:GenerateDataKey and kms:Decrypt on that key. No kms:ViaService condition: AWS does not document that the
+// check Firehose makes of its caller carries it, and if it does not, every upload is refused.
+func TestDataExposure_EventuploadMayUseTheStreamKey(t *testing.T) {
+	docs, files := policyDocs(t, firehoseModule)
+	names := producerPolicyDocs(t, files)
+	if len(names) == 0 {
+		t.Fatal("no policy document of the Firehose module is attached to var.firehose_upload_lambda_role_names; the check is out of date")
+	}
+	found := false
+	for name := range names {
+		doc, ok := docs[name]
+		if !ok {
+			continue
+		}
+		for _, st := range statementsOf(doc) {
+			text := squash(blockText(t, files, st))
+			if e, ok := st.Body.Attributes["effect"]; ok {
+				if v, _ := literal(e); v == "Deny" {
+					continue
+				}
+			}
+			res, ok := st.Body.Attributes["resources"]
+			if !ok || !strings.Contains(sourceOf(t, files, res.Expr), "aws_kms_key.rudolph_eventsupload_kms_key.arn") {
+				continue
+			}
+			if !strings.Contains(text, `"kms:Decrypt"`) || !regexp.MustCompile(`"kms:GenerateDataKey\*?"`).MatchString(text) {
+				continue
+			}
+			found = true
+			conds, _ := conditionsOf(t, files, st)
+			for _, c := range conds {
+				if v, ok := c.Body.Attributes["variable"]; ok {
+					if cv, _ := literal(v); strings.EqualFold(cv, "kms:ViaService") {
+						t.Errorf("policy document %s: the statement allowing kms:GenerateDataKey and kms:Decrypt on the stream key has a "+
+							"kms:ViaService condition; AWS does not document that Firehose's check of the PutRecordBatch caller carries it, "+
+							"and if it does not, every upload is refused", name)
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("the eventupload Lambda's Firehose policy does not allow kms:GenerateDataKey and kms:Decrypt on " +
+			"aws_kms_key.rudolph_eventsupload_kms_key.arn: with the stream encrypted under that key, Firehose refuses its PutRecordBatch")
+	}
+}
+
 // tableRoles are the roles of every Lambda that reads or writes the store or events table, as santa_api refers to
-// them. The api-handler module's outputs are not pinned (it has lambda_role_name today; a fix may add an ARN). The
-// ranker's role has path /rudolph/, so an ARN built from its name as role/<name> would not match it: its .arn is
-// required.
+// them. ARNs, never names: aws:PrincipalArn and key policy principals compare ARNs, so a role name never matches,
+// and an ARN built from a name as role/<name> leaves out the role's path (the ranker's is /rudolph/). The
+// api-handler module's lambda_role_arn output must be its role's .arn (TestDataExposure_StoreKeyCanBeLimitedToNamedPrincipals).
 var tableRoles = map[string]*regexp.Regexp{
-	"health":       regexp.MustCompile(`module\.health_function\.\w+`),
-	"preflight":    regexp.MustCompile(`module\.preflight_function\.\w+`),
-	"ruledownload": regexp.MustCompile(`module\.ruledownload_function\.\w+`),
-	"postflight":   regexp.MustCompile(`module\.postflight_function\.\w+`),
-	"eventupload":  regexp.MustCompile(`module\.eventupload_function\.\w+`),
+	"health":       regexp.MustCompile(`module\.health_function\.lambda_role_arn\b`),
+	"preflight":    regexp.MustCompile(`module\.preflight_function\.lambda_role_arn\b`),
+	"ruledownload": regexp.MustCompile(`module\.ruledownload_function\.lambda_role_arn\b`),
+	"postflight":   regexp.MustCompile(`module\.postflight_function\.lambda_role_arn\b`),
+	"eventupload":  regexp.MustCompile(`module\.eventupload_function\.lambda_role_arn\b`),
 	"ranker":       regexp.MustCompile(`aws_iam_role\.ranker\.arn\b`),
 }
 
@@ -356,8 +553,16 @@ func TestDataExposure_StoreKeyCanBeLimitedToNamedPrincipals(t *testing.T) {
 	}
 	for role := range tableRoles {
 		if !passed[role] {
-			t.Errorf("module \"rule_store\" is not given the %s Lambda's role; it reads or writes the tables, so the key must keep allowing it", role)
+			t.Errorf("module \"rule_store\" is not given the %s Lambda's role ARN (%s); it reads or writes the tables, so the key must keep allowing it", role, tableRoles[role])
 		}
+	}
+	// The api-handler roles are passed as lambda_role_arn: it must be the role's own ARN, path included.
+	apiHandler := santaAPI + "/modules/lambda/api-handler"
+	apiFiles := loadTerraform(t, apiHandler)
+	if outs := blocks(apiFiles, "output", "lambda_role_arn"); len(outs) != 1 {
+		t.Errorf("%s has no output lambda_role_arn; the store key needs the Lambda roles' ARNs, which their names never match", apiHandler)
+	} else if a, ok := outs[0].Body.Attributes["value"]; !ok || strings.TrimSpace(sourceOf(t, apiFiles, a.Expr)) != "aws_iam_role.api_handler_role.arn" {
+		t.Errorf("%s output lambda_role_arn is not aws_iam_role.api_handler_role.arn", apiHandler)
 	}
 
 	// covers reports whether a principal expression names the users variable and every Lambda role, through the
@@ -529,11 +734,8 @@ func TestDataExposure_DocsDescribeTelemetryAndRetention(t *testing.T) {
 		t.Fatal(`docs/security-risks.md has no section (a "## " heading with "telemetry" or "retention") listing where telemetry is copied and how long each copy is kept`)
 	}
 	firehose := []string{`firehose`, `180 days`}
-	if current, noncurrent := firehoseRetentionVars(t, func(string, ...any) {}); current != "" {
+	if current := firehoseRetentionVar(t, func(string, ...any) {}); current != "" {
 		firehose = append(firehose, regexp.QuoteMeta(current))
-		if noncurrent != "" && noncurrent != current {
-			firehose = append(firehose, regexp.QuoteMeta(noncurrent))
-		}
 	}
 	for what, patterns := range map[string][]string{
 		"the store table and its TTL":                                    {`store table`, `TTL|expire|ExpiresAfter`},
@@ -552,3 +754,570 @@ func TestDataExposure_DocsDescribeTelemetryAndRetention(t *testing.T) {
 		}
 	}
 }
+
+// S8, round 1: with store_kms_key_user_arns set, two kinds of principal outside the list still matter. The deployer:
+// creating or replacing a table and restoring one from point-in-time recovery make DynamoDB create grants as the
+// deployer, so it must be listed or given the key through IAM. Key administrators: they can change the key policy or
+// create grants, so they can reach the data, an exception besides IAM policies through the root statement.
+func TestDataExposure_DocsNameTheStoreKeyExceptions(t *testing.T) {
+	var where []string
+	var texts []string
+	if src, err := os.ReadFile("../docs/security-risks.md"); err != nil {
+		t.Fatal(err)
+	} else if h, body, ok := docSection(string(src), regexp.MustCompile(`(?i)telemetry|retention`)); ok {
+		where, texts = append(where, "security-risks.md "+strings.TrimSpace(h)), append(texts, body)
+	}
+	if src, err := os.ReadFile("../docs/deploy.md"); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, p := range regexp.MustCompile(`(?m)^### `).Split(string(src), -1)[1:] {
+			h, body, _ := strings.Cut(p, "\n")
+			if strings.HasPrefix(h, "23.") {
+				body, _, _ = strings.Cut(body, "\n## ")
+				where, texts = append(where, "deploy.md "+strings.TrimSpace(h)), append(texts, body)
+			}
+		}
+	}
+	if len(texts) == 0 {
+		t.Fatal(`neither docs/security-risks.md (a "## " section on telemetry or retention) nor docs/deploy.md (upgrade step 23) has a section to check`)
+	}
+	users := regexp.QuoteMeta(storeKeyUsersVar)
+	for what, patterns := range map[string][]string{
+		"the deployer (the role that runs Terraform) must be listed or given the key through IAM, as table creation, " +
+			"replacement and point-in-time restore run DynamoDB's CreateGrant as the deployer": {
+			users, `deployer|runs Terraform|Terraform role|role that runs Terraform`, `CreateGrant`,
+			`table creation|creat(e|es|ing) (a |the )?(new )?tables?|replac`, `restor`, `\blist|IAM`,
+		},
+		"key administrators (kms_key_administrators_arns) can reach the data by changing the key policy or creating grants": {
+			users, `kms_key_administrators_arns`, `polic`, `grant`,
+		},
+	} {
+		found := false
+		for _, text := range texts {
+			if lineWith(text, patterns...) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%v: no line or table row says that %s (want one matching %q)", where, what, patterns)
+		}
+	}
+}
+
+// storeKeyArgs returns the store module variables that module "rule_store" fills with store_kms_key_user_arns, and
+// those it fills with Lambda role ARNs.
+func storeKeyArgs(t *testing.T, parent []tfFile) (users, roles map[string]bool) {
+	t.Helper()
+	users, roles = map[string]bool{}, map[string]bool{}
+	calls := blocks(parent, "module", "rule_store")
+	if len(calls) != 1 {
+		t.Fatalf("module \"rule_store\" called %d times, want once", len(calls))
+	}
+	for name, a := range calls[0].Body.Attributes {
+		text := expandLocals(t, parent, sourceOf(t, parent, a.Expr))
+		if strings.Contains(text, "var."+storeKeyUsersVar) {
+			users[name] = true
+		}
+		for _, re := range tableRoles {
+			if re.MatchString(text) {
+				roles[name] = true
+			}
+		}
+	}
+	return users, roles
+}
+
+const (
+	testAccount   = "123456789012"
+	testUserARN   = "arn:aws:iam::123456789012:role/rudolph-web"
+	testAdminARN  = "arn:aws:iam::123456789012:role/key-admin"
+	testLambdaARN = "arn:aws:iam::123456789012:role/rudolph/test_rudolph_preflight_role"
+)
+
+// storeKeyEvalContext gives every variable of the store module a value: the users list, the administrators list and
+// the Lambda role ARNs as asked, the others their literal default or a placeholder, and evaluates its locals.
+func storeKeyEvalContext(t *testing.T, files []tfFile, users, roles map[string]bool, userARNs, adminARNs []string) *hcl.EvalContext {
+	t.Helper()
+	list := func(ss []string) cty.Value {
+		if len(ss) == 0 {
+			return cty.ListValEmpty(cty.String)
+		}
+		var vs []cty.Value
+		for _, s := range ss {
+			vs = append(vs, cty.StringVal(s))
+		}
+		return cty.ListVal(vs)
+	}
+	vars := map[string]cty.Value{}
+	for _, v := range blocks(files, "variable") {
+		name := v.Labels[0]
+		switch {
+		case users[name]:
+			vars[name] = list(userARNs)
+		case name == "kms_key_administrators_arns":
+			vars[name] = list(adminARNs)
+		case roles[name]:
+			vars[name] = list([]string{testLambdaARN})
+		case name == "aws_account_id":
+			vars[name] = cty.StringVal(testAccount)
+		case name == "region":
+			vars[name] = cty.StringVal("ap-southeast-2")
+		default:
+			if d, ok := v.Body.Attributes["default"]; ok {
+				if val, diags := d.Expr.Value(nil); !diags.HasErrors() {
+					vars[name] = val
+					continue
+				}
+			}
+			vars[name] = cty.StringVal("test")
+		}
+	}
+	ctx := &hcl.EvalContext{
+		Variables: map[string]cty.Value{"var": cty.ObjectVal(vars)},
+		Functions: map[string]function.Function{
+			"length":       stdlib.LengthFunc,
+			"concat":       stdlib.ConcatFunc,
+			"distinct":     stdlib.DistinctFunc,
+			"compact":      stdlib.CompactFunc,
+			"flatten":      stdlib.FlattenFunc,
+			"coalescelist": stdlib.CoalesceListFunc,
+			"contains":     stdlib.ContainsFunc,
+			"format":       stdlib.FormatFunc,
+			"join":         stdlib.JoinFunc,
+			"toset":        stdlib.MakeToFunc(cty.Set(cty.DynamicPseudoType)),
+			"tolist":       stdlib.MakeToFunc(cty.List(cty.DynamicPseudoType)),
+		},
+	}
+	locals := map[string]cty.Value{}
+	for pass := 0; pass < 3; pass++ {
+		ctx.Variables["local"] = cty.ObjectVal(locals)
+		for _, l := range blocks(files, "locals") {
+			for name, a := range l.Body.Attributes {
+				if val, diags := a.Expr.Value(ctx); !diags.HasErrors() {
+					locals[name] = val
+				}
+			}
+		}
+	}
+	ctx.Variables["local"] = cty.ObjectVal(locals)
+	return ctx
+}
+
+// exists reports whether a dynamic block with this for_each renders any block; a static block (nil) always does.
+func exists(t *testing.T, files []tfFile, forEach hclsyntax.Expression, ctx *hcl.EvalContext) bool {
+	t.Helper()
+	if forEach == nil {
+		return true
+	}
+	v, diags := forEach.Value(ctx)
+	if diags.HasErrors() || !v.IsKnown() || v.IsNull() {
+		t.Errorf("cannot evaluate for_each = %s without AWS: %s", squash(sourceOf(t, files, forEach)), diags.Error())
+		return false
+	}
+	return v.LengthInt() > 0
+}
+
+// renderValue evaluates an attribute, sorting lists of strings (their order means nothing in a policy); its source
+// when it cannot be evaluated.
+func renderValue(t *testing.T, files []tfFile, b *hclsyntax.Block, name string, ctx *hcl.EvalContext) string {
+	a, ok := b.Body.Attributes[name]
+	if !ok {
+		return ""
+	}
+	v, diags := a.Expr.Value(ctx)
+	if diags.HasErrors() || !v.IsWhollyKnown() || v.IsNull() {
+		return "src:" + squash(sourceOf(t, files, a.Expr))
+	}
+	if v.Type() == cty.String {
+		return v.AsString()
+	}
+	if v.CanIterateElements() {
+		var ss []string
+		for it := v.ElementIterator(); it.Next(); {
+			_, e := it.Element()
+			if e.Type() == cty.String {
+				ss = append(ss, e.AsString())
+			} else {
+				ss = append(ss, e.GoString())
+			}
+		}
+		sort.Strings(ss)
+		return "[" + strings.Join(ss, ",") + "]"
+	}
+	return v.GoString()
+}
+
+type dynBlock struct {
+	body    *hclsyntax.Block
+	forEach hclsyntax.Expression // nil for a static block
+}
+
+// blocksOf returns a block's nested blocks of a type, static and dynamic (their content).
+func blocksOf(b *hclsyntax.Block, typ string) []dynBlock {
+	var out []dynBlock
+	for _, s := range nested(b, typ) {
+		out = append(out, dynBlock{body: s})
+	}
+	for _, d := range nested(b, "dynamic") {
+		if len(d.Labels) != 1 || d.Labels[0] != typ {
+			continue
+		}
+		var fe hclsyntax.Expression
+		if a, ok := d.Body.Attributes["for_each"]; ok {
+			fe = a.Expr
+		}
+		for _, c := range nested(d, "content") {
+			out = append(out, dynBlock{body: c, forEach: fe})
+		}
+	}
+	return out
+}
+
+// policyShape renders the statements a policy document has under ctx: sid, effect, actions, resources, principals
+// and conditions, sorted, so that two documents with the same rendered policy compare equal.
+func policyShape(t *testing.T, files []tfFile, doc *hclsyntax.Block, ctx *hcl.EvalContext) []string {
+	t.Helper()
+	var out []string
+	for _, st := range blocksOf(doc, "statement") {
+		if !exists(t, files, st.forEach, ctx) {
+			continue
+		}
+		effect := renderValue(t, files, st.body, "effect", ctx)
+		if effect == "" {
+			effect = "Allow"
+		}
+		parts := []string{
+			"sid=" + renderValue(t, files, st.body, "sid", ctx),
+			"effect=" + effect,
+			"actions=" + renderValue(t, files, st.body, "actions", ctx),
+			"resources=" + renderValue(t, files, st.body, "resources", ctx),
+		}
+		var ps, cs []string
+		for _, p := range blocksOf(st.body, "principals") {
+			if exists(t, files, p.forEach, ctx) {
+				ps = append(ps, renderValue(t, files, p.body, "type", ctx)+":"+renderValue(t, files, p.body, "identifiers", ctx))
+			}
+		}
+		for _, c := range blocksOf(st.body, "condition") {
+			if exists(t, files, c.forEach, ctx) {
+				cs = append(cs, renderValue(t, files, c.body, "test", ctx)+" "+renderValue(t, files, c.body, "variable", ctx)+" "+
+					renderValue(t, files, c.body, "values", ctx))
+			}
+		}
+		sort.Strings(ps)
+		sort.Strings(cs)
+		parts = append(parts, "principals="+strings.Join(ps, ";"), "conditions="+strings.Join(cs, ";"))
+		out = append(out, strings.Join(parts, " | "))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// S7: with store_kms_key_user_arns empty the store key policy is exactly what it was, so the CLI, rudolph-web and
+// every other principal with table permissions keep reading the tables. An aws:PrincipalArn condition that is there
+// whatever the list holds would lock them out of a deployment that never set it.
+func TestDataExposure_StoreKeyUnchangedWhileTheListIsEmpty(t *testing.T) {
+	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
+	users, roles := storeKeyArgs(t, parent)
+	if len(users) == 0 {
+		t.Errorf("module \"rule_store\" is not given var.%s", storeKeyUsersVar)
+	}
+	docs, files := policyDocs(t, storeModule)
+	doc, ok := docs["store_sse_permissions"]
+	if !ok {
+		t.Fatal("no aws_iam_policy_document.store_sse_permissions in the store module; the check is out of date")
+	}
+	storeFiles := filesIn(files, storeModule)
+	empty := storeKeyEvalContext(t, storeFiles, users, roles, nil, nil)
+	set := storeKeyEvalContext(t, storeFiles, users, roles, []string{testUserARN}, nil)
+
+	// Every aws:PrincipalArn condition on a "*" statement exists only while the list is set.
+	for _, st := range blocksOf(doc, "statement") {
+		everyone := false
+		for _, id := range awsIdentifiers(t, files, st.body) {
+			if strings.Contains(id, `"*"`) {
+				everyone = true
+			}
+		}
+		if !everyone {
+			continue
+		}
+		for _, c := range blocksOf(st.body, "condition") {
+			v, ok := c.body.Body.Attributes["variable"]
+			if !ok {
+				continue
+			}
+			if name, _ := literal(v); !strings.EqualFold(name, "aws:PrincipalArn") {
+				continue
+			}
+			sid := renderValue(t, files, st.body, "sid", empty)
+			if c.forEach == nil && st.forEach == nil {
+				t.Errorf("store key statement %q: its aws:PrincipalArn condition is there whatever %s holds; with the list empty "+
+					"it locks the CLI and rudolph-web out. Put it in a dynamic \"condition\" whose for_each is empty while the list is", sid, storeKeyUsersVar)
+				continue
+			}
+			if exists(t, files, st.forEach, empty) && exists(t, files, c.forEach, empty) {
+				t.Errorf("store key statement %q: its aws:PrincipalArn condition exists while %s is empty; it must only exist while the list is set", sid, storeKeyUsersVar)
+			}
+			if !(exists(t, files, st.forEach, set) && exists(t, files, c.forEach, set)) {
+				t.Errorf("store key statement %q: its aws:PrincipalArn condition does not exist while %s is set", sid, storeKeyUsersVar)
+			}
+		}
+	}
+
+	// The rendered shape with the list empty matches the policy as released, with and without key administrators.
+	before, err := hclparse.NewParser().ParseHCL([]byte(storeKeyPolicyBefore), "store_kms_4644f87.tf")
+	if err != nil {
+		t.Fatalf("parse the earlier store key policy: %s", err.Error())
+	}
+	old := []tfFile{{path: "store_kms_4644f87.tf", body: before.Body.(*hclsyntax.Body), src: []byte(storeKeyPolicyBefore)}}
+	oldDocs := blocks(old, "data", "aws_iam_policy_document", "store_sse_permissions")
+	if len(oldDocs) != 1 {
+		t.Fatal("the earlier store key policy has no store_sse_permissions")
+	}
+	for _, admins := range [][]string{nil, {testAdminARN}} {
+		got := policyShape(t, files, doc, storeKeyEvalContext(t, storeFiles, users, roles, nil, admins))
+		want := policyShape(t, old, oldDocs[0], storeKeyEvalContext(t, storeFiles, users, roles, nil, admins))
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("with %s empty and %d key administrators, the store key policy differs from the one released before the restriction:\n got:\n  %s\n want:\n  %s",
+				storeKeyUsersVar, len(admins), strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+		}
+	}
+}
+
+// storeKeyUserValues are entries of store_kms_key_user_arns that its validation must accept, and refuse.
+var (
+	storeKeyUsersGood = []string{
+		"arn:aws:iam::123456789012:role/rudolph-web",
+		"arn:aws:iam::123456789012:role/ops/rudolph-cli",
+		"arn:aws:iam::123456789012:user/alice",
+		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*",
+		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/ap-southeast-2/AWSReservedSSO_RudolphOperators_*",
+		"arn:aws-us-gov:iam::123456789012:role/rudolph-web",
+	}
+	storeKeyUsersBad = []string{
+		"*",
+		"rudolph-web",
+		"arn:aws:sts::123456789012:assumed-role/rudolph-web/session", // aws:PrincipalArn is the role's ARN, never this
+		"arn:aws:iam::12345:role/rudolph-web",                        // not a 12-digit account
+		"arn:aws:iam::*:role/rudolph-web",
+		"arn:aws:iam::123456789012:*",
+		"arn:aws:iam::123456789012:role/*",
+		"arn:aws:iam::123456789012:user/*",
+		"arn:aws:iam::123456789012:role/rudolph-web,arn:aws:iam::123456789012:role/*",
+	}
+)
+
+// S7: the list only narrows the key if each entry is an IAM principal ARN that can match aws:PrincipalArn, and none
+// re-opens it to every principal.
+func TestDataExposure_StoreKeyUsersAreIAMPrincipalARNs(t *testing.T) {
+	parent := filesIn(loadTerraform(t, santaAPI), santaAPI)
+	vs := blocks(parent, "variable", storeKeyUsersVar)
+	if len(vs) != 1 {
+		t.Fatalf("santa_api declares no variable %q", storeKeyUsersVar)
+	}
+	v := vs[0]
+	if a, ok := v.Body.Attributes["nullable"]; !ok || strings.TrimSpace(sourceOf(t, parent, a.Expr)) != "false" {
+		t.Errorf("variable %s: want nullable = false, so null means the empty default rather than an error in the key policy", storeKeyUsersVar)
+	}
+	if len(nested(v, "validation")) == 0 {
+		t.Errorf("variable %s has no validation: an sts assumed-role ARN or a name never matches aws:PrincipalArn, and role/* or * "+
+			"re-opens the key to every principal", storeKeyUsersVar)
+	}
+
+	tf, err := exec.LookPath("terraform")
+	if err != nil {
+		t.Skip("terraform not found: the validation was not exercised")
+	}
+	// The variable on its own, in a module of a scratch configuration: plan needs no provider, no network and no AWS.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "v"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "v", "main.tf"), []byte(blockText(t, parent, v)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := "variable \"in\" {\n  type = list(string)\n}\n\nmodule \"v\" {\n  source = \"./v\"\n  " + storeKeyUsersVar + " = var.in\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte(root), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(env []string, args ...string) (string, error) {
+		cmd := exec.Command(tf, args...)
+		cmd.Dir = dir
+		cmd.Env = append(append(os.Environ(), "TF_IN_AUTOMATION=1", "TF_CLI_ARGS=", "TF_CLI_ARGS_plan="), env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run(nil, "init", "-backend=false", "-input=false", "-no-color"); err != nil {
+		t.Fatalf("terraform init of the scratch configuration: %v\n%s", err, out)
+	}
+	plan := func(entries []string) (string, error) {
+		quoted := make([]string, len(entries))
+		for i, e := range entries {
+			quoted[i] = strconv.Quote(e)
+		}
+		return run([]string{"TF_VAR_in=[" + strings.Join(quoted, ",") + "]"}, "plan", "-input=false", "-no-color", "-lock=false")
+	}
+	if out, err := plan(nil); err != nil {
+		t.Errorf("the validation refuses an empty list:\n%s", out)
+	}
+	for _, good := range storeKeyUsersGood {
+		if out, err := plan([]string{good}); err != nil {
+			t.Errorf("the validation refuses %q, an IAM principal ARN narrower than every principal:\n%s", good, out)
+		}
+	}
+	for _, bad := range storeKeyUsersBad {
+		entries := strings.Split(bad, ",")
+		if out, err := plan(entries); err == nil {
+			t.Errorf("the validation accepts %q", bad)
+		} else if !strings.Contains(out, "Invalid value for variable") {
+			t.Errorf("terraform plan with %q failed, but not on the variable's validation:\n%s", bad, out)
+		}
+	}
+}
+
+// The store key policy as released before the restriction (4644f87, modules/store/kms.tf): with the list empty the
+// policy must render the same statements and conditions.
+const storeKeyPolicyBefore = `// KMS Key for DynamoDB server-side encryption
+resource "aws_kms_key" "store_sse_key" {
+  enable_key_rotation = true
+  description         = "Santa Rules Tables Server-Side Encryption"
+  policy              = data.aws_iam_policy_document.store_sse_permissions.json
+}
+
+data "aws_iam_policy_document" "store_sse_permissions" {
+  statement {
+    sid       = "Enable IAM User Permissions"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+    principals {
+      type = "AWS"
+      identifiers = [
+        "arn:aws:iam::${var.aws_account_id}:root",
+      ]
+    }
+  }
+  # Every principal of the account may use the key, but only through DynamoDB: reading or writing the tables is
+  # governed by their IAM policies, so the Lambdas, the CLI and rudolph-web need no KMS grant of their own.
+  statement {
+    sid    = "Allow principals in the account to use the key"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["dynamodb.${var.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:Encrypt",
+      "kms:GenerateDataKey*",
+      "kms:ReEncrypt*",
+    ]
+
+    resources = ["*"]
+  }
+
+  # Grants in a statement of their own: kms:GrantIsForAWSResource is only present on grant requests, so in the
+  # statement above it would deny every other action. DynamoDB creates grants on the key for the tables.
+  statement {
+    sid    = "Allow DynamoDB to create grants for principals in the account"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["dynamodb.${var.region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [var.aws_account_id]
+    }
+    condition {
+      test     = "Bool"
+      variable = "kms:GrantIsForAWSResource"
+      values   = ["true"]
+    }
+
+    actions = [
+      "kms:CreateGrant",
+    ]
+
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "Allow DynamoDB to get information about the CMK"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["dynamodb.amazonaws.com"]
+    }
+
+    actions = [
+      "kms:Describe*",
+      "kms:Get*",
+      "kms:List*",
+    ]
+
+    resources = ["*"]
+  }
+
+  dynamic "statement" {
+    for_each = length(var.kms_key_administrators_arns) == 0 ? [] : [1]
+
+    content {
+      sid    = "Allow access for Key Administrators"
+      effect = "Allow"
+      actions = [
+        "kms:Create*",
+        "kms:Describe*",
+        "kms:Enable*",
+        "kms:List*",
+        "kms:Put*",
+        "kms:Update*",
+        "kms:Revoke*",
+        "kms:Disable*",
+        "kms:Get*",
+        "kms:Delete*",
+        "kms:TagResource",
+        "kms:UntagResource",
+        "kms:ScheduleKeyDeletion",
+        "kms:CancelKeyDeletion",
+        "kms:DescribeKey"
+      ]
+      resources = ["*"]
+
+      # Administrators manage the key; they cannot encrypt, decrypt or make data keys with it
+      principals {
+        type        = "AWS"
+        identifiers = var.kms_key_administrators_arns
+      }
+    }
+  }
+}
+
+// KMS Alias for DynamoDB server-side encryption
+resource "aws_kms_alias" "store_sse_key" {
+  name          = "alias/${var.prefix}-santa-rules-tables-sse"
+  target_key_id = aws_kms_key.store_sse_key.key_id
+}
+`
