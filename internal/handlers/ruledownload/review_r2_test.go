@@ -169,7 +169,8 @@ func TestReviewR2_CursorOfTheCurrentSyncIsServed(t *testing.T) {
 }
 
 // A machine with no sync state has not preflighted (or its sync state expired): its ruledownload is the client's
-// mistake, not the server's. Answered 500 today; the owner decided 400.
+// mistake, not the server's. Answered 500, the api_5xx alarm would count it and Santa would retry a request that cannot
+// succeed; the owner decided 400.
 func TestReviewR2_RuledownloadWithoutAPreflightIsABadRequest(t *testing.T) {
 	for name, cursor := range map[string]string{
 		"first page":                ``,
