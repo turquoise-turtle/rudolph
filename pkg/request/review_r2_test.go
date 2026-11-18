@@ -1,8 +1,8 @@
 package request
 
 // Second review of the input handling: the key normaliser's cost on objects that mix spellings, which
-// TestNormalizeProtoJSONKeys_TimeScalesLinearlyWithKeys (camelCase keys only) never sends down the snake_case key
-// map of hasCollision.
+// TestNormalizeProtoJSONKeys_TimeScalesLinearlyWithKeys (camelCase keys only) never sends through the snake_case key
+// map built to find a collision.
 
 import (
 	"fmt"
@@ -103,13 +103,15 @@ func wideCollidingObject(n int) []byte {
 	return []byte(b.String())
 }
 
-// An object that spells a field both ways has the map of its snake_case keys built twice, once by hasCollision to
-// find the collision and again by snakeCaseKeys to keep, though the first could be kept. Neither body is anything
-// Santa sends, but both are what a holder of the sync token can send to make every sync route allocate.
+// An object that spells a field both ways needs the map of its snake_case keys once to find the collision and again to
+// rewrite its keys, and keeping the first rather than building it again saves about a third or more of what
+// normalising such a body allocates. Neither body is anything Santa sends, but both are what a holder of the sync
+// token can send to make every sync route allocate.
 //
 // Measured with Go 1.27 on darwin/arm64, for 30,000 objects (510 KB) and for one object of 30,000 keys (349 KB):
-// the current code allocates 36.7 and 32.9 bytes per byte of body, and a replica of the survey that keeps the map
-// hasCollision built allocates 21.4 and 22.2. The bound of 28 sits between them with about 20% to spare on each side.
+// building the map twice allocates 36.7 and 32.5 bytes per byte of body, and building it once 21.4 and 22.2. The bound
+// of 28 sits between them; the narrowest margin is on the one wide object, where the bound is only about 14% below what
+// building the map twice allocates.
 // The counts are exact from run to run (TotalAlloc does not depend on when the collector runs), but a change to Go's
 // map implementation moves them, so a failure after a Go upgrade with no change here means measuring again.
 func TestReviewR2_CollidingSpellingsBuildTheSnakeKeyMapOnce(t *testing.T) {
