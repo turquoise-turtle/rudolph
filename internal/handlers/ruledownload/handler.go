@@ -146,13 +146,13 @@ func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownl
 }
 
 // errNoSyncState is a ruledownload for a machine that has no sync state: it did not preflight, or its sync state
-// expired.
+// expired or was forgotten.
 var errNoSyncState = errors.New("no sync state: ruledownload without a preflight")
 
 // syncErrorResponse answers a ruledownload that failed with err. Two failures are the client's, not the server's, and
 // answered 500 the api_5xx alarm would count them and Santa would retry requests that can never succeed: a machine
 // without a sync state is answered 400, and a sync that a newer sync of the machine overtook (Santa gave up on it and
-// preflighted again, or the cursor's seq was forged) is answered 409. Both are refused before anything is recorded.
+// preflighted again, or the cursor's seq was forged) is answered 409. Both are refused before anything is recorded, or, mid-request, after the tracking summary is invalidated.
 func syncErrorResponse(what string, err error) (*events.APIGatewayProxyResponse, error) {
 	switch {
 	case errors.Is(err, syncstate.ErrSyncSuperseded):

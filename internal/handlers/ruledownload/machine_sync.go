@@ -98,9 +98,9 @@ type machineRulePage struct {
 // syncState is the machine's sync state as read at the start of this ruledownload; when nil, it is read again.
 // feedServedUpTo is, for an incremental sync, the stamp of the newest feed row the sync served (or of its cursor when
 // it served none), and nil for any other sync. cursorSyncSeq is the sync the request's cursor was issued for (its
-// seq, 0 when it has none). Rudolph has issued global and feed cursors with the sync's seq since sync states were
-// numbered, so one without seq for a numbered sync was issued for an older sync (or forged), and is refused like a
-// superseded one.
+// seq, 0 when it has none). Every global or feed cursor this version issues for a numbered sync carries the sync's seq,
+// so one without was issued by an older version (a sync in flight across an upgrade is refused once and the next sync
+// works) or forged, and is refused like a superseded one.
 func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow, feedServedUpTo *time.Time, cursorSyncSeq int) ([]rules.SantaRule, error) {
 	if syncState == nil {
 		var err error
