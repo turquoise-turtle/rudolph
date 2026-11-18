@@ -23,18 +23,22 @@ const (
 	// A subdivision flag's tags spell a region code (Unicode CLDR): 2 to 7 lower-case letters and digits
 	minFlagTags, maxFlagTags = 2, 7
 	zwnj, zwj                = 0x200c, 0x200d
-	brailleGap               = 0x2800
+	// Hearts, keycaps and many other emoji need the emoji presentation selector (VS16) to show as emoji.
+	emojiSelector = 0xfe0f
+	brailleGap    = 0x2800
 )
 
 // String returns s with every character a terminal would act on, or that hides or reorders text, written as a visible
 // escape: C0 controls and DEL as \xNN (\n, \r and \t by name), C1 controls, invisible format characters (Unicode Cf),
-// line and paragraph separators, and characters that render as blank text without being spaces (Hangul fillers and
-// the blank braille pattern) as \uXXXX (\UXXXXXXXX above U+FFFF), and bytes that are not UTF-8 as \xNN.
+// line and paragraph separators, every other default-ignorable code point (variation selectors, the combining
+// grapheme joiner, Khmer inherent vowels, and reserved code points such as U+2065, U+FFF0-FFF8 and the rest of the
+// U+E0000-E0FFF block), and characters that render as blank text without being spaces (Hangul fillers and the blank
+// braille pattern) as \uXXXX (\UXXXXXXXX above U+FFFF), and bytes that are not UTF-8 as \xNN.
 //
-// Zero-width (non-)joiners are kept, as emoji sequences and several scripts need them, and so are the tag characters
-// of a subdivision flag (U+1F3F4, 2 to 7 tag letters a-z or digits, then the cancel tag U+E007F); tags anywhere else
-// are escaped. Everything else,
-// backslashes included, is left as it is.
+// Zero-width (non-)joiners are kept, as emoji sequences and several scripts need them, and so are the emoji
+// presentation selector U+FE0F and the tag characters of a subdivision flag (U+1F3F4, 2 to 7 tag letters a-z or
+// digits, then the cancel tag U+E007F); tags anywhere else are escaped. Everything else, backslashes included, is left
+// as it is.
 func String(s string) string {
 	if strings.IndexFunc(s, needsEscape) < 0 && utf8.ValidString(s) {
 		return s
@@ -113,13 +117,23 @@ func (e escapedError) Error() string { return String(e.err.Error()) }
 func (e escapedError) Unwrap() error { return e.err }
 
 func needsEscape(r rune) bool {
+	if r < utf8.RuneSelf {
+		// Most values are ASCII, so they skip the table lookups below.
+		return r < 0x20 || r == 0x7f
+	}
 	switch r {
-	case zwnj, zwj:
+	case zwnj, zwj, emojiSelector:
 		return false
 	case 0x115f, 0x1160, 0x3164, 0xffa0, brailleGap:
 		// Hangul fillers and the blank braille pattern are letters or symbols that render as nothing, so a value can
 		// look shorter or blank while it is not.
 		return true
 	}
-	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+	// Unicode derives Default_Ignorable_Code_Point (DerivedCoreProperties.txt) as Other_Default_Ignorable_Code_Point +
+	// Cf + Variation_Selector, minus White_Space, U+FFF9-FFFB, U+13430-1343F and Prepended_Concatenation_Mark. Go has
+	// no table for the derived property, so its three sources are checked instead. What Unicode subtracts is all Cf,
+	// and stays escaped: those characters still hide or rearrange text in a terminal, which renders no annotations,
+	// hieroglyph layout or number signs. No White_Space character is in either other source.
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp,
+		unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }
