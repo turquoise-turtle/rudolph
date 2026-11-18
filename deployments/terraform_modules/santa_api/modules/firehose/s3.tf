@@ -190,8 +190,8 @@ resource "aws_s3_bucket_logging" "rudolph_eventsupload_firehose" {
 }
 
 # Events carry user names, hostnames and file paths. The events table keeps them 90 days; without this the bucket kept
-# every object forever. The bucket is versioned, so expiring an object only makes it a noncurrent version: those are
-# deleted after the same number of days again.
+# every object forever. The bucket is versioned, so expiring an object only makes it a noncurrent version; those go a
+# week later, so the owner's retention is the total, with a few days to recover an object deleted by mistake.
 resource "aws_s3_bucket_lifecycle_configuration" "rudolph_eventsupload_firehose" {
   bucket = aws_s3_bucket.rudolph_eventsupload_firehose.id
 
@@ -207,7 +207,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "rudolph_eventsupload_firehose"
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = var.firehose_events_retention_in_days
+      noncurrent_days = 7
     }
 
     # Parts of an upload Firehose never completed hold events too, and are invisible to listings

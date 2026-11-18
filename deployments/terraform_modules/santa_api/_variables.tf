@@ -125,11 +125,22 @@ variable "store_kms_key_user_arns" {
   type        = list(string)
   description = "OPTIONAL: IAM principal ARNs (ArnLike patterns; a role's ARN includes its path) that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas, such as rudolph-web's role and the CLI operators' roles. Empty (the default) lets every principal of the account use it through DynamoDB, so table permissions alone decide who reads the tables."
   default     = []
+  nullable    = false
+
+  # aws:PrincipalArn is always an IAM role or user ARN (a session's role, never its sts ARN), so anything else never
+  # matches. A wildcard straight after role/ or user/, or in the account, would let every principal in again.
+  validation {
+    condition = alltrue([
+      for arn in var.store_kms_key_user_arns :
+      can(regex("^arn:aws(-[a-z]+)*:iam::[0-9]{12}:(role|user)/[^*?]", arn))
+    ])
+    error_message = "store_kms_key_user_arns must hold IAM role or user ARNs, such as arn:aws:iam::123456789012:role/rudolph-web (with the role's path; not sts assumed-role ARNs), and may not start the name with a wildcard (role/*, user/*)."
+  }
 }
 
 variable "firehose_events_retention_in_days" {
   type        = number
-  description = "Days the Firehose events bucket keeps each object before expiring it; S3 then deletes the expired (noncurrent) version after as many days again. Only used when Terraform creates the Firehose sink."
+  description = "Days the Firehose events bucket keeps each object before expiring it; S3 deletes the expired (noncurrent) version 7 days later. Only used when Terraform creates the Firehose sink."
   default     = 180
 }
 

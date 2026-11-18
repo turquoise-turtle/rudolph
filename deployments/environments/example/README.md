@@ -193,7 +193,7 @@ Optional. An SNS topic notified when one of Rudolph's CloudWatch alarms fires or
 The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. Defaults to `100`, which covers fleets from about 40 Macs; lower it for smaller fleets.
 
 #### `firehose_events_retention_in_days`
-Days the Firehose events bucket keeps each object before S3 expires it; the bucket is versioned, so the expired version is deleted after as many days again. Defaults to `180`. Only used when Terraform creates the Firehose sink. See [Telemetry and Retention](../../../docs/security-risks.md#telemetry-and-retention).
+Days the Firehose events bucket keeps each object before S3 expires it; the bucket is versioned, so the expired version is deleted 7 days later. Defaults to `180`. Only used when Terraform creates the Firehose sink. See [Telemetry and Retention](../../../docs/security-risks.md#telemetry-and-retention).
 
 #### `store_kms_key_user_arns`
 Optional. IAM role or user ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas. Leave as `[]` to let every principal of the account, so table permissions alone decide who reads the tables. When set, list rudolph-web's role and every CLI operator, or they lose access; see [upgrade step 23](../../../docs/deploy.md#23-telemetry-retention-and-encryption).

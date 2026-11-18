@@ -54,7 +54,7 @@ variable "kms_key_administrators_arns" {
 
 variable "firehose_events_retention_in_days" {
   type        = number
-  description = "Days the events bucket keeps an object before expiring it, and then keeps it again as a noncurrent version before deleting it"
+  description = "Days the events bucket keeps an object before expiring it; S3 deletes the expired, noncurrent version 7 days later"
   default     = 180
 
   validation {
