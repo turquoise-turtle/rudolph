@@ -8,6 +8,8 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
+	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/syncstate"
 )
 
@@ -62,6 +64,31 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 
 		SilentBlocklistOnly: r.SilentBlocklistOnly,
 	}
+}
+
+// validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
+// so it is client input: without these checks a forged one reached DynamoDB and was answered 500, which the api_5xx
+// alarm counts as a server failure and Santa retries. Machine pages read neither the batch size nor the key, and are
+// only requested with cursors from earlier versions of Rudolph, so only their strategy is checked.
+func (r ruledownloadCursor) validate() error {
+	var partition string
+	switch r.Strategy {
+	case ruledownloadStrategyClean:
+		partition = globalrules.Partition
+	case ruledownloadStrategyIncremental:
+		partition = feedrules.Partition
+	case ruledownloadStrategyMachine:
+		return nil
+	default:
+		return fmt.Errorf("unknown strategy %d", r.Strategy)
+	}
+	if r.BatchSize < machineconfiguration.MinBatchSize || r.BatchSize > machineconfiguration.MaxBatchSize {
+		return fmt.Errorf("batch size %d outside %d-%d", r.BatchSize, machineconfiguration.MinBatchSize, machineconfiguration.MaxBatchSize)
+	}
+	if r.PartitionKey != "" && r.PartitionKey != partition {
+		return errors.New("the cursor's key is not in the partition its strategy reads")
+	}
+	return nil
 }
 
 func (r *ruledownloadCursor) SetStrategy(strategy ruledownloadStrategy) {

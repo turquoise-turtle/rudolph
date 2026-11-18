@@ -143,7 +143,7 @@ func Test_PostRuledownloadHandler_CursorServiceReceivesCorrectRequest(t *testing
 				assert.Equal(t, ruledownloadStrategyIncremental, req.Cursor.Strategy)
 				assert.Equal(t, 7, req.Cursor.BatchSize)
 				assert.Equal(t, 2, req.Cursor.PageNumber)
-				assert.Equal(t, "AAAA", req.Cursor.PartitionKey)
+				assert.Equal(t, "RulesFeed", req.Cursor.PartitionKey)
 				assert.Equal(t, "eeeeee", req.Cursor.SortKey)
 
 				// Return anything; doesn't matter.
@@ -174,7 +174,7 @@ func Test_PostRuledownloadHandler_CursorServiceReceivesCorrectRequest(t *testing
 		PathParameters: map[string]string{
 			"machine_id": machineID,
 		},
-		Body: `{"cursor": "{\"strategy\":2, \"batch_size\":7,\"page\":2,\"pk\":\"AAAA\",\"sk\":\"eeeeee\"}"}`,
+		Body: `{"cursor": "{\"strategy\":2, \"batch_size\":7,\"page\":2,\"pk\":\"RulesFeed\",\"sk\":\"eeeeee\"}"}`,
 	}
 
 	_, err := handler.Handle(request)

@@ -124,14 +124,26 @@ func (s *keySurvey) object(i int) int {
 	return i + 1
 }
 
-// hasCollision reports whether a camelCase key and a snake_case key in one object name the same field.
+// hasCollision reports whether a camelCase key and a snake_case key in one object name the same field. It is linear in
+// the number of keys: comparing every pair let one object of a few hundred KB of keys hold a handler for seconds.
 func hasCollision(keys [][]byte) bool {
-	for _, camel := range keys {
-		if !hasUpperASCII(camel) {
-			continue
+	var snakeKeys map[string]bool
+	for _, key := range keys {
+		if !hasUpperASCII(key) {
+			if snakeKeys == nil {
+				snakeKeys = map[string]bool{}
+			}
+			snakeKeys[string(key)] = true
 		}
-		for _, snake := range keys {
-			if !hasUpperASCII(snake) && snakeCaseEquals(camel, snake) {
+	}
+	if snakeKeys == nil {
+		return false
+	}
+	var spelling []byte
+	for _, key := range keys {
+		if hasUpperASCII(key) {
+			spelling = appendSnakeCase(spelling[:0], key)
+			if snakeKeys[string(spelling)] {
 				return true
 			}
 		}
@@ -334,25 +346,4 @@ func wordBoundaries(key []byte) int {
 		}
 	}
 	return count
-}
-
-// snakeCaseEquals reports whether the snake_case spelling of camel is snake, without building it.
-func snakeCaseEquals(camel, snake []byte) bool {
-	j := 0
-	for i, character := range camel {
-		if character >= 'A' && character <= 'Z' {
-			if i > 0 {
-				if j >= len(snake) || snake[j] != '_' {
-					return false
-				}
-				j++
-			}
-			character = character - 'A' + 'a'
-		}
-		if j >= len(snake) || snake[j] != character {
-			return false
-		}
-		j++
-	}
-	return j == len(snake)
 }

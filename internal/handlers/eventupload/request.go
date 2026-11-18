@@ -41,6 +41,15 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
+	// Counted before decoding: a few bytes of body such as `{},` decode into hundreds of bytes of event, so a body far
+	// under the size cap could otherwise need more memory than the Lambda has.
+	if shape := apirequest.ShapeOf(body); shape.TopLevelItems > maxUploadItems || shape.Values > maxUploadValues {
+		log.Printf("eventupload: refusing request: %d events and %d JSON values, limits %d and %d",
+			shape.TopLevelItems, shape.Values, maxUploadItems, maxUploadValues)
+		errorResponse, err = response.APIResponse(http.StatusRequestEntityTooLarge, response.ErrBodyTooLargeResponse)
+		return
+	}
+
 	// Parse the request
 	err = apirequest.UnmarshalSantaJSON(body, &parsedRequest)
 	if err != nil {
@@ -49,8 +58,24 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
+	if parsedRequest == nil {
+		// A body of "null" parses without error but carries no upload.
+		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+		return
+	}
+
 	return
 }
+
+// Limits on an upload, checked before it is decoded. Santa sends at most its event batch size of events, file access
+// events and audit events together per upload, and Rudolph's largest batch size is
+// machineconfiguration.MaxBatchSize (500), so a real upload never reaches maxUploadItems. Santa limits each event's
+// entitlements and process chain, so a real upload holds a few tens of thousands of JSON values at most; with
+// maxUploadValues decoding needs some tens of MB whatever the body holds.
+const (
+	maxUploadItems  = 1000
+	maxUploadValues = 200_000
+)
 
 // EventUploadRequest encapsulation of an /eventupload POST body sent by a Santa sensor
 type EventUploadRequest struct {
