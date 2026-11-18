@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/airbnb/rudolph/pkg/invisible"
 )
 
 const (
@@ -31,18 +33,22 @@ const (
 	MaxRulesPerGroup = 5000
 )
 
+const emojiSelector = 0xfe0f
+
 var ErrReservedName = fmt.Errorf("group names starting with %q are reserved", ReservedPrefix)
 
-// ErrFormatCharacter is Normalise's error for a name with an invisible format character. Groups registered before
-// 2026-11-18 may have such names; NormaliseExisting accepts them so they can still be managed and deleted.
-var ErrFormatCharacter = errors.New("a group name cannot contain invisible format characters (such as bidi overrides or zero-width spaces)")
+// ErrFormatCharacter is Normalise's error for a name with a character that displays as nothing or hides text: the
+// characters the CLI escapes for display (see package invisible) and the emoji presentation selector. Groups
+// registered before 2026-11-18 (format characters) or 2026-11-19 (the other default-ignorable and blank-looking
+// characters) may have such names; NormaliseExisting accepts them so they can still be managed and deleted.
+var ErrFormatCharacter = errors.New("a group name cannot contain invisible characters (such as bidi overrides, zero-width spaces or variation selectors)")
 
 // Normalise returns the canonical form of a group name: Unicode NFC, trimmed, lower case. It refuses names that are
-// empty, are "." or "..", contain control characters or invisible format characters (Unicode Cf other than the
-// zero-width joiner and non-joiner), are longer than MaxNameBytes or use the reserved prefix.
+// empty, are "." or "..", contain control characters or invisible characters (see isRefusedInvisible), are longer
+// than MaxNameBytes or use the reserved prefix.
 func Normalise(name string) (string, error) {
 	n, err := NormaliseExisting(name)
-	if err == nil && strings.IndexFunc(n, isRefusedFormat) >= 0 {
+	if err == nil && strings.IndexFunc(n, isRefusedInvisible) >= 0 {
 		return "", ErrFormatCharacter
 	}
 	return n, err
@@ -69,11 +75,13 @@ func NormaliseExisting(name string) (string, error) {
 	return n, nil
 }
 
-// isRefusedFormat reports invisible format characters (Unicode Cf): bidi overrides and isolates, zero-width spaces,
-// soft hyphens and the like, which would make a name display as something it is not. The zero-width non-joiner and
-// joiner are allowed: Persian and several Indic scripts need them in ordinary spelling.
-func isRefusedFormat(r rune) bool {
-	return r != 0x200c && r != 0x200d && unicode.Is(unicode.Cf, r)
+// isRefusedInvisible reports the characters a new or reported name cannot have, so that it never needs escaping for
+// display: those the CLI escapes (bidi overrides, zero-width spaces, variation selectors, tag characters, blank
+// fillers and the like), which would make a name display as something it is not. The zero-width non-joiner and joiner
+// are allowed, as Persian and several Indic scripts need them in ordinary spelling. The emoji presentation selector,
+// which the display keeps, is refused too: a group name has no use for it, and it could pad a name invisibly.
+func isRefusedInvisible(r rune) bool {
+	return r == emojiSelector || invisible.Rune(r)
 }
 
 // NormaliseTarget is Normalise, except that it also accepts Ungrouped, which rules (but not members) can target.

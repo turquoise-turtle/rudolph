@@ -8,8 +8,9 @@ package termsafe
 import (
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/airbnb/rudolph/pkg/invisible"
 )
 
 const (
@@ -22,10 +23,7 @@ const (
 
 	// A subdivision flag's tags spell a region code (Unicode CLDR): 2 to 7 lower-case letters and digits
 	minFlagTags, maxFlagTags = 2, 7
-	zwnj, zwj                = 0x200c, 0x200d
-	// Hearts, keycaps and many other emoji need the emoji presentation selector (VS16) to show as emoji.
-	emojiSelector = 0xfe0f
-	brailleGap    = 0x2800
+	emojiSelector            = 0xfe0f
 )
 
 // String returns s with every character a terminal would act on, or that hides or reorders text, written as a visible
@@ -116,24 +114,8 @@ type escapedError struct{ err error }
 func (e escapedError) Error() string { return String(e.err.Error()) }
 func (e escapedError) Unwrap() error { return e.err }
 
+// needsEscape keeps the emoji presentation selector, which hearts, keycaps and many other emoji need to show as emoji;
+// subdivision flag tags are kept by String itself, as they depend on what surrounds them.
 func needsEscape(r rune) bool {
-	if r < utf8.RuneSelf {
-		// Most values are ASCII, so they skip the table lookups below.
-		return r < 0x20 || r == 0x7f
-	}
-	switch r {
-	case zwnj, zwj, emojiSelector:
-		return false
-	case 0x115f, 0x1160, 0x3164, 0xffa0, brailleGap:
-		// Hangul fillers and the blank braille pattern are letters or symbols that render as nothing, so a value can
-		// look shorter or blank while it is not.
-		return true
-	}
-	// Unicode derives Default_Ignorable_Code_Point (DerivedCoreProperties.txt) as Other_Default_Ignorable_Code_Point +
-	// Cf + Variation_Selector, minus White_Space, U+FFF9-FFFB, U+13430-1343F and Prepended_Concatenation_Mark. Go has
-	// no table for the derived property, so its three sources are checked instead. What Unicode subtracts is all Cf,
-	// and stays escaped: those characters still hide or rearrange text in a terminal, which renders no annotations,
-	// hieroglyph layout or number signs. No White_Space character is in either other source.
-	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp,
-		unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
+	return r != emojiSelector && invisible.Rune(r)
 }
