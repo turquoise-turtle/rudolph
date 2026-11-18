@@ -99,7 +99,7 @@ Only necessary if `encrypt = true`. Provide the KMS Key Id of an existing KMS ke
 will be used for serverside encryption. The key must be usable by your IAM user.
 
 #### `use_lockfile`
-Keep it `true` (it needs Terraform 1.10 or later). While a plan or apply runs, Terraform holds a lock object next to the state, `<key>.tflock` (here `rudolph-example-prefix.tfstate.tflock`), so a second run at the same time fails with "Error acquiring the state lock" instead of overwriting the state.
+Keep it `true` (it needs Terraform 1.10 or later). While a plan or apply runs, Terraform holds a lock object next to the state, `<key>.tflock` (here `rudolph-example-prefix.tfstate.tflock`), so a second run at the same time fails at once with "Error acquiring the state lock" instead of overwriting the state. Pass `-lock-timeout=10m` (or similar) to a `terraform` command to have it retry until the lock is free.
 
 If a policy on the state bucket or your IAM user limits access to the state key, it must also allow `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the `<key>.tflock` object. Without `s3:DeleteObject` the lock is never released and every later plan fails.
 
@@ -208,4 +208,4 @@ Both default to `false`. `enable_api_access_logs` writes an API Gateway access l
 `enable_waf` (default `false`) puts an AWS WAF web ACL with the AWS IP reputation list and a per-IP rate limit in front of the stage. `waf_rate_limit_per_5_minutes` (default `100000`) is that limit; Macs behind one NAT share it. See [WAF](../../../docs/deploy.md#waf).
 
 #### `access_log_retention_days`
-Days the S3 server access logs are kept, noncurrent versions included. Defaults to `180`; must be above 0.
+Whole days after which each S3 server access log expires. Defaults to `180`; at least 1. The log buckets are versioned, so expiry only adds a delete marker and the log is deleted 3 days later: about `access_log_retention_days` + 3 days after it was written.

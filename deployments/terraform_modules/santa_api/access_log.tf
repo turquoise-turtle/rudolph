@@ -11,24 +11,27 @@
 #
 
 locals {
-  # Only $context variables API Gateway itself fills in, so a client cannot shape the line, and the resource path
-  # template rather than the path, so no machine ID is logged. errorResponseType says why API Gateway answered
-  # (UNAUTHORIZED, THROTTLED, WAF_FILTERED, ...), which the status alone does not.
+  # JSON lines, so CloudWatch Logs Insights can query fields. requestId can be set by the client (a REST API takes it
+  # from the x-amzn-requestid header when present), so extendedRequestId, which API Gateway always generates, is logged
+  # too and is the one to trust; sourceIp is the connection's address, not X-Forwarded-For. The resource path template
+  # is logged rather than the path, so no machine ID is. errorResponseType says why API Gateway answered an error
+  # (UNAUTHORIZED, THROTTLED, WAF_FILTERED, ...), which the status alone does not. Only $context.integration.error is
+  # used for integration failures: $context.integrationErrorMessage is filled in by HTTP APIs only.
   api_access_log_format = jsonencode({
-    requestId          = "$context.requestId"
-    sourceIp           = "$context.identity.sourceIp"
-    requestTime        = "$context.requestTime"
-    httpMethod         = "$context.httpMethod"
-    resourcePath       = "$context.resourcePath"
-    status             = "$context.status"
-    responseLength     = "$context.responseLength"
-    responseLatency    = "$context.responseLatency"
-    errorResponseType  = "$context.error.responseType"
-    errorMessage       = "$context.error.message"
-    authorizerError    = "$context.authorizer.error"
-    integrationError   = "$context.integration.error"
-    integrationMessage = "$context.integrationErrorMessage"
-    wafResponseCode    = "$context.wafResponseCode"
+    requestId         = "$context.requestId"
+    extendedRequestId = "$context.extendedRequestId"
+    sourceIp          = "$context.identity.sourceIp"
+    requestTime       = "$context.requestTime"
+    httpMethod        = "$context.httpMethod"
+    resourcePath      = "$context.resourcePath"
+    status            = "$context.status"
+    responseLength    = "$context.responseLength"
+    responseLatency   = "$context.responseLatency"
+    errorResponseType = "$context.error.responseType"
+    errorMessage      = "$context.error.message"
+    authorizerError   = "$context.authorizer.error"
+    integrationError  = "$context.integration.error"
+    wafResponseCode   = "$context.wafResponseCode"
   })
 }
 
@@ -44,8 +47,9 @@ resource "aws_cloudwatch_log_group" "api_access" {
 #
 # aws_api_gateway_account replaces the role that every REST API in this account and region logs with, and Terraform
 # cannot tell whether another stack set it. It is only managed when asked for explicitly, never by
-# enable_api_access_logs alone. Destroying it (setting the variable back to false) leaves the account setting naming a
-# deleted role, which stops access and execution logging for every API in the region until a new role is set.
+# enable_api_access_logs alone. Destroying it, by setting the variable back to false or by make destroy while it is
+# true, makes hashicorp/aws 6.x reset the account's cloudwatchRoleArn to empty: access and execution logging then stops
+# for every REST API in the account and region (and applies that turn logging on fail) until a role is set again.
 #
 
 resource "aws_iam_role" "api_gateway_cloudwatch" {

@@ -226,6 +226,6 @@ variable "waf_rate_limit_per_5_minutes" {
 
 variable "access_log_retention_days" {
   type        = number
-  description = "Days the S3 access-log buckets keep each log object and noncurrent version"
+  description = "Whole days after which each S3 access log expires (a delete marker); the versioned log is deleted 3 days later"
   default     = 180
 }

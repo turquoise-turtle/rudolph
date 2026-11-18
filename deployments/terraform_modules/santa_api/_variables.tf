@@ -282,11 +282,11 @@ variable "waf_rate_limit_per_5_minutes" {
 
 variable "access_log_retention_days" {
   type        = number
-  description = "Days after which the S3 server access logs of the Lambda source bucket and, with the Firehose sink, of the events bucket are deleted, current objects and replaced versions alike (the log buckets are versioned). Only applies to the log buckets this module creates, not to existing_logging_bucket_name."
+  description = "Whole days after which each S3 server access log of the Lambda source bucket and, with the Firehose sink, of the events bucket expires. The log buckets are versioned, so expiry only adds a delete marker: the log itself is deleted 3 days later (as a noncurrent version), and the delete marker after that, so a log is gone about access_log_retention_days + 3 days after it was written. Only applies to the log buckets this module creates, not to existing_logging_bucket_name."
   default     = 180
 
   validation {
-    condition     = var.access_log_retention_days > 0
-    error_message = "access_log_retention_days must be above 0: S3 lifecycle expiry needs at least 1 day."
+    condition     = var.access_log_retention_days >= 1 && floor(var.access_log_retention_days) == var.access_log_retention_days
+    error_message = "access_log_retention_days must be a whole number of days, at least 1."
   }
 }
