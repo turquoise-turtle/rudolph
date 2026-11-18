@@ -59,6 +59,11 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 	if syncState == nil {
 		return syncErrorResponse("serving the machine rules page", errNoSyncState)
 	}
+	if cursorSyncSeq == 0 {
+		// Earlier versions of Rudolph issued machine cursors without seq, so one without seq is taken as the current
+		// sync's
+		cursorSyncSeq = syncState.SyncSeq
+	}
 	machineRules, err := d.machineRules.rules(machineID, syncState, nil, cursorSyncSeq)
 	if err != nil {
 		return syncErrorResponse("building the machine rules page", err)
@@ -92,8 +97,9 @@ type machineRulePage struct {
 //
 // syncState is the machine's sync state as read at the start of this ruledownload; when nil, it is read again.
 // feedServedUpTo is, for an incremental sync, the stamp of the newest feed row the sync served (or of its cursor when
-// it served none), and nil for any other sync. cursorSyncSeq is the sync the request's cursor was issued for, 0 when
-// unknown.
+// it served none), and nil for any other sync. cursorSyncSeq is the sync the request's cursor was issued for (its
+// seq, 0 when it has none). A global or feed cursor issued after a numbered preflight always carries the sync's seq, so
+// one without seq for a numbered sync was issued for an older sync or forged, and is refused like a superseded one.
 func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow, feedServedUpTo *time.Time, cursorSyncSeq int) ([]rules.SantaRule, error) {
 	if syncState == nil {
 		var err error
@@ -105,7 +111,7 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			return nil, errNoSyncState
 		}
 	}
-	if cursorSyncSeq != 0 && cursorSyncSeq != syncState.SyncSeq {
+	if cursorSyncSeq != syncState.SyncSeq {
 		// The last page of an older sync, requested after a newer sync of the machine started (Santa gave up on it):
 		// its tracking writes and served page would be taken as the newer sync's
 		return nil, fmt.Errorf("ruledownload of a superseded sync: %w", syncstate.ErrSyncSuperseded)
@@ -337,7 +343,7 @@ func (p machineRulePage) trackDeliveries(
 	if len(set) > 0 || len(forget) > 0 {
 		if summary != "" && summary != syncstate.MachineRulesTrackedDirty {
 			// "" (not tracked yet) already makes every sync read the items and the rows, so it is kept until the end
-			if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, syncstate.MachineRulesTrackedDirty, ""); err != nil {
+			if err := p.setMachineRulesTracked(machineID, syncState.SyncSeq, summary, syncstate.MachineRulesTrackedDirty, ""); err != nil {
 				return nil, 0, err
 			}
 			summary = syncstate.MachineRulesTrackedDirty
@@ -353,7 +359,7 @@ func (p machineRulePage) trackDeliveries(
 		delete(tracked, sortKey)
 	}
 	if digest := machinerules.DeliveryDigest(tracked); digest != summary || refreshedAt != "" {
-		if err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncState.SyncSeq, summary, digest, refreshedAt); err != nil {
+		if err := p.setMachineRulesTracked(machineID, syncState.SyncSeq, summary, digest, refreshedAt); err != nil {
 			if len(set) > 0 || len(forget) > 0 {
 				return nil, 0, p.invalidateAfterItemWrites(machineID, err)
 			}
@@ -361,6 +367,26 @@ func (p machineRulePage) trackDeliveries(
 		}
 	}
 	return replacements, removalsFirstSentUpTo, nil
+}
+
+// setMachineRulesTracked is syncstate.SetMachineRulesTracked, except that a failed condition is only
+// syncstate.ErrSyncSuperseded (answered 409) when the sync state no longer belongs to the sync syncSeq. The condition
+// also fails when the summary changed under the same sync: a concurrent invocation of the same last page (Santa's
+// retry of a request that timed out) wrote it first, or an abandoned older sync invalidated it. That sync can still
+// succeed, and Santa retries a 500 but gives up on a 409.
+func (p machineRulePage) setMachineRulesTracked(machineID string, syncSeq int, expected, summary, refreshedAt string) error {
+	err := syncstate.SetMachineRulesTracked(p.updater, machineID, syncSeq, expected, summary, refreshedAt)
+	if !errors.Is(err, syncstate.ErrSyncSuperseded) {
+		return err
+	}
+	current, rerr := syncstate.GetByMachineID(p.getter, machineID)
+	if rerr != nil {
+		return fmt.Errorf("failed to read the sync state after a failed machine rules tracked update: %w", rerr)
+	}
+	if current != nil && current.SyncSeq == syncSeq {
+		return errors.New("the machine rules tracked changed during the ruledownload of the machine's current sync")
+	}
+	return err
 }
 
 // invalidateAfterItemWrites handles a failure after this ruledownload sent tracking item writes, and returns err.
