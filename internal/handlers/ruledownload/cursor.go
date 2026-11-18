@@ -72,8 +72,12 @@ const maxSortKeyBytes = 1024
 // validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
 // so it is client input: without these checks a forged one reached DynamoDB and was answered 500, which the api_5xx
 // alarm counts as a server failure and Santa retries. Machine pages read neither the batch size nor the key, and are
-// only requested with cursors from earlier versions of Rudolph, so only their strategy is checked.
+// only requested with cursors from earlier versions of Rudolph, so only their strategy, page and seq are checked.
 func (r ruledownloadCursor) validate() error {
+	// Pages count from 1 and seq is the preflight time in milliseconds, so neither is ever negative.
+	if r.PageNumber < 0 || r.SyncSeq < 0 {
+		return fmt.Errorf("negative page %d or seq %d", r.PageNumber, r.SyncSeq)
+	}
 	var partition string
 	switch r.Strategy {
 	case ruledownloadStrategyClean:
@@ -156,7 +160,7 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 			return
 		}
 		if syncState == nil {
-			err = errors.New("no sync state: ruledownload without a preflight")
+			err = errNoSyncState
 			return
 		}
 

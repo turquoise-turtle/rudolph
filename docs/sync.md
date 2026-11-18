@@ -350,7 +350,14 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 - 2 = Downloads all FeedRules which is determined via the last sync state time
 - 3 = Downloads all MachineRules (only in cursors issued by earlier versions; machine-specific rules are now sent at the end of the last page, see [rule-pagination](./rule-pagination.md#machine-specific-rules))
 
-The cursor comes back from the client as Rudolph sent it, so it is checked before use: a cursor with an unknown strategy, a batch size outside 1 to 500 for strategy 1 or 2, or, for strategy 1 or 2, a key that is not a whole key in the partition its strategy reads (`GlobalRules` or `RulesFeed`, with a sort key of 1 to 1024 bytes) is refused with HTTP 400 and nothing is queried.
+The cursor comes back from the client as Rudolph sent it, so it is checked before use: a cursor with an unknown strategy, a negative `page` or `seq` (any strategy), a batch size outside 1 to 500 for strategy 1 or 2, or, for strategy 1 or 2, a key that is not a whole key in the partition its strategy reads (`GlobalRules` or `RulesFeed`, with a sort key of 1 to 1024 bytes) is refused with HTTP 400 and nothing is read.
+
+#### Responses
+- **200** with a page of rules, and a `cursor` for the next page unless it is the last one.
+- **400** `{"error":"Invalid request body"}` for a body or cursor that is not valid (see above).
+- **400** `{"error":"No sync in progress: preflight first"}` when the machine has no sync state: it did not preflight, or its sync state expired. Santa starts again from preflight at its next sync.
+- **409** `{"error":"Sync superseded by a newer sync of the machine"}` when the cursor's `seq` names another sync than the machine's current one: Santa gave up on a slow sync and preflighted again, then the older sync asked for its last page (or the `seq` was forged), or a newer sync started while the last page was being built. Nothing is recorded for the older sync (see [rule-pagination](./rule-pagination.md#macs-whose-postflight-never-arrives)).
+- **500** `{"error":"Internal server error"}` when DynamoDB fails; the cause is logged, not sent.
 
 #### Request - JSON
 ```json
