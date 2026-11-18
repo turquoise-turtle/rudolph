@@ -228,7 +228,8 @@ Kinesis or your own Lambda:
 - Two **new record shapes** share the same stream: file access events (`rule_name`, `rule_version`, `target`,
   `process_chain`, `access_time`, `decision`) and audit events (`standalone_mode_rule_creation`). They do not have
   `file_sha256` or `execution_time`, and `decision` on a file access record is a `FILE_ACCESS_DECISION_*` value, not
-  an execution decision.
+  an execution decision (Santa sends nothing else; the sinks receive the decision as uploaded, as only the events
+  table drops file access events with any other decision).
 - Every record therefore carries **`event_type`**, one of `execution`, `file_access` or `audit`, alongside
   `machine_id`.
 
@@ -509,3 +510,17 @@ Afterwards, check with [smoke-test.md](smoke-test.md): `GET /health` answers 200
 This applies to deployments with device groups. Group names now refuse invisible format characters (bidi overrides and isolates, zero-width spaces, soft hyphens and the like; the zero-width joiner and non-joiner stay allowed), and the CLI prints such characters as visible escapes. Preflight drops reported group names that contain them, so a group registered earlier with such a name no longer matches any Mac's reported groups (assigned membership still works).
 
 After deploying, run `rudolph group list` with the new CLI and look for names shown with escapes such as `\u202e` or `\u200b`. For each one, create a group under a clean name (`rudolph group create`), add its rules and assignments to the new group, then delete the old one by the name as it is stored, for example `rudolph group delete $'ops\u202e'` in zsh or bash. Deleting a group leaves its assignments on the Macs: remove them with `rudolph group remove -m <machine-id> $'ops\u202e'`, before or after the delete (`rudolph group show -m <machine-id>` lists them). `group get`, `update`, `delete`, `members`, `add` and `--group` on `rule` and `config` still accept such a name while the group is registered, and `group remove` also accepts it while the Mac has it assigned; only `group create` refuses it.
+
+### 23. File access events with a malformed decision (optional clean-up)
+This applies to every deployment that stores file access events (step 20); any client holding the sync token could upload them. The eventupload Lambda now stores a file access event only when its decision is `FILE_ACCESS_DECISION_` followed by 1 to 64 upper-case letters or underscores, as every decision Santa sends is (see [File access events](events-table.md#file-access-events)); others are dropped and logged. Nothing needs doing: items a Mac stored before this change under any other decision (an execution decision such as `BLOCK_BINARY`, say) stay in the events table until their 90-day TTL removes them, and rudolph-web from its matching release pages past them when it lists executions by decision.
+
+If you want them gone sooner, find them first and delete them only once you have checked the list; nothing here deletes data by itself. For each execution decision the table stores (listed in [What is stored](events-table.md#what-is-stored)), query the `Decision_TS` index for that decision and keep the items whose `PK` begins `FileAccess#`, for example for `BLOCK_BINARY` (the query reads, and is billed for, every execution of that decision kept, not only the items it returns):
+
+```sh
+aws dynamodb query --table-name "${PREFIX}_rudolph_events" --index-name Decision_TS \
+  --key-condition-expression "Decision = :d" --filter-expression "begins_with(PK, :fa)" \
+  --expression-attribute-values '{":d":{"S":"BLOCK_BINARY"},":fa":{"S":"FileAccess#"}}' \
+  --projection-expression "PK, SK"
+```
+
+Then delete each listed item by its `PK` and `SK` with `aws dynamodb delete-item`.
