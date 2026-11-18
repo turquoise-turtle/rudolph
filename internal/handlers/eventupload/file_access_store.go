@@ -24,6 +24,9 @@ const (
 	fileAccessPKPrefix = "FileAccess#"
 	fileAccessFleet    = "FileAccess"
 
+	// fileAccessDecisionPrefix starts every FileAccessDecision name in Santa's sync_v1.proto.
+	fileAccessDecisionPrefix = "FILE_ACCESS_DECISION_"
+
 	// maxStoredChain bounds the process chain kept: the accessing process and its nearest ancestors are what an
 	// admin reads, and a deep chain of long paths would only add to the item's write cost.
 	maxStoredChain = 8
@@ -39,10 +42,16 @@ type storableFileAccess struct {
 // them, and logs the others as dropped. earliest and latest bound access_time in Unix seconds.
 func selectFileAccess(machineID string, events []FileAccessEvent, earliest, latest float64, limit int) (selected []storableFileAccess, overLimit int) {
 	seen := map[string]bool{}
-	var incomplete, outside int
+	var incomplete, foreign, outside int
 	for _, e := range events {
 		if e.AccessTime == 0 || e.Target == "" || e.Decision == "" || e.Decision == "FILE_ACCESS_DECISION_UNKNOWN" {
 			incomplete++
+			continue
+		}
+		// The decision is the Decision_TS partition key. Santa only sends FileAccessDecision values here; any other
+		// value (an execution's BLOCK_BINARY, say) would list the event among the fleet's executions.
+		if !strings.HasPrefix(e.Decision, fileAccessDecisionPrefix) {
+			foreign++
 			continue
 		}
 		// NaN fails both comparisons, so it is rejected here too.
@@ -71,6 +80,7 @@ func selectFileAccess(machineID string, events []FileAccessEvent, earliest, late
 		selected = append(selected, storableFileAccess{event: e, micros: micros, sk: sk})
 	}
 	logDropped(machineID, incomplete, "file access event without an access time, a target or a known decision")
+	logDropped(machineID, foreign, "file access event whose decision is not a "+fileAccessDecisionPrefix+" value")
 	logDropped(machineID, outside, "file access time more than a day ahead or older than the 90 days kept")
 	return selected, overLimit
 }
