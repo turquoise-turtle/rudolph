@@ -18,6 +18,8 @@ import (
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
+	"github.com/zclconf/go-cty/cty/function"
+	"github.com/zclconf/go-cty/cty/function/stdlib"
 )
 
 var localRef = regexp.MustCompile(`local\.([A-Za-z0-9_]+)`)
@@ -229,13 +231,15 @@ func TestTFA1_StageWritesAccessLogWhenEnabled(t *testing.T) {
 	format := expandLocals(t, all, filepath.Dir(settings.Range().Filename), sourceOf(t, all, f.Expr))
 	for _, want := range [][]string{
 		{"$context.requestId"},
+		// Clients can override requestId; extendedRequestId is the one API Gateway generates itself.
+		{"$context.extendedRequestId"},
 		{"$context.identity.sourceIp"},
 		{"$context.requestTime"},
 		{"$context.httpMethod"},
 		{"$context.resourcePath"},
 		{"$context.status"},
 		{"$context.authorizer.error"},
-		{"$context.integration.error", "$context.integrationErrorMessage"},
+		{"$context.integration.error"},
 	} {
 		found := false
 		for _, w := range want {
@@ -244,6 +248,10 @@ func TestTFA1_StageWritesAccessLogWhenEnabled(t *testing.T) {
 		if !found {
 			t.Errorf("the access log format has no %s", strings.Join(want, " or "))
 		}
+	}
+	// An HTTP API variable, not one a REST API stage fills in.
+	if strings.Contains(format, "$context.integrationErrorMessage") {
+		t.Error("the access log format has $context.integrationErrorMessage, which only HTTP APIs fill in; use $context.integration.error")
 	}
 }
 
@@ -287,6 +295,77 @@ func TestTFA1_APIGatewayAccountRoleIsExplicit(t *testing.T) {
 	}
 	if !found {
 		t.Error("docs/deploy.md does not explain that API Gateway access logging needs the account's API Gateway CloudWatch role (cloudwatchRoleArn, an account-wide setting per region)")
+	}
+}
+
+// The role the account setting names, and its policies, are as account-wide as the setting itself: they must only exist
+// when manage_api_gateway_account_role asks for them, never because the access log is on.
+func TestTFA1_AccountRoleOnlyWithManageVariable(t *testing.T) {
+	requireModuleVariable(t, "manage_api_gateway_account_role", "bool", "false")
+	requireExamplePasses(t, "manage_api_gateway_account_role")
+
+	all := loadTerraform(t, santaAPI)
+	accounts := blocks(all, "resource", "aws_api_gateway_account")
+	if len(accounts) != 1 {
+		t.Fatalf("found %d aws_api_gateway_account resources, want 1 behind manage_api_gateway_account_role", len(accounts))
+	}
+	gated := []*hclsyntax.Block{accounts[0]}
+	if a, ok := accounts[0].Body.Attributes["cloudwatch_role_arn"]; ok {
+		for _, m := range regexp.MustCompile(`aws_iam_role\.([A-Za-z0-9_]+)`).FindAllStringSubmatch(sourceOf(t, all, a.Expr), -1) {
+			gated = append(gated, blocks(all, "resource", "aws_iam_role", m[1])...)
+			ref := regexp.MustCompile(`aws_iam_role\.` + m[1] + `\b`)
+			for _, typ := range []string{"aws_iam_role_policy_attachment", "aws_iam_role_policy"} {
+				for _, p := range blocks(all, "resource", typ) {
+					if r, ok := p.Body.Attributes["role"]; ok && ref.MatchString(sourceOf(t, all, r.Expr)) {
+						gated = append(gated, p)
+					}
+				}
+			}
+		}
+	}
+	if len(gated) < 3 {
+		t.Errorf("aws_api_gateway_account names no role of the module with a policy attached (found %d resources)", len(gated))
+	}
+	for _, b := range gated {
+		if !gatedOn(t, all, b, "manage_api_gateway_account_role") {
+			t.Errorf("%s.%s is not created only by var.manage_api_gateway_account_role", b.Labels[0], b.Labels[1])
+		}
+		if regexp.MustCompile(`\bvar\.enable_api_access_logs\b`).MatchString(countText(t, all, b)) {
+			t.Errorf("%s.%s also depends on enable_api_access_logs; the account-wide role must follow its own variable only", b.Labels[0], b.Labels[1])
+		}
+	}
+	for _, lg := range blocks(all, "resource", "aws_cloudwatch_log_group", "api_access") {
+		if regexp.MustCompile(`\bvar\.manage_api_gateway_account_role\b`).MatchString(countText(t, all, lg)) {
+			t.Error("the access-log group also depends on manage_api_gateway_account_role; it must follow enable_api_access_logs only")
+		}
+	}
+}
+
+// hashicorp/aws 6.x resets the account's cloudwatchRoleArn when aws_api_gateway_account is destroyed. Turning the
+// variable off, or make destroy with it on, therefore clears the role for every REST API in the account and region,
+// which is worse than the "leaves a deleted role" the docs first described, and must be said plainly.
+func TestTFA1_DocsSayDestroyingTheAccountRoleClearsIt(t *testing.T) {
+	doc := readDoc(t, "docs/deploy.md")
+	stale := regexp.MustCompile(`(?i)leaves the (account )?setting naming`)
+	if stale.MatchString(doc) {
+		t.Error("docs/deploy.md still says destroying the account role leaves the setting naming a deleted role; the provider clears the setting")
+	}
+	for _, f := range loadTerraform(t, santaAPI) {
+		if stale.Match(f.src) {
+			t.Errorf("%s still says destroying the account role leaves the setting naming a deleted role; the provider clears the setting", f.path)
+		}
+	}
+	found := false
+	for _, para := range regexp.MustCompile(`\n\s*\n|\n- `).Split(doc, -1) {
+		lower := strings.ToLower(para)
+		if strings.Contains(para, "manage_api_gateway_account_role") && strings.Contains(para, "make destroy") &&
+			strings.Contains(lower, "every rest api") && strings.Contains(lower, "region") &&
+			regexp.MustCompile(`(?i)\b(clear|reset|remov|unset)`).MatchString(para) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("docs/deploy.md has no paragraph saying that turning manage_api_gateway_account_role off, or make destroy with it on, clears the CloudWatch role for every REST API in the account and region")
 	}
 }
 
@@ -600,6 +679,18 @@ func TestTFA4_WAFRulesSuitSanta(t *testing.T) {
 				if path(r, "action", "block") == nil {
 					t.Errorf("rate-based rule %q does not block", name)
 				}
+				rb := path(r, "statement", "rate_based_statement")
+				// Per source address over 5 minutes, for every request: a scope-down or another key would let a flood from
+				// one address through, and the documented sizing assumes 300 seconds.
+				if k, _ := literal(rb.Body.Attributes["aggregate_key_type"]); k != "IP" {
+					t.Errorf("rate-based rule %q aggregate_key_type = %q, want IP", name, k)
+				}
+				if len(nested(rb, "scope_down_statement")) != 0 {
+					t.Errorf("rate-based rule %q has a scope_down_statement, so it does not count every request", name)
+				}
+				if w, ok := rb.Body.Attributes["evaluation_window_sec"]; !ok || strings.TrimSpace(sourceOf(t, all, w.Expr)) != "300" {
+					t.Errorf("rate-based rule %q does not set evaluation_window_sec = 300, which waf_rate_limit_per_5_minutes assumes", name)
+				}
 			}
 			if mg := path(r, "statement", "managed_rule_group_statement"); mg != nil {
 				group, _ := literal(mg.Body.Attributes["name"])
@@ -608,6 +699,9 @@ func TestTFA4_WAFRulesSuitSanta(t *testing.T) {
 					reputation = true
 					if path(r, "override_action", "none") == nil {
 						t.Errorf("rule %q only counts the IP reputation list's matches: override_action must be none", name)
+					}
+					if len(nested(mg, "rule_action_override")) != 0 {
+						t.Errorf("rule %q overrides actions inside the IP reputation list (rule_action_override)", name)
 					}
 				}
 			}
@@ -618,6 +712,10 @@ func TestTFA4_WAFRulesSuitSanta(t *testing.T) {
 	}
 	if !reputation {
 		t.Error("the WAF does not use the AWS managed rule group AWSManagedRulesAmazonIpReputationList")
+	}
+	// Any further rule is one more chance to block Santa's uploads, and one more rule billed.
+	if n := len(rulesOf(acl)); n != 2 {
+		t.Errorf("the web ACL has %d rules, want exactly 2 (the IP reputation list and the rate limit)", n)
 	}
 
 	v := wafRateLimitVariable(t)
@@ -630,6 +728,8 @@ func TestTFA4_WAFRulesSuitSanta(t *testing.T) {
 		t.Errorf("var.%s defaults to %q, want a whole number of requests of at least 10 (the WAF minimum)", v, d)
 	}
 	requireExamplePasses(t, v)
+	// AWS WAF takes a whole number from 10 to 2,000,000,000; anything else only fails at apply.
+	requireValidation(t, v, map[float64]bool{9: false, 2000000001: false, 100.5: false, 10: true, 100000: true})
 }
 
 func TestTFA4_WAFProtectsTheStage(t *testing.T) {
@@ -655,19 +755,48 @@ func TestTFA5_AccessLogRetentionVariable(t *testing.T) {
 	requireModuleVariable(t, "access_log_retention_days", "number", "180")
 	requireExamplePasses(t, "access_log_retention_days")
 
+	// S3 lifecycle days are whole numbers: the provider refuses 1.5 only at apply, after the plan looked fine.
+	requireValidation(t, "access_log_retention_days", map[float64]bool{0: false, -1: false, 1.5: false, 1: true, 180: true})
+
+	// A versioned bucket's expiry only adds a delete marker; the data goes when the noncurrent version expires. The
+	// description must not promise deletion at exactly this many days.
 	module := filesIn(loadTerraform(t, santaAPI), santaAPI)
-	vs := blocks(module, "variable", "access_log_retention_days")
+	for _, v := range blocks(module, "variable", "access_log_retention_days") {
+		d, _ := literal(v.Body.Attributes["description"])
+		if !strings.Contains(strings.ToLower(d), "delete marker") {
+			t.Errorf("the access_log_retention_days description %q does not say that the days only make each log noncurrent (a delete marker) and when it is really deleted", d)
+		}
+	}
+}
+
+// validationFunctions are the Terraform functions a numeric validation is likely to use.
+var validationFunctions = map[string]function.Function{
+	"floor": stdlib.FloorFunc,
+	"ceil":  stdlib.CeilFunc,
+	"abs":   stdlib.AbsoluteFunc,
+	"max":   stdlib.MaxFunc,
+	"min":   stdlib.MinFunc,
+}
+
+// requireValidation evaluates a santa_api module variable's validation conditions for each value.
+func requireValidation(t *testing.T, name string, cases map[float64]bool) {
+	t.Helper()
+	module := filesIn(loadTerraform(t, santaAPI), santaAPI)
+	vs := blocks(module, "variable", name)
 	if len(vs) != 1 {
+		t.Errorf("variable %s declared %d times, want once", name, len(vs))
 		return
 	}
 	validations := nested(vs[0], "validation")
 	if len(validations) == 0 {
-		t.Fatal("variable access_log_retention_days has no validation")
+		t.Errorf("variable %s has no validation", name)
+		return
 	}
-	for days, valid := range map[int64]bool{0: false, -1: false, 1: true, 180: true} {
-		ctx := &hcl.EvalContext{Variables: map[string]cty.Value{
-			"var": cty.ObjectVal(map[string]cty.Value{"access_log_retention_days": cty.NumberIntVal(days)}),
-		}}
+	for value, valid := range cases {
+		ctx := &hcl.EvalContext{
+			Variables: map[string]cty.Value{"var": cty.ObjectVal(map[string]cty.Value{name: cty.NumberFloatVal(value)})},
+			Functions: validationFunctions,
+		}
 		ok := true
 		for _, v := range validations {
 			cond, has := v.Body.Attributes["condition"]
@@ -676,12 +805,12 @@ func TestTFA5_AccessLogRetentionVariable(t *testing.T) {
 			}
 			val, diags := cond.Expr.Value(ctx)
 			if diags.HasErrors() || !val.Type().Equals(cty.Bool) {
-				t.Fatalf("cannot evaluate access_log_retention_days validation %s: %s", sourceOf(t, module, cond.Expr), diags.Error())
+				t.Fatalf("cannot evaluate %s validation %s: %s", name, sourceOf(t, module, cond.Expr), diags.Error())
 			}
 			ok = ok && val.True()
 		}
 		if ok != valid {
-			t.Errorf("access_log_retention_days = %d: validation accepts %v, want %v", days, ok, valid)
+			t.Errorf("%s = %v: validation accepts %v, want %v", name, strconv.FormatFloat(value, 'f', -1, 64), ok, valid)
 		}
 	}
 }
@@ -735,20 +864,40 @@ func TestTFA5_AccessLogBucketsExpireObjects(t *testing.T) {
 			t.Errorf("%s: the lifecycle's count %q does not follow the bucket's %q", dir, lcCount, bucketCount)
 		}
 
+		// The buckets are versioned: expiring a current object only puts a delete marker on top of it, and the data
+		// stays as a noncurrent version until noncurrent_version_expiration removes it. Noncurrent versions must go
+		// within a few days, or a log is really deleted at about twice access_log_retention_days.
 		days := "var." + arg
-		current, noncurrent, multipart := false, false, false
+		current, noncurrent, markers, multipart := false, false, false, false
 		for _, r := range rulesOf(lifecycle) {
+			id, _ := literal(r.Body.Attributes["id"])
 			if s, _ := literal(r.Body.Attributes["status"]); s != "Enabled" {
 				continue
+			}
+			// An empty filter applies the rule to the whole bucket; a prefix would leave other logs for ever.
+			filters := nested(r, "filter")
+			if len(filters) != 1 || len(filters[0].Body.Attributes) != 0 || len(filters[0].Body.Blocks) != 0 {
+				t.Errorf("%s: lifecycle rule %q has no empty filter {}, so it does not cover the whole bucket", dir, id)
 			}
 			if e := path(r, "expiration"); e != nil {
 				if a, ok := e.Body.Attributes["days"]; ok && strings.TrimSpace(sourceOf(t, sub, a.Expr)) == days {
 					current = true
 				}
+				if boolTrue(t, sub, e, "expired_object_delete_marker") {
+					markers = true
+					if _, ok := e.Body.Attributes["days"]; ok {
+						t.Errorf("%s: lifecycle rule %q sets days and expired_object_delete_marker in one expiration, which S3 refuses", dir, id)
+					}
+				}
 			}
 			if e := path(r, "noncurrent_version_expiration"); e != nil {
-				if a, ok := e.Body.Attributes["noncurrent_days"]; ok && strings.TrimSpace(sourceOf(t, sub, a.Expr)) == days {
-					noncurrent = true
+				if a, ok := e.Body.Attributes["noncurrent_days"]; ok {
+					src := strings.TrimSpace(sourceOf(t, sub, a.Expr))
+					if n, err := strconv.Atoi(src); err == nil && n >= 1 && n <= 7 {
+						noncurrent = true
+					} else {
+						t.Errorf("%s: lifecycle rule %q keeps noncurrent versions for %s days after the delete marker, want a fixed 1-7, so a log is deleted about %s + a few days after it was written", dir, id, src, days)
+					}
 				}
 			}
 			if e := path(r, "abort_incomplete_multipart_upload"); e != nil {
@@ -761,10 +910,17 @@ func TestTFA5_AccessLogBucketsExpireObjects(t *testing.T) {
 			t.Errorf("%s: no enabled lifecycle rule expires current log objects after %s days", dir, days)
 		}
 		if !noncurrent {
-			t.Errorf("%s: no enabled lifecycle rule expires noncurrent versions after %s days (the bucket is versioned)", dir, days)
+			t.Errorf("%s: no enabled lifecycle rule expires noncurrent versions within 7 days (the bucket is versioned)", dir)
+		}
+		if !markers {
+			t.Errorf("%s: no enabled lifecycle rule removes expired object delete markers (expiration { expired_object_delete_marker = true }), so one is left for every expired log", dir)
 		}
 		if !multipart {
 			t.Errorf("%s: no enabled lifecycle rule aborts incomplete multipart uploads", dir)
+		}
+		// The comment next to the lifecycle is what the next reader trusts about when logs go.
+		if src := string(srcOf(t, sub, lifecycle)); !strings.Contains(strings.ToLower(src), "delete marker") {
+			t.Errorf("%s: %s does not explain that expiry in a versioned bucket only adds a delete marker and when the log is really deleted", dir, lifecycle.Range().Filename)
 		}
 	}
 }
@@ -822,5 +978,98 @@ func TestTFA6_DeployDocsCoverTheAudit(t *testing.T) {
 		if !strings.Contains(after22.String(), want) {
 			t.Errorf("the new upgrade step does not mention %s", want)
 		}
+	}
+}
+
+// markdownSection returns a "### title" section of a Markdown document, up to the next heading of any level.
+func markdownSection(doc, title string) string {
+	start := strings.Index(doc, "\n### "+title+"\n")
+	if start < 0 {
+		return ""
+	}
+	rest := doc[start+1:]
+	if end := regexp.MustCompile(`\n#{1,3} `).FindStringIndex(rest[1:]); end != nil {
+		rest = rest[:end[0]+1]
+	}
+	return rest
+}
+
+func paragraphs(s string) []string {
+	return regexp.MustCompile(`\n\s*\n`).Split(s, -1)
+}
+
+// With versioned buckets, a log is deleted when its noncurrent version expires, a few days after the
+// access_log_retention_days that make it noncurrent. The docs must not say it goes at exactly that many days.
+func TestTFA6_DocsDescribeRealLogExpiry(t *testing.T) {
+	doc := readDoc(t, "docs/deploy.md")
+	row := regexp.MustCompile("(?m)^\\| `access_log_retention_days` \\|.*$").FindString(doc)
+	if row == "" {
+		t.Fatal("docs/deploy.md has no access_log_retention_days row")
+	}
+	if !strings.Contains(strings.ToLower(row), "delete marker") {
+		t.Errorf("the access_log_retention_days row does not say that expiry in the versioned log buckets only adds a delete marker and when the data is really deleted:\n%s", row)
+	}
+	upgrade := doc[strings.Index(doc, "## Upgrading an Existing Deployment"):]
+	found := false
+	for _, para := range regexp.MustCompile(`\n\s*\n|\n\d+\. `).Split(upgrade, -1) {
+		if strings.Contains(para, "access_log_retention_days") && strings.Contains(para, "lifecycle") && strings.Contains(strings.ToLower(para), "delete marker") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the upgrade step's access-log expiry item does not explain delete markers and when the logs are really deleted")
+	}
+}
+
+// S3 native locking does not retry: a second plan or apply while the lock is held fails at once with "Error acquiring
+// the state lock" unless it is given -lock-timeout.
+func TestTFA6_DocsSayALockedStateFailsAtOnce(t *testing.T) {
+	doc := readDoc(t, "docs/deploy.md")
+	timeout := false
+	for _, para := range paragraphs(doc) {
+		if !strings.Contains(para, ".tflock") && !strings.Contains(para, "use_lockfile") {
+			continue
+		}
+		if regexp.MustCompile(`\bwaits?\b`).MatchString(para) {
+			t.Errorf("docs/deploy.md says a locked plan or apply waits; without -lock-timeout it fails at once:\n%s", para)
+		}
+		timeout = timeout || strings.Contains(para, "-lock-timeout")
+	}
+	if !timeout {
+		t.Error("docs/deploy.md's state locking does not mention -lock-timeout, the only way to make a second run wait for the lock")
+	}
+}
+
+// default_tags tags every resource Rudolph creates, so the deployer needs each service's tag action; a deployer policy
+// built from the lists in the docs otherwise fails on the first tagged resource.
+func TestTFA6_DeployerPermissionsIncludeTagActions(t *testing.T) {
+	doc := readDoc(t, "docs/deploy.md")
+	for _, want := range []string{"logs:TagResource", "iam:TagRole"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("docs/deploy.md's deployer permissions do not mention %s, which default_tags needs", want)
+		}
+	}
+	if !regexp.MustCompile(`(?i)\b(approximate|not (an )?exhaustive|not complete|may be incomplete|incomplete)\b`).MatchString(doc) {
+		t.Error("docs/deploy.md does not say that its deployer permission lists are approximate")
+	}
+}
+
+// The IP reputation list can include a shared egress address (a VPN, a cloud NAT, an office ISP's CGNAT); then every Mac
+// behind it fails to sync. The docs must say how to see that and how to get out of it.
+func TestTFA6_WAFDocsSayWhatToDoWhenTheReputationListBlocksYou(t *testing.T) {
+	waf := markdownSection(readDoc(t, "docs/deploy.md"), "WAF")
+	if waf == "" {
+		t.Fatal("docs/deploy.md has no ### WAF section")
+	}
+	found := false
+	for _, para := range regexp.MustCompile(`\n\s*\n|\n- `).Split(waf, -1) {
+		lower := strings.ToLower(para)
+		if strings.Contains(lower, "reputation") && (strings.Contains(lower, "office") || strings.Contains(lower, "vpn")) &&
+			strings.Contains(para, "ip_reputation") && regexp.MustCompile(`\bcount\b`).MatchString(lower) && strings.Contains(para, "enable_waf") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the WAF section has no paragraph on an office or VPN address blocked by the IP reputation list: how to see it (the PREFIX_rudolph_ip_reputation metric, sampled requests) and what to do (enable_waf off, or the group's override_action to count)")
 	}
 }
