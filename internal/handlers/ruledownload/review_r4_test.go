@@ -294,17 +294,18 @@ func r4ForEachDeletedSyncState(t *testing.T, check func(t *testing.T, resp *even
 	type fixture struct {
 		table  func(t *testing.T) *r4Table
 		failAt int
+		dirty  bool
 	}
 	fixtures := map[string]fixture{
 		"final write without item changes": {func(t *testing.T) *r4Table {
 			stale := r3StaleTrackingState()
 			stale.t = t
 			return &r4Table{r2Table: stale, deliveries: map[string]machinerules.Delivery{}}
-		}, 1},
+		}, 1, false},
 	}
 	for change, table := range r4ItemChanges {
-		fixtures["dirty write, "+change] = fixture{table, 1}
-		fixtures["final write after item writes, "+change] = fixture{table, 2}
+		fixtures["dirty write, "+change] = fixture{table, 1, true}
+		fixtures["final write after item writes, "+change] = fixture{table, 2, false}
 	}
 	for fixtureName, f := range fixtures {
 		for name, cursor := range r3LastPages {
@@ -318,6 +319,12 @@ func r4ForEachDeletedSyncState(t *testing.T, check func(t *testing.T, resp *even
 						len(table.updates), resp.StatusCode, resp.Body, f.failAt)
 				}
 				check(t, resp)
+				// Whatever the answer, a failed dirty write ends the request: item writes after it would land
+				// under a sync state that is gone.
+				if f.dirty && (table.batchWrites != 0 || len(table.updates) != 1) {
+					t.Errorf("after the dirty write failed with the sync state deleted, %d tracking item writes and %d conditional writes followed, want none",
+						table.batchWrites, len(table.updates)-1)
+				}
 			})
 		}
 	}
