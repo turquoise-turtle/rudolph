@@ -2,6 +2,7 @@ package ruledownload
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/groups"
+	"github.com/airbnb/rudolph/pkg/model/syncstate"
 	apirequest "github.com/airbnb/rudolph/pkg/request"
 	"github.com/airbnb/rudolph/pkg/response"
 	"github.com/aws/aws-lambda-go/events"
@@ -123,7 +125,7 @@ func (h *PostRuledownloadHandler) Handle(request events.APIGatewayProxyRequest) 
 func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error) {
 	cursor, err := h.cursorService.ConstructCursor(*ruledownloadRequest, machineID)
 	if err != nil {
-		return response.InternalServerError(fmt.Errorf("constructing the ruledownload cursor: %w", err), response.ErrInternalServerErrorResponse)
+		return syncErrorResponse("constructing the ruledownload cursor", err)
 	}
 
 	// Whenever the client requests a clean sync, we need to echo it back to the client in the response;
@@ -141,4 +143,24 @@ func (h *PostRuledownloadHandler) handleRuleDownload(machineID string, ruledownl
 
 	// How did you get here??
 	return response.InternalServerError(fmt.Errorf("unreachable: unknown ruledownload strategy %v", cursor.Strategy), response.ErrInternalServerErrorResponse)
+}
+
+// errNoSyncState is a ruledownload for a machine that has no sync state: it did not preflight, or its sync state
+// expired or was forgotten.
+var errNoSyncState = errors.New("no sync state: ruledownload without a preflight")
+
+// syncErrorResponse answers a ruledownload that failed with err. Two failures are the client's, not the server's, and
+// answered 500 the api_5xx alarm would count them and Santa would retry requests that can never succeed: a machine
+// without a sync state is answered 400, and a sync that a newer sync of the machine overtook (Santa gave up on it and
+// preflighted again, or the cursor's seq was forged) is answered 409. Both are refused before anything is recorded, or, mid-request, after the tracking summary is invalidated.
+func syncErrorResponse(what string, err error) (*events.APIGatewayProxyResponse, error) {
+	switch {
+	case errors.Is(err, syncstate.ErrSyncSuperseded):
+		log.Printf("ruledownload: %s: %v", what, err)
+		return response.APIResponse(http.StatusConflict, response.ErrSyncSupersededResponse)
+	case errors.Is(err, errNoSyncState):
+		log.Printf("ruledownload: %s: %v", what, err)
+		return response.APIResponse(http.StatusBadRequest, response.ErrNoSyncStateResponse)
+	}
+	return response.InternalServerError(fmt.Errorf("%s: %w", what, err), response.ErrInternalServerErrorResponse)
 }

@@ -79,7 +79,7 @@ func lastPageOrNext(
 	if lastEvaluatedKey == nil {
 		machineSpecific, err := machineRules.rules(machineID, cursor.syncState, feedServedUpTo, cursor.SyncSeq)
 		if err != nil {
-			return response.InternalServerError(fmt.Errorf("building the machine rules page: %w", err), response.ErrInternalServerErrorResponse)
+			return syncErrorResponse("building the machine rules page", err)
 		}
 		responseRules := ResponseRulesForClient(append(pageRules, machineSpecific...), cursor.SilentBlocklistOnly)
 		if cursor.Strategy == ruledownloadStrategyClean && len(responseRules) == 0 {
