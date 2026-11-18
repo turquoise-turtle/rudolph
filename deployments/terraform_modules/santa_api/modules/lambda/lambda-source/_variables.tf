@@ -18,3 +18,9 @@ variable "org" {
   type        = string
   description = "Organization name"
 }
+
+variable "access_log_retention_days" {
+  type        = number
+  description = "Days after which the access-log bucket's objects and noncurrent versions expire"
+  default     = 180
+}

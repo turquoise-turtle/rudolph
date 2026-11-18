@@ -51,3 +51,9 @@ variable "kms_key_administrators_arns" {
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
   default     = []
 }
+
+variable "access_log_retention_days" {
+  type        = number
+  description = "Days after which the access-log bucket's objects and noncurrent versions expire"
+  default     = 180
+}

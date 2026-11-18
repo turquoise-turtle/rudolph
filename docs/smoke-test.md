@@ -102,7 +102,7 @@ Capture: `santactl version` and `sw_vers` from each Mac.
 make init-env
 ```
 
-Success: `deployments/environments/$ENV/` exists with `main.tf`, `_variables.tf`, `_backend.tf`, `_outputs.tf`, `config.auto.tfvars.json`, `versions.tf` and a `.gitignore` of `*`. The repository's own `.gitignore` also ignores every environment directory except `example`, so the account ID, domain and token digests never reach Git.
+Success: `deployments/environments/$ENV/` exists with `main.tf`, `_variables.tf`, `_backend.tf`, `_outputs.tf`, `config.auto.tfvars.json`, `versions.tf`, `.terraform.lock.hcl` and a `.gitignore` of `*`. The repository's own `.gitignore` also ignores every environment directory except `example`, so the account ID, domain and token digests never reach Git.
 
 ### 2.2 Create the sync token
 
@@ -115,7 +115,7 @@ Store `$TOKEN` in your password manager now; it goes into the Santa profile in s
 
 ### 2.3 Edit `_backend.tf`
 
-Set `bucket` (`$STATE_BUCKET`), `key` (the Rudolph key chosen in 1.3, e.g. `rudolph-prod.tfstate`), `region`, `kms_key_id` (or remove it and `encrypt` if you do not use one) and the `region` of the `provider "aws"` block, which must equal `$REGION`. Keep the `default_tags` (`Name = Rudolph`): the cost budget (step 2.6) and Cost Explorer (step 12.4) use it to tell Rudolph's costs from the rest of the account's.
+Set `bucket` (`$STATE_BUCKET`), `key` (the Rudolph key chosen in 1.3, e.g. `rudolph-prod.tfstate`), `region`, `kms_key_id` (or remove it and `encrypt` if you do not use one), keep `use_lockfile = true` (the state bucket must allow `s3:DeleteObject` on the `.tflock` lock object, see [State locking](deploy.md#state-locking)), and set the `region` of the `provider "aws"` block, which must equal `$REGION`. Keep the `default_tags` (`Name = Rudolph`): the cost budget (step 2.6) and Cost Explorer (step 12.4) use it to tell Rudolph's costs from the rest of the account's.
 
 ### 2.4 Alarm notifications
 

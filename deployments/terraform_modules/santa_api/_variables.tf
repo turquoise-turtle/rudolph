@@ -247,3 +247,46 @@ variable "ranker_schedule_timezone" {
   description = "IANA time zone for ranker_schedule_expression, for example America/New_York. EventBridge Scheduler follows its daylight saving."
   default     = "UTC"
 }
+
+#
+# Access logs and edge protection
+#
+variable "enable_api_access_logs" {
+  type        = bool
+  description = "Write an API Gateway access log line for every request, including those the authorizer, throttling or the WAF refuse before any Lambda runs, to the log group /aws/apigateway/PREFIX_rudolph_access (kept for log_retention_in_days). Needs the account's API Gateway CloudWatch role (an account-wide setting per region, see manage_api_gateway_account_role); check with aws apigateway get-account. Billed as CloudWatch Logs ingestion."
+  default     = false
+}
+
+variable "manage_api_gateway_account_role" {
+  type        = bool
+  description = "Create an IAM role with AmazonAPIGatewayPushToCloudWatchLogs and set it as the account's API Gateway CloudWatch role (aws_api_gateway_account). The setting is shared by every REST API in the account and region and replaces any role already set, so only turn it on when aws apigateway get-account shows no cloudwatchRoleArn and no other stack manages it."
+  default     = false
+}
+
+variable "enable_waf" {
+  type        = bool
+  description = "Associate an AWS WAF web ACL with the stage: the AWS managed IP reputation list and a per-IP rate limit (waf_rate_limit_per_5_minutes), with CloudWatch metrics. No rules that read the request body, which Santa sends deflated. Billed per web ACL, rule and request."
+  default     = false
+}
+
+variable "waf_rate_limit_per_5_minutes" {
+  type        = number
+  description = "Requests from one source IP in any 5 minutes above which the WAF blocks that IP (answered 403) until its rate falls. A fleet behind one NAT or VPN egress shares an address, and each Mac sends about 2-3 requests every 5 minutes, more during clean syncs and morning peaks: the default leaves room for about 30,000 Macs behind one address at the usual rate, or several thousand at peak. Only used with enable_waf."
+  default     = 100000
+
+  validation {
+    condition     = var.waf_rate_limit_per_5_minutes >= 10 && var.waf_rate_limit_per_5_minutes <= 2000000000 && floor(var.waf_rate_limit_per_5_minutes) == var.waf_rate_limit_per_5_minutes
+    error_message = "waf_rate_limit_per_5_minutes must be a whole number from 10 (the AWS WAF minimum) to 2,000,000,000."
+  }
+}
+
+variable "access_log_retention_days" {
+  type        = number
+  description = "Days after which the S3 server access logs of the Lambda source bucket and, with the Firehose sink, of the events bucket are deleted, current objects and replaced versions alike (the log buckets are versioned). Only applies to the log buckets this module creates, not to existing_logging_bucket_name."
+  default     = 180
+
+  validation {
+    condition     = var.access_log_retention_days > 0
+    error_message = "access_log_retention_days must be above 0: S3 lifecycle expiry needs at least 1 day."
+  }
+}

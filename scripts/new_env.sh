@@ -43,3 +43,5 @@ cp "$EXAMPLE_ENV_DIR/_backend.tf" ./
 cp "$EXAMPLE_ENV_DIR/_outputs.tf" ./
 cp "$EXAMPLE_ENV_DIR/config.auto.tfvars.json" ./
 cp "$EXAMPLE_ENV_DIR/versions.tf" ./
+# The provider lock file pins the AWS provider version and checksums the example was validated with.
+cp "$EXAMPLE_ENV_DIR/.terraform.lock.hcl" ./

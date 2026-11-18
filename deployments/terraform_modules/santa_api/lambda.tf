@@ -19,6 +19,7 @@ module "lambda_source" {
   org                          = var.org
   existing_logging_bucket_name = var.existing_logging_bucket_name
   enable_logging               = var.enable_s3_logging
+  access_log_retention_days    = var.access_log_retention_days
 }
 
 resource "aws_s3_object" "santa_api_source" {

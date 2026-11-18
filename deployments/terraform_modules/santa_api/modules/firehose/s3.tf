@@ -90,6 +90,38 @@ resource "aws_s3_bucket_versioning" "s3_logging" {
   }
 }
 
+# Without expiry the bucket keeps every access log for ever, and as it is versioned, every replaced version too.
+# Server access logs are written once and never changed, so expiring current objects and noncurrent versions after the
+# same number of days removes each log at access_log_retention_days (a little later for a version replaced late).
+resource "aws_s3_bucket_lifecycle_configuration" "s3_logging" {
+  count = local.create_s3_logging_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_logging[0].id
+
+  rule {
+    id     = "expire-access-logs"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = var.access_log_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.access_log_retention_days
+    }
+
+    # The parts of an unfinished multipart upload are billed but never listed, so they would otherwise stay unnoticed
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # S3 applies noncurrent version rules only once versioning is on
+  depends_on = [aws_s3_bucket_versioning.s3_logging]
+}
+
 # S3 server access logs are only delivered to a destination bucket encrypted with SSE-S3, not SSE-KMS.
 resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logging" {
   count = local.create_s3_logging_bucket ? 1 : 0
