@@ -16,7 +16,7 @@ rudolph group delete eng            # refused while the group has rules
 rudolph group delete eng --force    # deletes its rules as well
 ```
 
-Names are trimmed and lower-cased (and Unicode-normalised), so `Eng` and ` eng ` are the same group. A name cannot be empty, be `.` or `..` (rudolph-web shows a group at `/groups/<name>`, and browsers resolve those path segments away; names such as `.eng` or `a..b` are fine), contain control characters or invisible format characters (bidi overrides, zero-width characters, soft hyphens and the like), be longer than 128 bytes or start with `rudolph:`, which is reserved. At most 64 groups can be registered, with at most 5,000 rules each.
+Names are trimmed and lower-cased (and Unicode-normalised), so `Eng` and ` eng ` are the same group. A name cannot be empty, be `.` or `..` (rudolph-web shows a group at `/groups/<name>`, and browsers resolve those path segments away; names such as `.eng` or `a..b` are fine), contain control characters or invisible format characters (bidi overrides, zero-width spaces, soft hyphens and the like; the zero-width joiner and non-joiner, which Persian and several Indic scripts need, are allowed), be longer than 128 bytes or start with `rudolph:`, which is reserved. At most 64 groups can be registered, with at most 5,000 rules each. A group registered before invisible format characters were refused can still be shown, updated, deleted and targeted by its stored name, but no longer matches reported membership; see step 22 of the [upgrade notes](deploy.md).
 
 A Mac is in a group in either of two ways, and its groups are the union of both.
 

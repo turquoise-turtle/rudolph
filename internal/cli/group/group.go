@@ -84,7 +84,7 @@ func init() {
 		Short: "Change a group's description, or whether Macs that report it are members",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -144,7 +144,7 @@ func init() {
 		Short: "Delete a group; refused while it has rules, unless --force, which deletes them too",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -228,7 +228,7 @@ func init() {
 		Short: "Show a group and its rules",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := groups.NormaliseTarget(args[0])
+			name, err := groups.NormaliseExistingTarget(args[0])
 			if err != nil {
 				return err
 			}
@@ -356,7 +356,7 @@ a version that keeps the index, so that Macs whose groups have not changed since
 }
 
 func listMembers(client client, group string) error {
-	name, err := groups.NormaliseTarget(group)
+	name, err := groups.NormaliseExistingTarget(group)
 	if err != nil {
 		return err
 	}
@@ -447,13 +447,20 @@ func rebuildMembers(cmd *cobra.Command, client client) error {
 }
 
 func changeMembership(cmd *cobra.Command, machineID, group string, add bool) error {
-	name, err := groups.Normalise(group)
+	name, err := groups.NormaliseExisting(group)
 	if err != nil {
 		return err
 	}
 	client, err := writer(cmd)
 	if err != nil {
 		return err
+	}
+	if _, strictErr := groups.Normalise(group); strictErr != nil && !add {
+		// Removing writes the group's member row too, so a name only groups registered before the format-character
+		// rule may have must belong to one (AddAssigned checks registration itself).
+		if err := requireGroup(client, name); err != nil {
+			return strictErr
+		}
 	}
 	id, err := flags.ResolveMachineID(client, machineID)
 	if err != nil {

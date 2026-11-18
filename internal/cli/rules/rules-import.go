@@ -252,7 +252,7 @@ func readCsvRules(filename string) (rules []fileRule, parseErrors []error, err e
 		record++
 		rule, err := parseCsvRule(line)
 		if err != nil {
-			parseErrors = append(parseErrors, fmt.Errorf("record %d: %w", record, err))
+			parseErrors = append(parseErrors, termsafe.Error(fmt.Errorf("record %d: %w", record, err)))
 			continue
 		}
 		rules = append(rules, rule)
@@ -314,7 +314,8 @@ type importResult struct {
 func (r *importResult) fail(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.errors = append(r.errors, err)
+	// The errors quote identifiers from the file, and are printed and returned to the terminal
+	r.errors = append(r.errors, termsafe.Error(err))
 }
 
 // report prints the outcome and returns an error if any rule could not be imported.
