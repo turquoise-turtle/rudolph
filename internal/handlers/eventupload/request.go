@@ -68,12 +68,14 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 }
 
 // Limits on an upload, checked before it is decoded. Santa sends at most its event batch size of events, file access
-// events and audit events together per upload, and Rudolph's largest batch size is
-// machineconfiguration.MaxBatchSize (500), so a real upload never reaches maxUploadItems. Santa limits each event's
-// entitlements and process chain, so a real upload holds a few tens of thousands of JSON values at most; with
-// maxUploadValues decoding needs some tens of MB whatever the body holds.
+// events and audit events together per upload, and Rudolph's largest batch size is machineconfiguration.MaxBatchSize
+// (500). An upload above that is still accepted and only its first maxStoredPerUpload events are stored, because Santa
+// sends a refused batch again on every sync; maxUploadItems refuses only uploads no Santa sends, whose events alone
+// would need tens of MB to decode. An execution with 64 entitlements, a few certificates and a few users is
+// about 150 JSON values, so a real upload at the largest batch size holds about 75,000; with maxUploadValues the
+// decoded upload takes some tens of MB whatever the body holds.
 const (
-	maxUploadItems  = 1000
+	maxUploadItems  = 10_000
 	maxUploadValues = 200_000
 )
 

@@ -66,6 +66,9 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 	}
 }
 
+// maxSortKeyBytes is DynamoDB's limit on a sort key.
+const maxSortKeyBytes = 1024
+
 // validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
 // so it is client input: without these checks a forged one reached DynamoDB and was answered 500, which the api_5xx
 // alarm counts as a server failure and Santa retries. Machine pages read neither the batch size nor the key, and are
@@ -85,8 +88,13 @@ func (r ruledownloadCursor) validate() error {
 	if r.BatchSize < machineconfiguration.MinBatchSize || r.BatchSize > machineconfiguration.MaxBatchSize {
 		return fmt.Errorf("batch size %d outside %d-%d", r.BatchSize, machineconfiguration.MinBatchSize, machineconfiguration.MaxBatchSize)
 	}
-	if r.PartitionKey != "" && r.PartitionKey != partition {
+	// Rudolph only issues a global or feed cursor for a later page, with the whole key DynamoDB returned after the last
+	// row of the page before; DynamoDB refuses a start key with an empty part or a sort key over 1024 bytes.
+	if r.PartitionKey != partition {
 		return errors.New("the cursor's key is not in the partition its strategy reads")
+	}
+	if r.SortKey == "" || len(r.SortKey) > maxSortKeyBytes {
+		return fmt.Errorf("the cursor's sort key is empty or longer than %d bytes", maxSortKeyBytes)
 	}
 	return nil
 }
