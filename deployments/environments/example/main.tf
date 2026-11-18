@@ -47,6 +47,10 @@ module "santa_api" {
   budget_alert_emails       = var.budget_alert_emails
   table_deletion_protection = var.table_deletion_protection
 
+  # Telemetry retention and access
+  firehose_events_retention_in_days = var.firehose_events_retention_in_days
+  store_kms_key_user_arns           = var.store_kms_key_user_arns
+
   # Ranker
   ranker_schedule_expression = var.ranker_schedule_expression
   ranker_schedule_timezone   = var.ranker_schedule_timezone

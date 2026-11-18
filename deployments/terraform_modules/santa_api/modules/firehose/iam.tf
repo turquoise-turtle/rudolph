@@ -150,6 +150,25 @@ data "aws_iam_policy_document" "rudolph_firehose_eventupload" {
       aws_kinesis_firehose_delivery_stream.eventsupload_firehose.arn,
     ]
   }
+
+  # The stream is encrypted with the module's key, and Firehose checks that the caller of PutRecordBatch may itself
+  # make and decrypt data keys with it. Only through Firehose, so the role cannot decrypt the bucket's objects.
+  statement {
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+    ]
+
+    resources = [
+      aws_kms_key.rudolph_eventsupload_kms_key.arn,
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["firehose.${var.region}.amazonaws.com"]
+    }
+  }
 }
 
 resource "aws_iam_policy" "rudolph_firehose_eventupload" {

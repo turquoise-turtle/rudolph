@@ -121,6 +121,18 @@ variable "kms_key_administrators_arns" {
   default     = []
 }
 
+variable "store_kms_key_user_arns" {
+  type        = list(string)
+  description = "OPTIONAL: IAM principal ARNs (ArnLike patterns; a role's ARN includes its path) that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas, such as rudolph-web's role and the CLI operators' roles. Empty (the default) lets every principal of the account use it through DynamoDB, so table permissions alone decide who reads the tables."
+  default     = []
+}
+
+variable "firehose_events_retention_in_days" {
+  type        = number
+  description = "Days the Firehose events bucket keeps each object before expiring it; S3 then deletes the expired (noncurrent) version after as many days again. Only used when Terraform creates the Firehose sink."
+  default     = 180
+}
+
 #
 # Santa client authentication
 #

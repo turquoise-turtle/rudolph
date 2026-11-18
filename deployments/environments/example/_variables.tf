@@ -199,3 +199,15 @@ variable "ranker_schedule_timezone" {
   description = "IANA time zone of ranker_schedule_expression, e.g. America/New_York"
   default     = "UTC"
 }
+
+variable "firehose_events_retention_in_days" {
+  type        = number
+  description = "Days the Firehose events bucket keeps each object before expiring it; S3 deletes the expired version after as many days again"
+  default     = 180
+}
+
+variable "store_kms_key_user_arns" {
+  type        = list(string)
+  description = "OPTIONAL: IAM principal ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's Lambdas (rudolph-web's role, CLI operators). Empty lets every principal of the account."
+  default     = []
+}

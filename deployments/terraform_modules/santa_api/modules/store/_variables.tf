@@ -47,3 +47,15 @@ variable "table_deletion_protection" {
   description = "Turn on DynamoDB deletion protection for the store and events tables"
   default     = true
 }
+
+variable "kms_key_user_arns" {
+  type        = list(string)
+  description = "IAM principal ARNs (ArnLike patterns) that may use the store key through DynamoDB besides Rudolph's Lambdas. Empty lets every principal of the account."
+  default     = []
+}
+
+variable "kms_key_lambda_role_arns" {
+  type        = list(string)
+  description = "Role ARNs of every Rudolph Lambda that reads or writes the store or events table; they keep the store key when kms_key_user_arns is set"
+  default     = []
+}

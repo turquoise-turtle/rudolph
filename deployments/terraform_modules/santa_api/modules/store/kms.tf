@@ -19,7 +19,10 @@ data "aws_iam_policy_document" "store_sse_permissions" {
     }
   }
   # Every principal of the account may use the key, but only through DynamoDB: reading or writing the tables is
-  # governed by their IAM policies, so the Lambdas, the CLI and rudolph-web need no KMS grant of their own.
+  # governed by their IAM policies, so the Lambdas, the CLI and rudolph-web need no KMS grant of their own. That also
+  # lets any role with DynamoDB read access (ReadOnlyAccess, say) read all telemetry, so kms_key_user_arns can narrow
+  # it to Rudolph's Lambdas and the listed principals. IAM policies that grant kms:Decrypt on this key still work
+  # through the root statement above.
   statement {
     sid    = "Allow principals in the account to use the key"
     effect = "Allow"
@@ -37,6 +40,16 @@ data "aws_iam_policy_document" "store_sse_permissions" {
       test     = "StringEquals"
       variable = "kms:CallerAccount"
       values   = [var.aws_account_id]
+    }
+
+    # Only Rudolph's Lambdas and the listed principals, when the list is set. Empty, the policy is as before.
+    dynamic "condition" {
+      for_each = length(var.kms_key_user_arns) == 0 ? [] : [1]
+      content {
+        test     = "ArnLike"
+        variable = "aws:PrincipalArn"
+        values   = concat(var.kms_key_lambda_role_arns, var.kms_key_user_arns)
+      }
     }
 
     actions = [
@@ -74,6 +87,16 @@ data "aws_iam_policy_document" "store_sse_permissions" {
       test     = "Bool"
       variable = "kms:GrantIsForAWSResource"
       values   = ["true"]
+    }
+
+    # Narrowed with the statement above
+    dynamic "condition" {
+      for_each = length(var.kms_key_user_arns) == 0 ? [] : [1]
+      content {
+        test     = "ArnLike"
+        variable = "aws:PrincipalArn"
+        values   = concat(var.kms_key_lambda_role_arns, var.kms_key_user_arns)
+      }
     }
 
     actions = [

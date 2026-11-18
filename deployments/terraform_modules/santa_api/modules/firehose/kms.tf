@@ -7,7 +7,8 @@ resource "aws_kms_key" "rudolph_eventsupload_kms_key" {
 
 data "aws_iam_policy_document" "rudolph_eventsupload_kms_key_policy" {
   # No statement for every principal of the account: the Firehose role's IAM policy grants it the key through S3 only,
-  # which the root statement below lets IAM policies do.
+  # and the eventupload role's through Firehose only, which the root statement below lets IAM policies do. Firehose
+  # itself uses the key for the stream's encryption through the grant it creates on the deployer's behalf.
   statement {
     sid    = "Allow access for root user"
     effect = "Allow"

@@ -7,6 +7,19 @@ module "rule_store" {
   kms_key_administrators_arns = var.kms_key_administrators_arns
   table_deletion_protection   = var.table_deletion_protection
 
+  # When the list is set, only these may use the store key through DynamoDB: every Lambda that reads or writes the
+  # store or events table, and the listed principals (rudolph-web, the CLI's operators). A Lambda left out here could
+  # no longer read its table.
+  kms_key_user_arns = var.store_kms_key_user_arns
+  kms_key_lambda_role_arns = [
+    module.health_function.lambda_role_arn,
+    module.preflight_function.lambda_role_arn,
+    module.ruledownload_function.lambda_role_arn,
+    module.postflight_function.lambda_role_arn,
+    module.eventupload_function.lambda_role_arn,
+    aws_iam_role.ranker.arn,
+  ]
+
   # The sync Lambdas that read the store table and write its per-machine partitions. Health has its own, narrower
   # policy below; eventupload has events_write.
   read_lambda_role_names = {
@@ -41,7 +54,7 @@ moved {
 
 # The health check only Queries one global rule (globalrules.PingDatabase): the GlobalRules partition of the store
 # table, not an index, nothing else. No KMS statement: the store key's policy lets the account's principals use it
-# through DynamoDB.
+# through DynamoDB, and names the health role among the Lambdas when store_kms_key_user_arns narrows it.
 data "aws_iam_policy_document" "health" {
   statement {
     actions = ["dynamodb:Query"]

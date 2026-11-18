@@ -51,3 +51,14 @@ variable "kms_key_administrators_arns" {
   description = "List of KMS Key Administrator ARNs to allow access to Rudolph KMS key operations"
   default     = []
 }
+
+variable "firehose_events_retention_in_days" {
+  type        = number
+  description = "Days the events bucket keeps an object before expiring it, and then keeps it again as a noncurrent version before deleting it"
+  default     = 180
+
+  validation {
+    condition     = var.firehose_events_retention_in_days >= 1 && floor(var.firehose_events_retention_in_days) == var.firehose_events_retention_in_days
+    error_message = "firehose_events_retention_in_days must be a whole number of days, at least 1."
+  }
+}

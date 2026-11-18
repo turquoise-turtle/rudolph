@@ -188,3 +188,34 @@ resource "aws_s3_bucket_logging" "rudolph_eventsupload_firehose" {
   # The bucket policy that lets S3 deliver logs must exist before logging is enabled
   depends_on = [aws_s3_bucket_policy.s3_logging]
 }
+
+# Events carry user names, hostnames and file paths. The events table keeps them 90 days; without this the bucket kept
+# every object forever. The bucket is versioned, so expiring an object only makes it a noncurrent version: those are
+# deleted after the same number of days again.
+resource "aws_s3_bucket_lifecycle_configuration" "rudolph_eventsupload_firehose" {
+  bucket = aws_s3_bucket.rudolph_eventsupload_firehose.id
+
+  rule {
+    id     = "expire-events"
+    status = "Enabled"
+
+    # Every object of the bucket
+    filter {}
+
+    expiration {
+      days = var.firehose_events_retention_in_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.firehose_events_retention_in_days
+    }
+
+    # Parts of an upload Firehose never completed hold events too, and are invisible to listings
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # S3 needs versioning set before a lifecycle rule acts on noncurrent versions
+  depends_on = [aws_s3_bucket_versioning.rudolph_eventsupload_firehose]
+}
