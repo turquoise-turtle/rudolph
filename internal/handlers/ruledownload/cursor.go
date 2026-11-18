@@ -69,7 +69,9 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 // maxSortKeyBytes is DynamoDB's limit on a sort key.
 const maxSortKeyBytes = 1024
 
-// maxPageNumber bounds the page of a global or feed cursor, far beyond any real fleet.
+// maxPageNumber bounds the page of a global or feed cursor, far beyond any real fleet. A cursor at this page would have
+// the server issue one for page 1,000,001, which is refused; that needs a rule set of over a million pages, so it is
+// unreachable in practice.
 const maxPageNumber = 1_000_000
 
 // validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
