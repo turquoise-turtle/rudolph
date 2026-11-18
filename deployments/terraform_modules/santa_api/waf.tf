@@ -18,7 +18,7 @@ resource "aws_wafv2_web_acl" "api" {
   count = var.enable_waf ? 1 : 0
 
   name        = "${var.prefix}_rudolph"
-  description = "Rudolph's API Gateway stage: IP reputation list and per-IP rate limit"
+  description = "Rudolph API Gateway stage: IP reputation list and per-IP rate limit"
   scope       = "REGIONAL"
 
   default_action {
