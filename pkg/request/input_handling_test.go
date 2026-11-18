@@ -6,6 +6,8 @@ package request
 
 import (
 	"fmt"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -26,62 +28,68 @@ func wideCamelCaseObject(n int) []byte {
 	return []byte(b.String())
 }
 
-// An object with many camelCase keys must not cost time quadratic in the number of keys. hasCollision compares every
-// camelCase key of an object with every key of that object, so a body of a few hundred KB (about a kilobyte once
-// compressed, which API Gateway undoes before the Lambda) keeps a handler busy until its 10 second timeout.
-//
-// The budget is absolute but generous: a single pass over this body (validate, survey, rewrite, unmarshal) takes
-// about a millisecond, well under a twentieth of the budget even with the race detector on, while the quadratic
-// comparison takes about a second on a fast laptop and far longer on a 256 MB Lambda. The best of three runs is
-// used, so a pause of the test process cannot fail a linear implementation.
-func TestUnmarshalSantaJSON_ManyCamelCaseKeysTakeLinearTime(t *testing.T) {
-	const keys = 20_000
-	const budget = 100 * time.Millisecond
-	body := wideCamelCaseObject(keys)
-
+// timeBestOfThree returns the fastest of three runs of fn, so a pause of the test process cannot fail a linear
+// implementation. The collector is off while timing: on a loaded machine a collection that has to stop every thread
+// waits for threads the scheduler has parked, and the larger body triggers more of them, which made a linear
+// normaliser look quadratic.
+func timeBestOfThree(t *testing.T, fn func() error) time.Duration {
+	t.Helper()
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 	best := time.Duration(1<<63 - 1)
 	for run := 0; run < 3; run++ {
-		var parsed struct {
-			Events []struct{} `json:"events"`
-		}
+		runtime.GC()
 		start := time.Now()
-		err := UnmarshalSantaJSON(body, &parsed)
-		elapsed := time.Since(start)
-		if err != nil {
+		if err := fn(); err != nil {
 			t.Fatalf("a valid body was refused: %v", err)
 		}
-		best = min(best, elapsed)
-		if best <= budget {
+		best = min(best, time.Since(start))
+	}
+	return best
+}
+
+// wantLinearInKeys times run on bodies of 2,500 and 20,000 keys and fails if eight times the keys took more than 24
+// times as long. 24 sits between linear (8) and quadratic (64) with a factor of about three on each side, which covers
+// the keys growing out of the processor caches. Both bodies stay under a few hundred KB: above about a megabyte the
+// time per key rises on a loaded machine whatever the algorithm. The comparison is made up to three times and passes on
+// the first that fits: at a load average of 60, one comparison in a few of a linear normaliser went over, while a
+// quadratic one is over on every attempt.
+func wantLinearInKeys(t *testing.T, what string, run func(keys int) error) {
+	t.Helper()
+	var small, large time.Duration
+	var ratio float64
+	for attempt := 0; attempt < 3; attempt++ {
+		small = timeBestOfThree(t, func() error { return run(2_500) })
+		large = timeBestOfThree(t, func() error { return run(20_000) })
+		if ratio = float64(large) / float64(small); ratio <= 24 {
 			return
 		}
 	}
-	t.Errorf("parsing a %d byte body with %d camelCase keys in one object took %s, want under %s: the time grows with the square of the number of keys",
-		len(body), keys, best, budget)
+	t.Errorf("8 times the keys took %.1f times as long (%s for 2,500 keys, %s for 20,000), want about 8: %s is quadratic in the keys of one object",
+		ratio, small, large, what)
 }
 
-// The same body four times as wide must take about four times as long, not sixteen. This is the scaling form of the
-// test above and does not depend on how fast the machine is: both sizes are timed on the same machine, best of
-// three, and the allowed ratio (10) sits between linear (4) and quadratic (16) with room on both sides. The smaller
-// size is large enough (tens of milliseconds when quadratic, about a millisecond when linear) that timer resolution
-// does not matter.
-func TestNormalizeProtoJSONKeys_TimeScalesLinearlyWithKeys(t *testing.T) {
-	timeFor := func(keys int) time.Duration {
-		body := wideCamelCaseObject(keys)
-		best := time.Duration(1<<63 - 1)
-		for run := 0; run < 3; run++ {
-			start := time.Now()
-			if _, err := normalizeProtoJSONKeys(body); err != nil {
-				t.Fatalf("a valid body was refused: %v", err)
-			}
-			best = min(best, time.Since(start))
+// An object with many camelCase keys must not cost time quadratic in the number of keys. hasCollision once compared
+// every camelCase key of an object with every key of that object, so a body of a few hundred KB (about a kilobyte once
+// compressed, which API Gateway undoes before the Lambda) kept a handler busy until its 10 second timeout. This times
+// the whole parse every sync route makes (validate, survey, rewrite, unmarshal). It used to be an absolute budget,
+// which a loaded test machine broke for a linear parser; how the time scales does not depend on the machine.
+func TestUnmarshalSantaJSON_ManyCamelCaseKeysTakeLinearTime(t *testing.T) {
+	bodies := map[int][]byte{2_500: wideCamelCaseObject(2_500), 20_000: wideCamelCaseObject(20_000)}
+	wantLinearInKeys(t, "parsing a request body", func(keys int) error {
+		var parsed struct {
+			Events []struct{} `json:"events"`
 		}
-		return best
-	}
-	small, large := timeFor(5_000), timeFor(20_000)
-	if ratio := float64(large) / float64(small); ratio > 10 {
-		t.Errorf("4 times the keys took %.1f times as long (%s for 5,000 keys, %s for 20,000), want about 4: normalising keys is quadratic in the keys of one object",
-			ratio, small, large)
-	}
+		return UnmarshalSantaJSON(bodies[keys], &parsed)
+	})
+}
+
+// The same for the normaliser alone, which is where the quadratic comparison was.
+func TestNormalizeProtoJSONKeys_TimeScalesLinearlyWithKeys(t *testing.T) {
+	bodies := map[int][]byte{2_500: wideCamelCaseObject(2_500), 20_000: wideCamelCaseObject(20_000)}
+	wantLinearInKeys(t, "normalising keys", func(keys int) error {
+		_, err := normalizeProtoJSONKeys(bodies[keys])
+		return err
+	})
 }
 
 // Deeply nested bodies are walked recursively by both passes. encoding/json refuses more than 10,000 levels, which
