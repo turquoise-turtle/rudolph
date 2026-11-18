@@ -1230,7 +1230,7 @@ Capture: the deletion protection apply and both destroy outputs.
 | 401 on every sync | `SyncExtraHeaders` value (exactly `Bearer <token>`), the digest in `sync_token_sha256` (`printf '%s'`, not `echo`); `/aws/lambda/prod_rudolph_authorizer` |
 | 400 on preflight | `/aws/lambda/prod_rudolph_preflight`: `preflight: refusing request: ...` names the field over its limit; a machine ID that is not a UUID is logged as `machine=invalid` |
 | 415 | the request's `Content-Type` is not `application/json` |
-| 413 | the body decompresses to more than 6 MiB (through API Gateway, AWS usually refuses such a body before Rudolph sees it) |
+| 413 | the body decompresses to more than 6 MiB (through API Gateway, AWS usually refuses such a body before Rudolph sees it), or an event upload holds more than 10,000 array elements or 200,000 JSON values |
 | 400 `Invalid request body` on every sync | a Rudolph from before 2026-11-09 behind API Gateway: API Gateway decompresses the body but keeps the `Content-Encoding` header; pull, `make build`, `make justdeploy` |
 | 500 from any handler | the handler's log group: the line before `status=500` is `internal server error: "..."` with the cause |
 | 502 or 504 | the handler timed out or crashed: `Task timed out` or a panic in its log group; `lambda_timeouts` |

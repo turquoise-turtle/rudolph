@@ -16,6 +16,9 @@ const (
 	feedRulesExpiresAfterInDays int = 90
 )
 
+// Partition is the partition key of every feed rule row, and so of every key a feed page can start after.
+const Partition = feedRulesPK
+
 type FeedRuleRow struct {
 	dynamodb.PrimaryKey
 	rules.SantaRule

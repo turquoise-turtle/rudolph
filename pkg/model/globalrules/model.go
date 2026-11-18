@@ -10,6 +10,9 @@ const (
 	globalRulesPK = "GlobalRules"
 )
 
+// Partition is the partition key of every global rule row, and so of every key a global rules page can start after.
+const Partition = globalRulesPK
+
 type GlobalRuleRow struct {
 	dynamodb.PrimaryKey
 	rules.SantaRule

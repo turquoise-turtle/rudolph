@@ -201,7 +201,9 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 				continue
 			}
 		}
-		if e.FileSHA256 == "" || e.ExecutionTime == 0 {
+		// The hash goes into the event's key, its day counter and its machine marker, which the ranker and rudolph-web
+		// read back as a binary's hash; Santa always sends 64 lower-case hex characters.
+		if rudolphtypes.ValidateSha256(e.FileSHA256) != nil || e.ExecutionTime == 0 {
 			incomplete++
 			continue
 		}
@@ -226,7 +228,7 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 			counter: counterKey{day: time.UnixMicro(micros).UTC().Format("2006-01-02"), sha: e.FileSHA256},
 		})
 	}
-	logDropped(machineID, incomplete, "no file SHA-256 or execution time")
+	logDropped(machineID, incomplete, "no valid file SHA-256 or no execution time")
 	logDropped(machineID, outside, "execution time more than a day ahead or older than the 90 days kept")
 	// Executions come first in the shared limit: they feed the day counters and the ranker.
 	accesses, accessOverLimit := selectFileAccess(machineID, fileAccess, earliest, latest, maxStoredPerUpload-len(candidates))

@@ -98,11 +98,20 @@ func (h *PostRuledownloadHandler) Handle(request events.APIGatewayProxyRequest) 
 		return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 	}
 
+	if ruledownloadRequest == nil {
+		// A body of "null" parses without error but carries no request.
+		return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+	}
+
 	if ruledownloadRequest.RawCursor != "" {
 		ruledownloadRequest.Cursor = &ruledownloadCursor{}
 		err = json.Unmarshal([]byte(ruledownloadRequest.RawCursor), ruledownloadRequest.Cursor)
 		if err != nil {
 			log.Printf("  Failed to unmarshall cursor")
+			return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+		}
+		if err = ruledownloadRequest.Cursor.validate(); err != nil {
+			log.Printf("ruledownload: refusing cursor: %v", err)
 			return response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
 		}
 	}

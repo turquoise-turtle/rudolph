@@ -171,6 +171,10 @@ Postflight applies the same kind of check to what it stores: `sync_type` must be
 `CLEAN` or `CLEAN_ALL`, in either case) and `rules_hash` is limited to 128 bytes. Request bodies of any sync stage are
 limited to 6 MiB after decompression (HTTP 413 above that).
 
+A body of JSON `null` is refused with HTTP 400 by every stage that needs a body (preflight, eventupload, ruledownload); postflight treats it as no outcome, like an empty body.
+
+Eventupload also counts an upload before decoding it, because a few bytes of body such as `{},` decode into hundreds of bytes of event: an upload whose root object holds more than 10,000 array elements in all (its events, file access events and audit events, and any other array a client adds), or with more than 200,000 JSON values in all (objects plus array elements), is refused with HTTP 413. Santa sends at most its event batch size per upload (at most 500 with Rudolph), so a real upload stays far below both; an upload between 1,000 and 10,000 events is accepted and only its first 1,000 are stored. Executions whose `file_sha256` is not 64 lower-case hex characters are dropped and logged rather than stored.
+
 Compressed request bodies: Santa sends `Content-Encoding: deflate` (zlib) by default, or `gzip`. API Gateway (REST API) decompresses such a body itself before invoking the Lambda but passes the `Content-Encoding` header on unchanged, so the handler receives plain JSON (base64 encoded, as `application/json` is a binary media type) under a header that still says it is compressed. `pkg/request.DecodeBody` therefore accepts a body whose header names deflate or gzip but which is valid JSON as it is, and decompresses only a body that is not (which is what a direct invocation, the tests or another front end send). Corrupt compressed data is refused with 400. A body that does not decompress at API Gateway is answered 415 by API Gateway without invoking the Lambda. In practice the 6 MiB check is reached only without API Gateway: through it, a larger body exceeds Lambda's 6 MB invocation payload limit (the base64 event is larger still) and is refused by AWS before the handler runs.
 
 Preflight, eventupload and postflight require `Content-Type: application/json` (HTTP 415 otherwise). The header name
@@ -346,6 +350,8 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 - 2 = Downloads all FeedRules which is determined via the last sync state time
 - 3 = Downloads all MachineRules (only in cursors issued by earlier versions; machine-specific rules are now sent at the end of the last page, see [rule-pagination](./rule-pagination.md#machine-specific-rules))
 
+The cursor comes back from the client as Rudolph sent it, so it is checked before use: a cursor with an unknown strategy, a batch size outside 1 to 500 for strategy 1 or 2, or, for strategy 1 or 2, a key that is not a whole key in the partition its strategy reads (`GlobalRules` or `RulesFeed`, with a sort key of 1 to 1024 bytes) is refused with HTTP 400 and nothing is queried.
+
 #### Request - JSON
 ```json
 {
@@ -353,7 +359,7 @@ This endpoint allows the Rudolph server to push down new rules to the Santa sens
 		"strategy": 2,
 		"batch_size": 7,
 		"page": 2,
-		"pk": "AAAA",
+		"pk": "RulesFeed",
 		"sk": "eeeeee"
 	}
 }

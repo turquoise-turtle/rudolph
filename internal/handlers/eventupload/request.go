@@ -41,6 +41,15 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
+	// Counted before decoding: a few bytes of body such as `{},` decode into hundreds of bytes of event, so a body far
+	// under the size cap could otherwise need more memory than the Lambda has.
+	if shape := apirequest.ShapeOf(body); shape.TopLevelItems > maxUploadItems || shape.Values > maxUploadValues {
+		log.Printf("eventupload: refusing request: %d events and %d JSON values, limits %d and %d",
+			shape.TopLevelItems, shape.Values, maxUploadItems, maxUploadValues)
+		errorResponse, err = response.APIResponse(http.StatusRequestEntityTooLarge, response.ErrBodyTooLargeResponse)
+		return
+	}
+
 	// Parse the request
 	err = apirequest.UnmarshalSantaJSON(body, &parsedRequest)
 	if err != nil {
@@ -49,8 +58,26 @@ func parseRequest(request events.APIGatewayProxyRequest) (machineID string, pars
 		return
 	}
 
+	if parsedRequest == nil {
+		// A body of "null" parses without error but carries no upload.
+		errorResponse, err = response.APIResponse(http.StatusBadRequest, response.ErrInvalidBodyResponse)
+		return
+	}
+
 	return
 }
+
+// Limits on an upload, checked before it is decoded. Santa sends at most its event batch size of events, file access
+// events and audit events together per upload, and Rudolph's largest batch size is machineconfiguration.MaxBatchSize
+// (500). An upload above that is still accepted and only its first maxStoredPerUpload events are stored, because Santa
+// sends a refused batch again on every sync; maxUploadItems refuses only uploads no Santa sends, whose events alone
+// would need tens of MB to decode. An execution with 64 entitlements, a few certificates and a few users is
+// about 150 JSON values, so a real upload at the largest batch size holds about 75,000; with maxUploadValues the
+// decoded upload takes some tens of MB whatever the body holds.
+const (
+	maxUploadItems  = 10_000
+	maxUploadValues = 200_000
+)
 
 // EventUploadRequest encapsulation of an /eventupload POST body sent by a Santa sensor
 type EventUploadRequest struct {
