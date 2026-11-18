@@ -2,7 +2,7 @@
 //
 // A host name, user name, group name or audit summary can carry escape sequences that clear the screen, rewrite
 // earlier lines, set the window title or plant links, and bidi or zero-width characters that make text read as
-// something it is not. The CLI writes such characters as visible Go-style escapes (\x1b, \n, ‮) instead.
+// something it is not. The CLI writes such characters as visible Go-style escapes (\x1b, \n, \u202e) instead.
 package termsafe
 
 import (
@@ -13,12 +13,17 @@ import (
 )
 
 const (
-	blackFlag  = 0x1f3f4
-	tagFirst   = 0xe0020
-	tagLast    = 0xe007e
-	cancelTag  = 0xe007f
-	zwnj, zwj  = 0x200c, 0x200d
-	brailleGap = 0x2800
+	blackFlag = 0x1f3f4
+	tagLowerA = 0xe0061
+	tagLowerZ = 0xe007a
+	tagDigit0 = 0xe0030
+	tagDigit9 = 0xe0039
+	cancelTag = 0xe007f
+
+	// A subdivision flag's tags spell a region code (Unicode CLDR): 2 to 7 lower-case letters and digits
+	minFlagTags, maxFlagTags = 2, 7
+	zwnj, zwj                = 0x200c, 0x200d
+	brailleGap               = 0x2800
 )
 
 // String returns s with every character a terminal would act on, or that hides or reorders text, written as a visible
@@ -27,7 +32,8 @@ const (
 // the blank braille pattern) as \uXXXX (\UXXXXXXXX above U+FFFF), and bytes that are not UTF-8 as \xNN.
 //
 // Zero-width (non-)joiners are kept, as emoji sequences and several scripts need them, and so are the tag characters
-// of a subdivision flag (U+1F3F4, tags, then the cancel tag U+E007F); tags anywhere else are escaped. Everything else,
+// of a subdivision flag (U+1F3F4, 2 to 7 tag letters a-z or digits, then the cancel tag U+E007F); tags anywhere else
+// are escaped. Everything else,
 // backslashes included, is left as it is.
 func String(s string) string {
 	if strings.IndexFunc(s, needsEscape) < 0 && utf8.ValidString(s) {
@@ -63,17 +69,19 @@ func String(s string) string {
 	return b.String()
 }
 
-// flagTags returns the length in bytes of the tag characters at the start of s that complete a subdivision flag: one
-// or more tags ending with the cancel tag. It returns 0 when s does not start with such a sequence.
+// flagTags returns the length in bytes of the tag characters at the start of s that complete a subdivision flag: the
+// 2 to 7 tag letters (a-z) and digits of a region code such as gbwls, then the cancel tag. It returns 0 for any other
+// tag text, which would print as a plain flag while hiding what it spells, so its tags are escaped.
 func flagTags(s string) int {
-	n := 0
+	n, count := 0, 0
 	for n < len(s) {
 		r, size := utf8.DecodeRuneInString(s[n:])
 		switch {
-		case r == cancelTag && n > 0:
+		case r == cancelTag && count >= minFlagTags:
 			return n + size
-		case r >= tagFirst && r <= tagLast:
+		case count < maxFlagTags && ((r >= tagLowerA && r <= tagLowerZ) || (r >= tagDigit0 && r <= tagDigit9)):
 			n += size
+			count++
 		default:
 			return 0
 		}

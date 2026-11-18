@@ -211,7 +211,7 @@ func printImportPlan(client dynamodb.BatchGetItemAPI, rules []fileRule) error {
 		default:
 			current, unchanged, err := storedRule(client, rule)
 			if err != nil {
-				return fmt.Errorf("rule %s: %w", ruleName, err)
+				return termsafe.Error(fmt.Errorf("rule %s: %w", ruleName, err))
 			}
 			action := "Create"
 			switch {

@@ -5,6 +5,7 @@ package group
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
@@ -455,16 +456,14 @@ func changeMembership(cmd *cobra.Command, machineID, group string, add bool) err
 	if err != nil {
 		return err
 	}
-	if _, strictErr := groups.Normalise(group); strictErr != nil && !add {
-		// Removing writes the group's member row too, so a name only groups registered before the format-character
-		// rule may have must belong to one (AddAssigned checks registration itself).
-		if err := requireGroup(client, name); err != nil {
-			return strictErr
-		}
-	}
 	id, err := flags.ResolveMachineID(client, machineID)
 	if err != nil {
 		return err
+	}
+	if _, strictErr := groups.Normalise(group); strictErr != nil && !add {
+		if err := requireRemovable(client, id, name, strictErr); err != nil {
+			return err
+		}
 	}
 	if approval := flags.ApprovalOf(cmd); approval.DryRun {
 		if add {
@@ -492,6 +491,28 @@ func changeMembership(cmd *cobra.Command, machineID, group string, add bool) err
 	}
 	fmt.Printf("Removed group %q from %s (if it reports the group, it stays a member)\n", name, id)
 	return flags.Record(client, "group.remove", flags.MachineTarget(id), "removed assigned group "+name)
+}
+
+// requireRemovable allows removing an assignment whose name only groups registered before the format-character rule
+// may have (strictErr is Normalise's error for it) when the group is still registered or the Mac has it assigned:
+// deleting a group leaves its assignments on the Macs, and those must stay removable. Removing writes the group's
+// member row too, so any other such name is refused with strictErr. (AddAssigned checks registration itself.)
+func requireRemovable(client client, machineID, name string, strictErr error) error {
+	err := requireGroup(client, name)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, groups.ErrGroupNotFound) {
+		return err
+	}
+	membership, err := groups.GetMachineGroups(client, machineID, true)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(membership.Assigned, name) {
+		return nil
+	}
+	return strictErr
 }
 
 // requireGroup returns an error unless the group is registered
