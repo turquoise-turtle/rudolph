@@ -16,7 +16,8 @@ output "raw_url" {
 
 # For the separate web view, which lists execution events from this table: grant its role dynamodb:Query and
 # dynamodb:GetItem on the table ARN and "<ARN>/index/*". The table is encrypted with store_kms_key_arn, whose key
-# policy already lets principals of the account use it through DynamoDB.
+# policy lets principals of the account use it through DynamoDB while store_kms_key_user_arns is empty; once that is
+# set, the web view's role must be listed in it (or granted the key through IAM).
 output "events_dynamodb_table_name" {
   value = module.rule_store.events_dynamodb_table_name
 }

@@ -235,3 +235,48 @@ resource "aws_s3_bucket_logging" "rudolph_eventsupload_firehose" {
   # The bucket policy that lets S3 deliver logs must exist before logging is enabled
   depends_on = [aws_s3_bucket_policy.s3_logging]
 }
+
+# Events carry user names, hostnames and file paths. The events table keeps them 90 days; without this the bucket kept
+# every object forever. The bucket is versioned, so expiring an object only makes it a noncurrent version, kept one
+# more day to recover an object deleted by mistake; current objects therefore expire a day early, so the owner's
+# retention is the total.
+resource "aws_s3_bucket_lifecycle_configuration" "rudolph_eventsupload_firehose" {
+  bucket = aws_s3_bucket.rudolph_eventsupload_firehose.id
+
+  rule {
+    id     = "expire-events"
+    status = "Enabled"
+
+    # Every object of the bucket
+    filter {}
+
+    expiration {
+      days = var.firehose_events_retention_in_days - 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+
+    # Parts of an upload Firehose never completed hold events too, and are invisible to listings
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Once its last version has expired, an object leaves a delete marker behind. S3 refuses
+  # expired_object_delete_marker in an expiration block that also sets days, hence a rule of its own.
+  rule {
+    id     = "remove-expired-delete-markers"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  # S3 needs versioning set before a lifecycle rule acts on noncurrent versions
+  depends_on = [aws_s3_bucket_versioning.rudolph_eventsupload_firehose]
+}

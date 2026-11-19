@@ -182,8 +182,12 @@ func TestIAMReview_HealthOnlyQueriesGlobalRules(t *testing.T) {
 	if len(store) != 1 {
 		t.Fatalf("%d rule_store modules", len(store))
 	}
-	if strings.Contains(blockText(t, files, store[0]), "health_function") {
-		t.Error("the health Lambda still gets the shared store policy")
+	// Only the policy arguments: the store key's optional restriction (S7) passes the health Lambda's role to the
+	// module too, so the key keeps allowing it.
+	for _, arg := range []string{"read_lambda_role_names", "events_write_lambda_role_names"} {
+		if a, ok := store[0].Body.Attributes[arg]; ok && strings.Contains(sourceOf(t, files, a.Expr), "health_function") {
+			t.Errorf("the health Lambda still gets the shared store policy (%s)", arg)
+		}
 	}
 	text := allText(t, santaAPI)
 	if !strings.Contains(text, "module.health_function.lambda_role_name") {

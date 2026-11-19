@@ -163,6 +163,34 @@ resource "aws_iam_role_policy_attachment" "rudolph_firehose_eventupload" {
   policy_arn = aws_iam_policy.rudolph_firehose_eventupload.arn
 }
 
+# The stream is encrypted with the module's key, and Firehose checks that the caller of PutRecordBatch may itself make
+# and decrypt data keys with it. No kms:ViaService condition: AWS does not document that this check carries it, and
+# if it did not, every upload would be refused. A policy of its own, apart from the one naming the stream, so the
+# stream's encryption can wait for it (kinesis_firehose.tf) without a cycle.
+data "aws_iam_policy_document" "rudolph_firehose_eventupload_kms" {
+  statement {
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+    ]
+
+    resources = [
+      aws_kms_key.rudolph_eventsupload_kms_key.arn,
+    ]
+  }
+}
+
+resource "aws_iam_policy" "rudolph_firehose_eventupload_kms" {
+  name   = "${var.prefix}_rudolph_firehose_eventupload_kms_policy"
+  policy = data.aws_iam_policy_document.rudolph_firehose_eventupload_kms.json
+}
+
+resource "aws_iam_role_policy_attachment" "rudolph_firehose_eventupload_kms" {
+  count      = length(var.firehose_upload_lambda_role_names)
+  role       = element(var.firehose_upload_lambda_role_names, count.index)
+  policy_arn = aws_iam_policy.rudolph_firehose_eventupload_kms.arn
+}
+
 
 resource "aws_iam_role" "eventsupload_firehose_role" {
   name               = "${var.prefix}_rudolph_eventsupload_firehose_role"

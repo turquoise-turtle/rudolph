@@ -107,7 +107,8 @@ data "aws_iam_policy_document" "ranker" {
 
   # Not the store module's lambda_permissions policy: that one allows Query of every partition. The ranker only
   # asks whether a global rule exists for a binary, signing ID or team ID, so it gets GetItem on that one partition.
-  # No KMS statement: the store key's policy already lets the account's principals use it through DynamoDB.
+  # No KMS statement: the store key's policy lets the account's principals use it through DynamoDB, and names the
+  # ranker's role among the Lambdas when store_kms_key_user_arns narrows it.
   statement {
     actions = [
       "dynamodb:GetItem",

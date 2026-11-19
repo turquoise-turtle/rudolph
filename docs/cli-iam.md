@@ -44,7 +44,9 @@ For `rudolph rules`, `rule get`, `config get`, `machine show`, `machines`, `look
 }
 ```
 
-The KMS statement is only needed if your organisation has tightened the store key's policy: as deployed, the key policy already lets every principal of the account use the key through DynamoDB, so the table permissions are enough. It is limited to use through DynamoDB either way.
+The KMS statement is only needed if your organisation has tightened the store key's policy: as deployed, with `store_kms_key_user_arns` empty, the key policy lets every principal of the account use the key through DynamoDB, so the table permissions are enough; once that list is set, the operator must be in it or have this statement. It is limited to use through DynamoDB either way.
+
+With `store_kms_key_user_arns` set (see [Telemetry and Retention](security-risks.md#telemetry-and-retention)), the key policy lets only Rudolph's Lambdas and the listed ARNs use the key through DynamoDB, and table permissions are no longer enough: every operator's role or user must either be in that list or have the KMS statement above, which lets them in through the key policy's root statement (it delegates to IAM). Listing them keeps the key policy the one place that says who can read the telemetry; rudolph-web's role must be listed (or given the same KMS statement) too.
 
 ## Rule administrator
 
@@ -140,7 +142,7 @@ Notes:
 - **Transactions.** `TransactWriteItems` has no IAM action of its own: IAM checks each item as a `PutItem`, `UpdateItem` or `DeleteItem` against the statements above. `BatchWriteItem` is an action of its own (`machine forget`, `group delete --force`, `group members --rebuild`).
 - **Partition keys only.** `dynamodb:LeadingKeys` limits the partition key, never the sort key: `Machine#*` lets the role write any row of a Mac's partition, including the sensor data and sync state the Lambdas keep there.
 - **The audit trail.** `PutItem` on `Audit#*` cannot update or delete an entry with `UpdateItem` or `DeleteItem`, but a `PutItem` can replace one. The CLI writes each entry with a conditional put (`attribute_not_exists`), so it never overwrites one; IAM does not enforce that. Reading the trail (`rudolph audit`) is a `Query`, covered by the read statement. Without `PutItem` on `Audit#*`, every change is still written, but the command warns that it was not audited and exits non-zero (see [The audit trail](cli.md#the-audit-trail)).
-- **KMS.** Add the read-only example's KMS statement, with `kms:GenerateDataKey` and `kms:Encrypt` as well, only if your organisation has tightened the store key's policy.
+- **KMS.** Add the read-only example's KMS statement, with `kms:GenerateDataKey` and `kms:Encrypt` as well, only if your organisation has tightened the store key's policy, or `store_kms_key_user_arns` is set and does not list the operator.
 - **The events table.** The CLI never reads or writes it. Its only writers are the eventupload Lambda and the ranker.
 
 ## Deployer

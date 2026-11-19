@@ -463,7 +463,7 @@ The keys are those of rudolph-web's example `config.auto.tfvars.json`, in the sa
 - `enable_editing` `false`: deploy read-only first. The pages only show data and copy-and-paste CLI commands, the write routes do not exist (404), and the role has no write action; admins still get the read-only audit page, `/admin/audit`. Step 10.2 turns editing on to test it.
 - `monthly_budget_usd` and `budget_alert_emails`: rudolph-web's own budget, `<web prefix>_rudolph_web_monthly`, which counts only costs tagged `Name = rudolph-web` (the default tag in rudolph-web's `_backend.tf`; keep it, and do not override `Name` through `tags`). Like Rudolph's (2.6) it needs the `Name` cost allocation tag active, alerts at its thresholds, and never stops spending. `0` creates no budget.
 - `dynamodb_table_name` and `events_dynamodb_table_name` follow Rudolph's prefix: change them if you chose another prefix in 2.9.
-- `dynamodb_kms_key_arn` is left empty on purpose: Rudolph's key policy lets any principal in the account use the key through DynamoDB, so the web role should need no KMS grant. Step 4.5 checks this; if the pages fail with a KMS `AccessDenied`, set it to the `store_kms_key_arn` output from 3.3 and apply again.
+- `dynamodb_kms_key_arn` is left empty on purpose: with `store_kms_key_user_arns` empty, Rudolph's key policy lets any principal in the account use the key through DynamoDB, so the web role should need no KMS grant (if you set that list, include the web role in it). Step 4.5 checks this; if the pages fail with a KMS `AccessDenied`, set it to the `store_kms_key_arn` output from 3.3 and apply again.
 
 ### 4.3 SSM parameters
 

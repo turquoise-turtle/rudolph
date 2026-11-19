@@ -121,6 +121,32 @@ variable "kms_key_administrators_arns" {
   default     = []
 }
 
+variable "store_kms_key_user_arns" {
+  type        = list(string)
+  description = "OPTIONAL: IAM principal ARNs (ArnLike patterns; a role's ARN includes its path) that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas, such as rudolph-web's role and the CLI operators' roles. Empty (the default) lets every principal of the account use it through DynamoDB, so table permissions alone decide who reads the tables."
+  default     = []
+  nullable    = false
+
+  # aws:PrincipalArn is always an IAM role or user ARN (a session's role, never its sts ARN), so anything else never
+  # matches. A wildcard straight after role/ or user/, or in the account, would let every principal in again, and one
+  # that is a whole path segment anywhere in the path (role/aws-reserved/*, .../sso.amazonaws.com/*) every role under
+  # it: every Identity Center permission set, read-only ones included. Only those are refused: a prefix pattern such as
+  # .../AWSReservedSSO_* or role/a* passes, yet is still as broad, because ArnLike's * also matches /.
+  validation {
+    condition = alltrue([
+      for arn in var.store_kms_key_user_arns :
+      can(regex("^arn:aws(-[a-z]+)*:iam::[0-9]{12}:(role|user)/[^*?]", arn)) && !can(regex("/[*?]+(/|$)", arn))
+    ])
+    error_message = "store_kms_key_user_arns must hold IAM role or user ARNs, such as arn:aws:iam::123456789012:role/rudolph-web (with the role's path; not sts assumed-role ARNs), may not start the name with a wildcard (role/*, user/*) and may not use a wildcard as a whole path segment (role/aws-reserved/*); use a prefix such as role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_RudolphOperators_*."
+  }
+}
+
+variable "firehose_events_retention_in_days" {
+  type        = number
+  description = "Days the Firehose events bucket keeps each event in total (at least 2): the object expires a day before this, and S3 deletes its noncurrent version 1 day later. Only used when Terraform creates the Firehose sink."
+  default     = 180
+}
+
 #
 # Santa client authentication
 #

@@ -22,6 +22,8 @@ module "firehose" {
   log_retention_in_days        = var.log_retention_in_days
   access_log_retention_days    = var.access_log_retention_days
 
+  firehose_events_retention_in_days = var.firehose_events_retention_in_days
+
   firehose_upload_lambda_role_names = [
     module.eventupload_function.lambda_role_name,
   ]

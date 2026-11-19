@@ -201,6 +201,12 @@ Optional. An SNS topic notified when one of Rudolph's CloudWatch alarms fires or
 #### `api_4xx_alarm_min_requests`
 The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. Defaults to `100`, which covers fleets from about 40 Macs; lower it for smaller fleets.
 
+#### `firehose_events_retention_in_days`
+Days the Firehose events bucket keeps each event in total, at least `2`: the bucket is versioned, so S3 expires the object a day before this and deletes the expired, noncurrent version 1 day later. Defaults to `180`. Only used when Terraform creates the Firehose sink. See [Telemetry and Retention](../../../docs/security-risks.md#telemetry-and-retention).
+
+#### `store_kms_key_user_arns`
+Optional. IAM role or user ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas. Leave as `[]` to let every principal of the account, so table permissions alone decide who reads the tables. When set, list rudolph-web's role and every CLI operator, or they lose access; see [upgrade step 25](../../../docs/deploy.md#25-telemetry-retention-and-encryption).
+
 #### `enable_api_access_logs` and `manage_api_gateway_account_role`
 Both default to `false`. `enable_api_access_logs` writes an API Gateway access log line per request; it needs the account's API Gateway CloudWatch role, which `manage_api_gateway_account_role` creates and sets for the whole account and region. Check `aws apigateway get-account` first and read [API access log](../../../docs/deploy.md#api-access-log) before turning either on.
 

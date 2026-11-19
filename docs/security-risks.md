@@ -37,16 +37,20 @@ The public API in no way allows clients to modify global rules or configurations
 
 
 ## Trusting the Wrong Server
-A rare (and unconfirmed) vulnerability is when Santa agents are tricked into sync'ing with the wrong server. DNS poisoning
-is one possible attack vector.
+A rare (and unconfirmed) vulnerability is when Santa agents are tricked into sync'ing with the wrong server. DNS poisoning is one possible attack vector.
 
 Santa agents support server trusts by specifying a ServerAuthRootsFile in the macOS configuration profile. This file contains a SSL Certificate chain which is used to verify the identity of the server.
 
 However, there is a bug in Santa: When this file is malformed or if the certificate does not match the SyncBaseURL, Santa defaults back to the Apple MacOS keychain, which will blanket trust anything signed by Amazon Web Services.
 
-Thus it is possible for an attacker to trick a Santa sensor into syncing with the wrong server, forcing it to download incorrect rules. During the Preflight step, the Santa sensor will also upload some basic information about the MacOS machine, such as OS version and Santa version.
+Thus it is possible for an attacker to trick a Santa sensor into syncing with the wrong server. The rogue server can send any rules and configuration (allow its own binaries, block everything, switch the Mac to monitor mode), and it receives everything Santa sends in a sync:
 
-We consider this risk to be relatively minimal, and as such have not prioritized fixing it.
+- **Every request:** the fleet's sync token, in the `Authorization` header, and the Mac's machine ID in the URL. With the token the attacker can sync with the real Rudolph as any Mac (see [Unauthorized Clients](#unauthorized-clients)), so rotate the token if you suspect this.
+- **preflight:** the serial number, hostname, primary user and the primary user's groups, model identifier, OS version and build, Santa version, SIP status, client mode and rule counts.
+- **eventupload:** execution events, with file paths and names, the executing user, the logged-in user names and current sessions, the parent process name, process IDs, file hashes, signing chains, bundle details and quarantine download and referrer URLs; and file access events, with the paths accessed and every path in the process chain. Santa sends the events it has queued, so a Mac that keeps syncing with the rogue server hands over its activity as it happens.
+- **ruledownload and postflight:** the sync cursor, rule counts and the rules hash; nothing personal beyond the machine ID.
+
+We consider the risk of a Mac being redirected to be relatively minimal, and as such have not prioritised fixing it, but what it exposes is not: pin the server's certificate correctly in `ServerAuthRootsFile` and check the profile after every change.
 
 
 ## Some Mitigations
@@ -54,3 +58,26 @@ Placing your entire Rudolph environment behind a VPN will prevent unauthorized c
 DOES NOT protect you against DNS poisoning attacks.
 
 To configur Rudolph to only trust VPN IPs, use `allowed_inbound_ips` to restrict access to specific CIDR blocks.
+
+
+## Telemetry and Retention
+Preflight and eventupload carry personal and sensitive data: serial numbers, hostnames, primary users and their groups, and, in events, user names, file paths and download URLs. This is every place Rudolph copies it, and how long each copy is kept. Point-in-time recovery and the Firehose bucket's old versions mean a deleted item is not gone at once.
+
+| Copy | What it holds | Kept | Encryption |
+|---|---|---|---|
+| Store table (`PREFIX_rudolph_store`) | What each Mac reports in preflight (serial number, hostname, primary user, its groups, OS and Santa versions), sync state, rules and configuration, groups and the audit trail | The store table's TTL (`ExpiresAfter`) deletes a Mac's reported data and sync state 90 days after the last preflight that wrote them, and its rule delivery tracking 120 days after the last delivery; TTL usually deletes within a few days of expiry. Items without `ExpiresAfter` (rules, configuration, groups and group membership, the audit trail) stay until deleted. | The store key (`alias/PREFIX-santa-rules-tables-sse`) |
+| Events table (`PREFIX_rudolph_events`) | Blocked and unknown executions, those allowed by rules flagged for collection, and every file access event, with paths, file names and the executing user (see [events-table.md](events-table.md)) | Events 90 days after upload; day counters and machine markers 100 days; top list snapshots 8 days | The store key |
+| Point-in-time recovery of both tables | A restorable copy of each table as it was at any second | 35 days (the DynamoDB default; the Terraform sets no `recovery_period_in_days`), so items deleted or expired stay restorable that long | The store key |
+| Firehose events bucket (`PREFIX-ORG-rudolph-events`), only when Terraform creates the Firehose sink | Every event of every upload, as Santa sent it, unfiltered | 180 days in total by default (`firehose_events_retention_in_days`): S3 expires the object a day before that, and the bucket is versioned, so the expired object stays as a noncurrent version for the last day, to recover one deleted by mistake, before S3 deletes it and then its delete marker. The 180 days are approximate: S3 rounds each lifecycle step up to the next midnight UTC and removes objects asynchronously, with some lag, so an event can stay a little longer. Incomplete multipart uploads are removed after 7 days. | The Firehose module's key, as are records the delivery stream buffers (up to 24 hours when S3 cannot be reached) |
+| Kinesis stream (`eventupload_kinesis_name`), when the Kinesis sink is configured | Every event of every upload | The stream is the operator's own: Rudolph only gets permission to write to it. Its encryption, its retention (24 hours by default, up to 365 days) and whatever reads from it are yours to set and check. | Yours to set on the stream |
+| Output Lambda (`eventupload_output_lambda_name`), when configured | Every event of every upload, as its invocation payload | The function is the operator's own: Rudolph only gets permission to invoke it. What it keeps, where it sends events, its log retention and its encryption are yours to set and check. | Yours to set on the function and wherever it writes |
+| CloudWatch Logs (`/aws/lambda/PREFIX_rudolph_*`, the Firehose log group and, with `enable_api_access_logs`, the API access log `/aws/apigateway/PREFIX_rudolph_access`) | What the handlers log about each request; the API access log adds a line for every request with the source IP address (the Mac's public address, or its NAT's), the method and the resource path template (no machine ID) | `log_retention_in_days` (30 by default) | CloudWatch Logs default encryption |
+
+**Who can read the tables.** As deployed, the store key's policy lets every principal of the account use the key through DynamoDB, so table permissions alone decide who can read the store and events tables: any role or user with DynamoDB read access on them (AWS `ReadOnlyAccess`, say, or a `dynamodb:*` policy for another team) can read all telemetry. Set `store_kms_key_user_arns` to close this: the key may then be used through DynamoDB, and DynamoDB may create grants on it, only by Rudolph's own Lambda roles (health, preflight, ruledownload, postflight, eventupload and the ranker) and the ARNs listed, so a principal outside the list gets an access denied error from DynamoDB even with table permissions. List rudolph-web's role and every role or user that runs the CLI first, or they lose access to the tables. Principals whose own IAM policy grants `kms:Decrypt` on the key (an `AdministratorAccess` role, say) still use it, through the key policy's root statement. The deployer, the role that runs Terraform, must be in the list too, or be given the key through IAM: creating or replacing a table and restoring one from point-in-time recovery make DynamoDB call `CreateGrant` on the key as the principal doing it, so whoever restores a table needs the same. The list does not hold back the key administrators either: those in `kms_key_administrators_arns` cannot use the key themselves, but they can change its policy or create grants on it, and so reach the data. See [deploy.md](deploy.md#25-telemetry-retention-and-encryption) and [cli-iam.md](cli-iam.md).
+
+The list has limits of its own:
+
+- **Other accounts.** ARNs of another account in `store_kms_key_user_arns` never match: the key policy only lets callers of this account (`kms:CallerAccount`) use the key, so a role in another account needs its own way in, such as a role of this account it can assume.
+- **Wildcards.** `store_kms_key_user_arns` entries are `ArnLike` patterns, whose `*` also matches `/`, so the plan refuses a wildcard covering a whole path segment (`role/aws-reserved/*`, `role/aws-reserved/sso.amazonaws.com/*`, or `/*/` mid-path): it would let in every role under that path, every Identity Center permission set included, read-only ones too. Use a prefix pattern, such as `role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_RudolphOperators_*`.
+- **Prefixes.** The plan only catches whole-segment wildcards; a prefix pattern in `store_kms_key_user_arns` passes, however broad. `role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_*`, with no permission set name after it, still lets in every Identity Center permission set, and `role/a*` lets in every role whose path or name starts with "a", as ArnLike's `*` matches `/`. Choose prefixes as narrow as the roles you mean, ending in the permission set or role name.
+- **Rudolph's own roles.** Rudolph's Lambda roles, under the `/rudolph/` path, are always allowed, so whoever can pass a `/rudolph/` role to a Lambda function of their own (`iam:PassRole`), or change Rudolph's Lambda function code or configuration (`lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`), runs as a listed role and reads the tables. Keep those permissions as narrow as the list.

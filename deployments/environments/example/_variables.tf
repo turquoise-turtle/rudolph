@@ -200,6 +200,18 @@ variable "ranker_schedule_timezone" {
   default     = "UTC"
 }
 
+variable "firehose_events_retention_in_days" {
+  type        = number
+  description = "Days the Firehose events bucket keeps each event in total (at least 2): the object expires a day before this, and S3 deletes its noncurrent version 1 day later"
+  default     = 180
+}
+
+variable "store_kms_key_user_arns" {
+  type        = list(string)
+  description = "OPTIONAL: IAM principal ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's Lambdas (rudolph-web's role, CLI operators). Empty lets every principal of the account."
+  default     = []
+}
+
 variable "enable_api_access_logs" {
   type        = bool
   description = "Write an API Gateway access log line per request to /aws/apigateway/PREFIX_rudolph_access; needs the account's API Gateway CloudWatch role (aws apigateway get-account)"
