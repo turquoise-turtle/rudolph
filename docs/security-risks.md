@@ -39,18 +39,23 @@ The public API in no way allows clients to modify global rules or configurations
 ## Trusting the Wrong Server
 A rare (and unconfirmed) vulnerability is when Santa agents are tricked into sync'ing with the wrong server. DNS poisoning is one possible attack vector.
 
-Santa agents support server trusts by specifying a ServerAuthRootsFile in the macOS configuration profile. This file contains a SSL Certificate chain which is used to verify the identity of the server.
+Santa can pin the sync server's certificate: `ServerAuthRootsFile` (a path to a PEM file) or `ServerAuthRootsData` (the PEM itself) in the configuration profile names the root certificates the server's chain must lead to. Without either, Santa trusts any certificate the macOS keychain trusts, from any public certificate authority, for the `SyncBaseURL` host.
 
-However, there is a bug in Santa: When this file is malformed or if the certificate does not match the SyncBaseURL, Santa defaults back to the Apple MacOS keychain, which will blanket trust anything signed by Amazon Web Services.
+How Santa handles the pin (Santa 2026.8, `Source/common/MOLAuthenticatingURLSession.mm`):
 
-Thus it is possible for an attacker to trick a Santa sensor into syncing with the wrong server. The rogue server can send any rules and configuration (allow its own binaries, block everything, switch the Mac to monitor mode), and it receives everything Santa sends in a sync:
+- **A pin that loads but does not match** the server's chain fails closed: Santa trusts only the pinned roots, logs `[Server Trust] Unable to verify server identity.` and cancels the connection, so the sync fails.
+- **A pin that does not load** (a file Santa cannot read, or one with no certificate it can parse) is ignored: Santa logs `Unable to read server root certificate file ...` or `Unable to read server root certificates from data ...` and falls back to the keychain's trust. Nothing else signals it, so after setting or changing a pin, run `sudo santactl sync --debug` on a test Mac and check that the sync succeeds and neither line appears. To prove the pin is enforced, put a different, valid root in it, check that the sync fails with `Unable to verify server identity`, then restore it.
+
+With API Gateway and an ACM certificate, the roots to pin are Amazon's (Amazon Root CA 1 to 4, or at least the one that anchors the chain; `openssl s_client -connect HOST:443 -showcerts` shows it). That narrows trust from every public certificate authority to Amazon's, not to this one server; a CAA record on the domain limiting issuance to Amazon complements it.
+
+Without a working pin, then, an attacker who can redirect a Mac (by DNS poisoning, say) and present a certificate the Mac trusts for the server's name can make it sync with the wrong server. The rogue server can send any rules and configuration (allow its own binaries, block everything, switch the Mac to monitor mode), and it receives everything Santa sends in a sync:
 
 - **Every request:** the fleet's sync token, in the `Authorization` header, and the Mac's machine ID in the URL. With the token the attacker can sync with the real Rudolph as any Mac (see [Unauthorized Clients](#unauthorized-clients)), so rotate the token if you suspect this.
 - **preflight:** the serial number, hostname, primary user and the primary user's groups, model identifier, OS version and build, Santa version, SIP status, client mode and rule counts.
 - **eventupload:** execution events, with file paths and names, the executing user, the logged-in user names and current sessions, the parent process name, process IDs, file hashes, signing chains, bundle details and quarantine download and referrer URLs; and file access events, with the paths accessed and every path in the process chain. Santa sends the events it has queued, so a Mac that keeps syncing with the rogue server hands over its activity as it happens.
 - **ruledownload and postflight:** the sync cursor, rule counts and the rules hash; nothing personal beyond the machine ID.
 
-We consider the risk of a Mac being redirected to be relatively minimal, and as such have not prioritised fixing it, but what it exposes is not: pin the server's certificate correctly in `ServerAuthRootsFile` and check the profile after every change.
+We consider the risk of a Mac being redirected to be relatively minimal, and as such have not prioritised fixing it, but what it exposes is not: pin the server's certificate (`ServerAuthRootsFile` or `ServerAuthRootsData`) and check that the pin loads, as above, after every change to the profile.
 
 
 ## Some Mitigations
