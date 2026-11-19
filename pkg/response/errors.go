@@ -7,6 +7,8 @@ var ErrInvalidMediaTypeResponse = ErrorResponse{Error: "Invalid mediatype"}
 var ErrInvalidBodyResponse = ErrorResponse{Error: "Invalid request body"}
 var ErrBodyTooLargeResponse = ErrorResponse{Error: "Request body too large"}
 var ErrInvalidBodyNoSerialResponse = ErrorResponse{Error: "No serial number provided"}
+var ErrSyncSupersededResponse = ErrorResponse{Error: "Sync superseded by a newer sync of the machine"}
+var ErrNoSyncStateResponse = ErrorResponse{Error: "No sync in progress: preflight first"}
 var ErrInternalServerErrorResponse = ErrorResponse{Error: "Internal server error"}
 
 type ErrorResponse struct {

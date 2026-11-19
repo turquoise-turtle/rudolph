@@ -54,4 +54,11 @@ module "santa_api" {
   # Ranker
   ranker_schedule_expression = var.ranker_schedule_expression
   ranker_schedule_timezone   = var.ranker_schedule_timezone
+
+  # Access logs and edge protection
+  enable_api_access_logs          = var.enable_api_access_logs
+  manage_api_gateway_account_role = var.manage_api_gateway_account_role
+  enable_waf                      = var.enable_waf
+  waf_rate_limit_per_5_minutes    = var.waf_rate_limit_per_5_minutes
+  access_log_retention_days       = var.access_log_retention_days
 }

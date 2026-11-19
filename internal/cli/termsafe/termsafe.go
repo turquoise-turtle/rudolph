@@ -8,8 +8,9 @@ package termsafe
 import (
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/airbnb/rudolph/pkg/invisible"
 )
 
 const (
@@ -22,19 +23,20 @@ const (
 
 	// A subdivision flag's tags spell a region code (Unicode CLDR): 2 to 7 lower-case letters and digits
 	minFlagTags, maxFlagTags = 2, 7
-	zwnj, zwj                = 0x200c, 0x200d
-	brailleGap               = 0x2800
+	emojiSelector            = 0xfe0f
 )
 
 // String returns s with every character a terminal would act on, or that hides or reorders text, written as a visible
 // escape: C0 controls and DEL as \xNN (\n, \r and \t by name), C1 controls, invisible format characters (Unicode Cf),
-// line and paragraph separators, and characters that render as blank text without being spaces (Hangul fillers and
-// the blank braille pattern) as \uXXXX (\UXXXXXXXX above U+FFFF), and bytes that are not UTF-8 as \xNN.
+// line and paragraph separators, every other default-ignorable code point (variation selectors, the combining
+// grapheme joiner, Khmer inherent vowels, and reserved code points such as U+2065, U+FFF0-FFF8 and the rest of the
+// U+E0000-E0FFF block), and characters that render as blank text without being spaces (Hangul fillers and the blank
+// braille pattern) as \uXXXX (\UXXXXXXXX above U+FFFF), and bytes that are not UTF-8 as \xNN.
 //
-// Zero-width (non-)joiners are kept, as emoji sequences and several scripts need them, and so are the tag characters
-// of a subdivision flag (U+1F3F4, 2 to 7 tag letters a-z or digits, then the cancel tag U+E007F); tags anywhere else
-// are escaped. Everything else,
-// backslashes included, is left as it is.
+// Zero-width (non-)joiners are kept, as emoji sequences and several scripts need them, and so are the emoji
+// presentation selector U+FE0F and the tag characters of a subdivision flag (U+1F3F4, 2 to 7 tag letters a-z or
+// digits, then the cancel tag U+E007F); tags anywhere else are escaped. Everything else, backslashes included, is left
+// as it is.
 func String(s string) string {
 	if strings.IndexFunc(s, needsEscape) < 0 && utf8.ValidString(s) {
 		return s
@@ -112,14 +114,8 @@ type escapedError struct{ err error }
 func (e escapedError) Error() string { return String(e.err.Error()) }
 func (e escapedError) Unwrap() error { return e.err }
 
+// needsEscape keeps the emoji presentation selector, which hearts, keycaps and many other emoji need to show as emoji;
+// subdivision flag tags are kept by String itself, as they depend on what surrounds them.
 func needsEscape(r rune) bool {
-	switch r {
-	case zwnj, zwj:
-		return false
-	case 0x115f, 0x1160, 0x3164, 0xffa0, brailleGap:
-		// Hangul fillers and the blank braille pattern are letters or symbols that render as nothing, so a value can
-		// look shorter or blank while it is not.
-		return true
-	}
-	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+	return r != emojiSelector && invisible.Rune(r)
 }

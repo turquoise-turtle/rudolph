@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/spf13/cobra"
@@ -418,9 +419,9 @@ func inheritedSettingText(global machineconfiguration.MachineConfiguration, sett
 		}
 		return fmt.Sprintf("%d -->( %s )", global.ClientMode, clientModeText)
 	case "BlockedPathRegex":
-		return fmt.Sprintf("%q", global.BlockedPathRegex)
+		return quoted(global.BlockedPathRegex)
 	case "AllowedPathRegex":
-		return fmt.Sprintf("%q", global.AllowedPathRegex)
+		return quoted(global.AllowedPathRegex)
 	case "BatchSize":
 		return fmt.Sprint(global.BatchSize)
 	case "EnableBundles":
@@ -463,7 +464,14 @@ func stringSetting(value string, configured bool) string {
 	if !configured {
 		return notConfigured
 	}
-	return fmt.Sprintf("%q", value)
+	return quoted(value)
+}
+
+// quoted writes a stored setting the way %q does, then escapes what %q leaves raw because strconv.IsPrint accepts it
+// (variation selectors, the combining grapheme joiner, Hangul fillers and the like): another tool, or an earlier
+// version, may have stored a value that hides text from the admin.
+func quoted(value string) string {
+	return termsafe.String(fmt.Sprintf("%q", value))
 }
 
 func stringPtrSetting(value *string) string {

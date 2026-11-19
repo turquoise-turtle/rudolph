@@ -521,10 +521,10 @@ var tableRoles = map[string]*regexp.Regexp{
 	"ranker":       regexp.MustCompile(`aws_iam_role\.ranker\.arn\b`),
 }
 
-var localRef = regexp.MustCompile(`\blocal\.([A-Za-z0-9_]+)`)
+var inlineLocalRef = regexp.MustCompile(`\blocal\.([A-Za-z0-9_]+)`)
 
-// expandLocals replaces local.x references in text with the source of the local, a few levels deep.
-func expandLocals(t *testing.T, files []tfFile, text string) string {
+// inlineLocals replaces local.x references in text with the source of the local, a few levels deep.
+func inlineLocals(t *testing.T, files []tfFile, text string) string {
 	t.Helper()
 	defs := map[string]string{}
 	for _, l := range blocks(files, "locals") {
@@ -533,8 +533,8 @@ func expandLocals(t *testing.T, files []tfFile, text string) string {
 		}
 	}
 	for i := 0; i < 5; i++ {
-		text = localRef.ReplaceAllStringFunc(text, func(ref string) string {
-			if d, ok := defs[localRef.FindStringSubmatch(ref)[1]]; ok {
+		text = inlineLocalRef.ReplaceAllStringFunc(text, func(ref string) string {
+			if d, ok := defs[inlineLocalRef.FindStringSubmatch(ref)[1]]; ok {
 				return "(" + d + ")"
 			}
 			return ref
@@ -588,7 +588,7 @@ func keyStatements(t *testing.T, files []tfFile, doc *hclsyntax.Block) []keyStat
 		}
 		fe := ""
 		if a, ok := d.Body.Attributes["for_each"]; ok {
-			fe = expandLocals(t, files, sourceOf(t, files, a.Expr))
+			fe = inlineLocals(t, files, sourceOf(t, files, a.Expr))
 		}
 		for _, c := range nested(d, "content") {
 			out = append(out, keyStatement{body: c, forEach: fe})
@@ -615,7 +615,7 @@ func principalArnValues(t *testing.T, files []tfFile, st *hclsyntax.Block) []str
 			continue
 		}
 		if vals, ok := c.Body.Attributes["values"]; ok {
-			out = append(out, expandLocals(t, files, sourceOf(t, files, vals.Expr)))
+			out = append(out, inlineLocals(t, files, sourceOf(t, files, vals.Expr)))
 		}
 	}
 	return out
@@ -631,7 +631,7 @@ func awsIdentifiers(t *testing.T, files []tfFile, st *hclsyntax.Block) []string 
 			}
 		}
 		if ids, ok := p.Body.Attributes["identifiers"]; ok {
-			out = append(out, expandLocals(t, files, sourceOf(t, files, ids.Expr)))
+			out = append(out, inlineLocals(t, files, sourceOf(t, files, ids.Expr)))
 		}
 	}
 	return out
@@ -663,7 +663,7 @@ func TestDataExposure_StoreKeyCanBeLimitedToNamedPrincipals(t *testing.T) {
 	carriesUsers := map[string]bool{}
 	carriesRoles := map[string]map[string]bool{}
 	for name, a := range calls[0].Body.Attributes {
-		text := expandLocals(t, parent, sourceOf(t, parent, a.Expr))
+		text := inlineLocals(t, parent, sourceOf(t, parent, a.Expr))
 		if strings.Contains(text, "var."+storeKeyUsersVar) {
 			carriesUsers[name] = true
 		}
@@ -983,7 +983,7 @@ func storeKeyArgs(t *testing.T, parent []tfFile) (users, roles map[string]bool) 
 		t.Fatalf("module \"rule_store\" called %d times, want once", len(calls))
 	}
 	for name, a := range calls[0].Body.Attributes {
-		text := expandLocals(t, parent, sourceOf(t, parent, a.Expr))
+		text := inlineLocals(t, parent, sourceOf(t, parent, a.Expr))
 		if strings.Contains(text, "var."+storeKeyUsersVar) {
 			users[name] = true
 		}

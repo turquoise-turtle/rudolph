@@ -20,5 +20,8 @@ package
 # Real environments hold account IDs, domains and token digests: only the example is tracked
 /deployments/environments/*
 !/deployments/environments/example/
+# The example's provider lock file is committed, so init checks the AWS provider against known checksums; make init-env
+# copies it into each environment.
+!/deployments/environments/example/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*

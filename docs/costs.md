@@ -164,6 +164,16 @@ The alarms are kept few and cheap: ten alarms, or nine when no event sink is con
 
 That is about US$4.20 a month in total at us-east-1 prices (US$3.80 without an event sink) (the same in many regions), independent of fleet size. Per-method API Gateway metrics and execution logging stay off, as they are billed per metric and per log line.
 
+## Optional access log and WAF
+Both are off by default and not counted in the estimates above (us-east-1 list prices; a Mac sends about 700 requests a day, 21,000 a month):
+
+| Item | US$ a month |
+|---|---|
+| API Gateway access log (`enable_api_access_logs`): CloudWatch Logs ingestion at US$0.50 per GB, about 400 bytes a request, kept for `log_retention_in_days` | about 4 per 1,000 Macs, plus storage of about 0.03 per GB kept |
+| WAF (`enable_waf`): US$5 for the web ACL, US$1 for each of its 2 rules (the AWS IP reputation list has no subscription fee), US$0.60 per million requests | 7, plus about 12.60 per 1,000 Macs |
+
+The S3 server access logs expire after `access_log_retention_days` (default 180), so their storage stays at about six months of logs instead of growing for ever.
+
 ## Budgets
 The optional monthly cost budget (`monthly_budget_usd`, see [deploy](./deploy.md#cost-budget)) is a plain cost budget with email notifications and no budget actions. AWS's [Budgets pricing page](https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/) says that monitoring budgets and receiving their notifications is free of charge; only budgets with actions (which change IAM permissions, service control policies or resources when a threshold is reached) are charged, after the first two in an account, per budget per day, and Budget Reports are charged per report delivered. Rudolph's budget uses neither. Check that page for current prices.
 

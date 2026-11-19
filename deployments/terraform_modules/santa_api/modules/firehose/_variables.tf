@@ -64,3 +64,9 @@ variable "firehose_events_retention_in_days" {
     error_message = "firehose_events_retention_in_days must be a whole number of days, at least 2."
   }
 }
+
+variable "access_log_retention_days" {
+  type        = number
+  description = "Days after which the access-log bucket's objects and noncurrent versions expire"
+  default     = 180
+}

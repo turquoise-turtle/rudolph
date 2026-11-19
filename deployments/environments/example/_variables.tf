@@ -211,3 +211,33 @@ variable "store_kms_key_user_arns" {
   description = "OPTIONAL: IAM principal ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's Lambdas (rudolph-web's role, CLI operators). Empty lets every principal of the account."
   default     = []
 }
+
+variable "enable_api_access_logs" {
+  type        = bool
+  description = "Write an API Gateway access log line per request to /aws/apigateway/PREFIX_rudolph_access; needs the account's API Gateway CloudWatch role (aws apigateway get-account)"
+  default     = false
+}
+
+variable "manage_api_gateway_account_role" {
+  type        = bool
+  description = "Create and set the account's API Gateway CloudWatch role, shared by every REST API in the account and region; only when no role is set and no other stack manages it"
+  default     = false
+}
+
+variable "enable_waf" {
+  type        = bool
+  description = "Protect the stage with an AWS WAF web ACL: the AWS IP reputation list and a per-IP rate limit"
+  default     = false
+}
+
+variable "waf_rate_limit_per_5_minutes" {
+  type        = number
+  description = "Requests from one source IP in 5 minutes above which the WAF blocks it; a fleet behind one NAT shares an IP"
+  default     = 100000
+}
+
+variable "access_log_retention_days" {
+  type        = number
+  description = "Whole days after which each S3 access log expires (a delete marker); the versioned log is deleted 3 days later"
+  default     = 180
+}

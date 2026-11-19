@@ -69,11 +69,21 @@ func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 // maxSortKeyBytes is DynamoDB's limit on a sort key.
 const maxSortKeyBytes = 1024
 
+// maxPageNumber bounds the page of a global or feed cursor, far beyond any real fleet. A cursor at this page would have
+// the server issue one for page 1,000,001, which is refused; that needs a rule set of over a million pages, so it is
+// unreachable in practice.
+const maxPageNumber = 1_000_000
+
 // validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
 // so it is client input: without these checks a forged one reached DynamoDB and was answered 500, which the api_5xx
 // alarm counts as a server failure and Santa retries. Machine pages read neither the batch size nor the key, and are
-// only requested with cursors from earlier versions of Rudolph, so only their strategy is checked.
+// only requested with cursors from earlier versions of Rudolph, which issued them with any page or none, so only their
+// strategy and the sign of their page and seq are checked.
 func (r ruledownloadCursor) validate() error {
+	// Pages count from 1 and seq is the preflight time in milliseconds, so neither is ever negative.
+	if r.PageNumber < 0 || r.SyncSeq < 0 {
+		return fmt.Errorf("negative page %d or seq %d", r.PageNumber, r.SyncSeq)
+	}
 	var partition string
 	switch r.Strategy {
 	case ruledownloadStrategyClean:
@@ -84,6 +94,11 @@ func (r ruledownloadCursor) validate() error {
 		return nil
 	default:
 		return fmt.Errorf("unknown strategy %d", r.Strategy)
+	}
+	// A global or feed cursor is only issued for the page after the first, and no fleet has a million pages; a page in
+	// the quintillions would also overflow when the next page's cursor is made
+	if r.PageNumber < 2 || r.PageNumber > maxPageNumber {
+		return fmt.Errorf("page %d outside 2-%d", r.PageNumber, maxPageNumber)
 	}
 	if r.BatchSize < machineconfiguration.MinBatchSize || r.BatchSize > machineconfiguration.MaxBatchSize {
 		return fmt.Errorf("batch size %d outside %d-%d", r.BatchSize, machineconfiguration.MinBatchSize, machineconfiguration.MaxBatchSize)
@@ -156,7 +171,7 @@ func (c concreteRuledownloadCursorService) ConstructCursor(ruledownloadRequest R
 			return
 		}
 		if syncState == nil {
-			err = errors.New("no sync state: ruledownload without a preflight")
+			err = errNoSyncState
 			return
 		}
 
