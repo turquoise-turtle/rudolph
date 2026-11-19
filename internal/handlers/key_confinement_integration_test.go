@@ -83,11 +83,15 @@ func TestForgedRuledownloadCursorCannotReadAnotherPartition(t *testing.T) {
 		t.Fatal("fixture: machine B has no sensor data row")
 	}
 
+	// Every cursor carries the attacker's current sync number, as the cursors the server issues do: a last page of a
+	// numbered sync without it is refused 409 before the key would ever matter.
+	seq := numberAttr(t, getItem(t, "Machine#"+machineA, "SyncState"), "SyncSeq")
+
 	// A cursor of the shape the server issues is honoured: a client-written cursor inside the partition the
 	// strategy reads does page through it. Without this, the forged cursors below could be "safe" only because
 	// client cursors were ignored altogether.
 	legit := ruledownloadWithCursor(t, machineA, map[string]any{
-		"strategy": 1, "pk": "GlobalRules", "sk": "Binary#", "page": 2, "batch_size": 50,
+		"strategy": 1, "pk": "GlobalRules", "sk": "Binary#", "page": 2, "batch_size": 50, "seq": seq,
 	})
 	if legit.StatusCode != http.StatusOK || !strings.Contains(legit.Body, globalSHA) {
 		t.Fatalf("a cursor inside GlobalRules should page the global rules, got %d %s", legit.StatusCode, legit.Body)
@@ -113,7 +117,7 @@ func TestForgedRuledownloadCursorCannotReadAnotherPartition(t *testing.T) {
 			name := fmt.Sprintf("strategy=%d/pk=%s/sk=%s", strategy, target.pk, target.sk)
 			t.Run(name, func(t *testing.T) {
 				resp := ruledownloadWithCursor(t, machineA, map[string]any{
-					"strategy": strategy, "pk": target.pk, "sk": target.sk, "page": 2, "batch_size": 50,
+					"strategy": strategy, "pk": target.pk, "sk": target.sk, "page": 2, "batch_size": 50, "seq": seq,
 				})
 				for _, secret := range secrets {
 					if strings.Contains(resp.Body, secret) {
