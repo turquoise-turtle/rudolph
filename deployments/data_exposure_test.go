@@ -20,8 +20,9 @@ package deployments
 //     for how long.
 //     With the list set, the docs name the deployer and the key administrators as the exceptions to it.
 //     Round 2: those docs also say other accounts' ARNs never match, whole-segment wildcards are refused, and that
-//     passing a /rudolph/ role or changing Rudolph's code bypasses the list; deploy.md step 23 says 180 days in total
-//     and does not claim Firehose checks the producer's key on every PutRecordBatch.
+//     passing a /rudolph/ role or changing Rudolph's code bypasses the list; deploy.md's upgrade step "Telemetry
+//     retention and encryption" says 180 days in total and does not claim Firehose checks the producer's key on every
+//     PutRecordBatch.
 //     Round 3: the docs say a prefix wildcard (AWSReservedSSO_*) is accepted and still lets in every permission set,
 //     and the variable's comment no longer says a mid-path * is refused; comments and docs that say the key policy
 //     lets the account's principals use the key name the variable; the 180 days are said to be rounded up to midnight
@@ -831,6 +832,24 @@ func lineWith(body string, patterns ...string) bool {
 	return false
 }
 
+// telemetryUpgradeStep is the title of this audit's upgrade step in docs/deploy.md. The tests find the step by its
+// title, whatever its number, as other audits add steps of their own.
+const telemetryUpgradeStep = "Telemetry retention and encryption"
+
+// deployUpgradeStep returns the "### " upgrade step of docs/deploy.md titled telemetryUpgradeStep, whatever its
+// number, with its body up to the next "## " section.
+func deployUpgradeStep(doc string) (heading, body string, ok bool) {
+	title := regexp.MustCompile(`^\d+\.\s+` + regexp.QuoteMeta(telemetryUpgradeStep) + `\s*$`)
+	for _, p := range regexp.MustCompile(`(?m)^### `).Split(doc, -1)[1:] {
+		h, b, _ := strings.Cut(p, "\n")
+		if title.MatchString(strings.TrimSpace(h)) {
+			b, _, _ = strings.Cut(b, "\n## ")
+			return h, b, true
+		}
+	}
+	return "", "", false
+}
+
 // firehoseLifecycleTiming matches wording that S3 lifecycle rounds the expiry up to the next midnight UTC, or removes
 // expired objects asynchronously, some time after the day it is due.
 const firehoseLifecycleTiming = `midnight|asynchron|\blags?\b`
@@ -910,16 +929,12 @@ func TestDataExposure_DocsNameTheStoreKeyExceptions(t *testing.T) {
 	if src, err := os.ReadFile("../docs/deploy.md"); err != nil {
 		t.Fatal(err)
 	} else {
-		for _, p := range regexp.MustCompile(`(?m)^### `).Split(string(src), -1)[1:] {
-			h, body, _ := strings.Cut(p, "\n")
-			if strings.HasPrefix(h, "23.") {
-				body, _, _ = strings.Cut(body, "\n## ")
-				where, texts = append(where, "deploy.md "+strings.TrimSpace(h)), append(texts, body)
-			}
+		if h, body, ok := deployUpgradeStep(string(src)); ok {
+			where, texts = append(where, "deploy.md "+strings.TrimSpace(h)), append(texts, body)
 		}
 	}
 	if len(texts) == 0 {
-		t.Fatal(`neither docs/security-risks.md (a "## " section on telemetry or retention) nor docs/deploy.md (upgrade step 23) has a section to check`)
+		t.Fatal(`neither docs/security-risks.md (a "## " section on telemetry or retention) nor docs/deploy.md (the upgrade step "` + telemetryUpgradeStep + `") has a section to check`)
 	}
 	users := regexp.QuoteMeta(storeKeyUsersVar)
 	for what, patterns := range map[string][]string{
@@ -1526,33 +1541,27 @@ resource "aws_kms_alias" "store_sse_key" {
 }
 `
 
-// S8, round 2: upgrade step 23 says what the lifecycle rule keeps (180 days in total, a noncurrent version 1 day of
-// it), and deploy.md does not state as fact that Firehose checks the producer's key permissions on every
-// PutRecordBatch, which AWS does not document.
+// S8, round 2: the upgrade step "Telemetry retention and encryption" says what the lifecycle rule keeps (180 days in
+// total, a noncurrent version 1 day of it), and deploy.md does not state as fact that Firehose checks the producer's key
+// permissions on every PutRecordBatch, which AWS does not document.
 func TestDataExposure_DeployDocsMatchTheLifecycleAndProducerKey(t *testing.T) {
 	src, err := os.ReadFile("../docs/deploy.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc := string(src)
-	step := ""
-	for _, p := range regexp.MustCompile(`(?m)^### `).Split(doc, -1)[1:] {
-		h, body, _ := strings.Cut(p, "\n")
-		if strings.HasPrefix(h, "23.") {
-			step, _, _ = strings.Cut(body, "\n## ")
-		}
-	}
-	if step == "" {
-		t.Fatal("docs/deploy.md has no upgrade step 23")
+	_, step, ok := deployUpgradeStep(doc)
+	if !ok {
+		t.Fatalf("docs/deploy.md has no upgrade step titled %q (a \"### <number>. %s\" heading)", telemetryUpgradeStep, telemetryUpgradeStep)
 	}
 	total := []string{`180`, `in total|in all`, `noncurrent|old version`, `\b1 day\b|\bone day\b`}
 	if !lineWith(step, total...) {
-		t.Errorf("deploy.md step 23: no line says the Firehose bucket keeps events 180 days in total, with the noncurrent version "+
+		t.Errorf("deploy.md upgrade step "+telemetryUpgradeStep+": no line says the Firehose bucket keeps events 180 days in total, with the noncurrent version "+
 			"kept 1 day within it (want one matching %q)", total)
 	}
 	// Review round 3: the 180 days are a floor; S3 rounds up to midnight UTC and removes expired objects asynchronously.
 	if timing := []string{`180`, firehoseLifecycleTiming}; !lineWith(step, timing...) {
-		t.Errorf("deploy.md step 23: no line with the 180 days says S3 rounds the expiry up to the next midnight UTC or removes "+
+		t.Errorf("deploy.md upgrade step "+telemetryUpgradeStep+": no line with the 180 days says S3 rounds the expiry up to the next midnight UTC or removes "+
 			"expired objects asynchronously, so events stay somewhat longer than 180 days (want one matching %q)", timing)
 	}
 	for _, line := range strings.Split(doc, "\n") {
