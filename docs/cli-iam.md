@@ -44,7 +44,7 @@ For `rudolph rules`, `rule get`, `config get`, `machine show`, `machines`, `look
 }
 ```
 
-The KMS statement is only needed if your organisation has tightened the store key's policy: as deployed, the key policy already lets every principal of the account use the key through DynamoDB, so the table permissions are enough. It is limited to use through DynamoDB either way.
+The KMS statement is only needed if your organisation has tightened the store key's policy: as deployed, with `store_kms_key_user_arns` empty, the key policy lets every principal of the account use the key through DynamoDB, so the table permissions are enough; once that list is set, the operator must be in it or have this statement. It is limited to use through DynamoDB either way.
 
 With `store_kms_key_user_arns` set (see [Telemetry and Retention](security-risks.md#telemetry-and-retention)), the key policy lets only Rudolph's Lambdas and the listed ARNs use the key through DynamoDB, and table permissions are no longer enough: every operator's role or user must either be in that list or have the KMS statement above, which lets them in through the key policy's root statement (it delegates to IAM). Listing them keeps the key policy the one place that says who can read the telemetry; rudolph-web's role must be listed (or given the same KMS statement) too.
 

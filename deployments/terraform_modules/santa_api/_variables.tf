@@ -129,8 +129,9 @@ variable "store_kms_key_user_arns" {
 
   # aws:PrincipalArn is always an IAM role or user ARN (a session's role, never its sts ARN), so anything else never
   # matches. A wildcard straight after role/ or user/, or in the account, would let every principal in again, and one
-  # that is a whole path segment (role/aws-reserved/*, .../sso.amazonaws.com/*) every role under it: every Identity
-  # Center permission set, read-only ones included. ArnLike's * also matches /, so a mid-path * is refused too.
+  # that is a whole path segment anywhere in the path (role/aws-reserved/*, .../sso.amazonaws.com/*) every role under
+  # it: every Identity Center permission set, read-only ones included. Only those are refused: a prefix pattern such as
+  # .../AWSReservedSSO_* or role/a* passes, yet is still as broad, because ArnLike's * also matches /.
   validation {
     condition = alltrue([
       for arn in var.store_kms_key_user_arns :
