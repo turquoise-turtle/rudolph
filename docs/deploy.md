@@ -268,7 +268,8 @@ Kinesis or your own Lambda:
 - Two **new record shapes** share the same stream: file access events (`rule_name`, `rule_version`, `target`,
   `process_chain`, `access_time`, `decision`) and audit events (`standalone_mode_rule_creation`). They do not have
   `file_sha256` or `execution_time`, and `decision` on a file access record is a `FILE_ACCESS_DECISION_*` value, not
-  an execution decision.
+  an execution decision (Santa sends nothing else; the sinks receive the decision as uploaded, as only the events
+  table drops file access events with any other decision).
 - Every record therefore carries **`event_type`**, one of `execution`, `file_access` or `audit`, alongside
   `machine_id`.
 
@@ -559,3 +560,17 @@ This applies to every existing deployment. A Terraform audit added state locking
 4. **Access-log expiry.** `make plan` adds `aws_s3_bucket_lifecycle_configuration.s3_logging` to the access-log bucket of the Lambda source bucket (`module.santa_api.module.lambda_source[0]`) and, with the Firehose sink created by Terraform, to that of the events bucket (`module.santa_api.module.firehose[0]`); nothing else changes. The buckets are versioned, so S3's next daily lifecycle run after the apply only puts a delete marker on every access log older than `access_log_retention_days` (default 180); the logs themselves are deleted 3 days after that, when their noncurrent versions expire, and the delete markers after that. Until then a log can still be restored by deleting its delete marker. Copy any logs you must keep elsewhere first, or raise the value. Buckets named by `existing_logging_bucket_name` are not touched. The deployer needs `s3:PutLifecycleConfiguration` and `s3:GetLifecycleConfiguration` on those buckets.
 5. **Optional: access log.** To turn on `enable_api_access_logs`, check the account's API Gateway CloudWatch role first (`aws apigateway get-account --region "$REGION" --query cloudwatchRoleArn`), and set `manage_api_gateway_account_role` only if it is empty and nothing else manages it (see [API access log](#api-access-log)). The plan creates the log group and updates the stage in place (`access_log_settings`); the API deployment is not replaced.
 6. **Optional: WAF.** To turn on `enable_waf`, size `waf_rate_limit_per_5_minutes` for the largest number of Macs behind one public address (see [WAF](#waf)). The plan creates the web ACL and its association with the stage. After the apply, check that syncs still succeed ([smoke-test.md](smoke-test.md)) and that the `PREFIX_rudolph_rate_limit` and `PREFIX_rudolph_ip_reputation` metrics show no blocked requests from your own addresses.
+
+### 24. File access events with a malformed decision (optional clean-up)
+This applies to every deployment that stores file access events (step 20); any client holding the sync token could upload them. The eventupload Lambda now stores a file access event only when its decision is `FILE_ACCESS_DECISION_` followed by 1 to 64 upper-case letters or underscores, as every decision Santa sends is (see [File access events](events-table.md#file-access-events)); others are dropped and logged. Nothing needs doing: items a Mac stored before this change under any other decision (an execution decision such as `BLOCK_BINARY`, say) stay in the events table until their 90-day TTL removes them, and rudolph-web from its matching release pages past them when it lists executions by decision.
+
+If you want them gone sooner, find them first and delete them only once you have checked the list; nothing here deletes data by itself. For each execution decision the table stores (listed in [What is stored](events-table.md#what-is-stored)), query the `Decision_TS` index for that decision and keep the items whose `PK` begins `FileAccess#`, for example for `BLOCK_BINARY` (the query reads, and is billed for, every execution of that decision kept, not only the items it returns):
+
+```sh
+aws dynamodb query --table-name "${PREFIX}_rudolph_events" --index-name Decision_TS \
+  --key-condition-expression "Decision = :d" --filter-expression "begins_with(PK, :fa)" \
+  --expression-attribute-values '{":d":{"S":"BLOCK_BINARY"},":fa":{"S":"FileAccess#"}}' \
+  --projection-expression "PK, SK"
+```
+
+Then delete each listed item by its `PK` and `SK` with `aws dynamodb delete-item`.

@@ -55,6 +55,11 @@ const (
 	// a minute.
 	parallelism = 16
 
+	// maxRuleSortKeyBytes is DynamoDB's limit on a sort key. The counters' signing and team IDs come from whichever
+	// Mac first uploaded the binary that day and are cut only to 4,096 and 1,024 bytes, so a rule key built from one
+	// can be longer; no rule can have such a key, and a GetItem on it would be refused and fail the whole run.
+	maxRuleSortKeyBytes = 1024
+
 	// writeAttempts bounds the BatchWriteItem calls for one batch whose items DynamoDB keeps returning unprocessed
 	// (throttling); the run then fails and the pointer stays on the previous snapshot.
 	writeAttempts = 8
@@ -402,6 +407,9 @@ func globalRule(ctx context.Context, opts Options, r entry) (string, error) {
 			continue
 		}
 		sk := rules.RuleSortKeyFromTypeIdentifier(candidate.identifier, candidate.ruleType)
+		if len(sk) > maxRuleSortKeyBytes {
+			continue
+		}
 		out, err := opts.Client.GetItem(ctx, &dynamodb.GetItemInput{
 			TableName:            aws.String(opts.StoreTable),
 			Key:                  map[string]types.AttributeValue{"PK": str(globalRulesPK), "SK": str(sk)},

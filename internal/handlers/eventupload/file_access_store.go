@@ -24,6 +24,13 @@ const (
 	fileAccessPKPrefix = "FileAccess#"
 	fileAccessFleet    = "FileAccess"
 
+	// fileAccessDecisionPrefix starts every FileAccessDecision name in Santa's sync_v1.proto.
+	fileAccessDecisionPrefix = "FILE_ACCESS_DECISION_"
+
+	// maxFileAccessDecisionSuffix bounds the name after the prefix: the longest Santa has (DENIED_INVALID_SIGNATURE)
+	// is 24 characters, and a longer suffix would let each Mac make Decision_TS partitions of its own.
+	maxFileAccessDecisionSuffix = 64
+
 	// maxStoredChain bounds the process chain kept: the accessing process and its nearest ancestors are what an
 	// admin reads, and a deep chain of long paths would only add to the item's write cost.
 	maxStoredChain = 8
@@ -39,10 +46,17 @@ type storableFileAccess struct {
 // them, and logs the others as dropped. earliest and latest bound access_time in Unix seconds.
 func selectFileAccess(machineID string, events []FileAccessEvent, earliest, latest float64, limit int) (selected []storableFileAccess, overLimit int) {
 	seen := map[string]bool{}
-	var incomplete, outside int
+	var incomplete, foreign, outside int
 	for _, e := range events {
 		if e.AccessTime == 0 || e.Target == "" || e.Decision == "" || e.Decision == "FILE_ACCESS_DECISION_UNKNOWN" {
 			incomplete++
+			continue
+		}
+		// The decision is the Decision_TS partition key. Santa only sends FileAccessDecision values here; any other
+		// value (an execution's BLOCK_BINARY, say) would list the event among the fleet's executions, and a near miss
+		// (FILE_ACCESS_DECISION_UNKNOWN with a trailing space, a bidi character) would pass as a real decision.
+		if !wellFormedFileAccessDecision(e.Decision) {
+			foreign++
 			continue
 		}
 		// NaN fails both comparisons, so it is rejected here too.
@@ -71,8 +85,24 @@ func selectFileAccess(machineID string, events []FileAccessEvent, earliest, late
 		selected = append(selected, storableFileAccess{event: e, micros: micros, sk: sk})
 	}
 	logDropped(machineID, incomplete, "file access event without an access time, a target or a known decision")
+	logDropped(machineID, foreign, "file access event whose decision is not a "+fileAccessDecisionPrefix+" value")
 	logDropped(machineID, outside, "file access time more than a day ahead or older than the 90 days kept")
 	return selected, overLimit
+}
+
+// wellFormedFileAccessDecision reports whether d has the shape of a FileAccessDecision name: the prefix and 1 to
+// maxFileAccessDecisionSuffix of [A-Z_]. Only the shape is checked, so a value a newer Santa adds is still stored.
+func wellFormedFileAccessDecision(d string) bool {
+	suffix, ok := strings.CutPrefix(d, fileAccessDecisionPrefix)
+	if !ok || len(suffix) == 0 || len(suffix) > maxFileAccessDecisionSuffix {
+		return false
+	}
+	for i := 0; i < len(suffix); i++ {
+		if c := suffix[i]; c != '_' && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // fileAccessItem builds the item of a file access event. Strings are cut for the same reasons as an execution's (see
