@@ -1,5 +1,5 @@
 # Setting Up New Environments
-It is easy to deploy and maintain multiple different Rudolph environments, as they are configured in just 6 simple files.
+It is easy to deploy and maintain multiple different Rudolph environments, as they are configured in just 7 simple files.
 This document will walk through the files necessary.
 
 ## `init-env`
@@ -45,6 +45,9 @@ terraform {
 }
 ```
 
+### `.terraform.lock.hcl`
+The provider lock file: the AWS provider version and the checksums of its packages for `linux_amd64`, `darwin_arm64` and `darwin_amd64`, so `terraform init` refuses a package that differs. It is committed for the example only; `make init-env` copies it. See [Provider lock file](../../../docs/deploy.md#provider-lock-file) for updating it.
+
 ### `_backend.tf`
 The first "complicated" file you'll need to set up is `_backend.tf` which describes how the Terraform state will be stored.
 
@@ -52,12 +55,13 @@ Consider the provided example:
 ```
 terraform {
   backend "s3" {
-    bucket     = "your-terraform-tfstate-bucket"
-    key        = "rudolph-example-prefix.tfstate"
-    region     = "us-east-1"
-    acl        = "private"
-    encrypt    = true
-    kms_key_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    bucket       = "your-terraform-tfstate-bucket"
+    key          = "rudolph-example-prefix.tfstate"
+    region       = "us-east-1"
+    acl          = "private"
+    encrypt      = true
+    kms_key_id   = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    use_lockfile = true
   }
 }
 
@@ -93,6 +97,11 @@ If you wish to encrypt your TF State with serverside encryption, set this to `tr
 #### `kms_key_id`
 Only necessary if `encrypt = true`. Provide the KMS Key Id of an existing KMS key on the AWS account that
 will be used for serverside encryption. The key must be usable by your IAM user.
+
+#### `use_lockfile`
+Keep it `true` (it needs Terraform 1.10 or later). While a plan or apply runs, Terraform holds a lock object next to the state, `<key>.tflock` (here `rudolph-example-prefix.tfstate.tflock`), so a second run at the same time fails at once with "Error acquiring the state lock" instead of overwriting the state. Pass `-lock-timeout=10m` (or similar) to a `terraform` command to have it retry until the lock is free.
+
+If a policy on the state bucket or your IAM user limits access to the state key, it must also allow `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on the `<key>.tflock` object. Without `s3:DeleteObject` the lock is never released and every later plan fails.
 
 ### `config.auto.tfvars.json`
 You **must** name this file exactly as specified above.
@@ -191,3 +200,12 @@ Optional. An SNS topic notified when one of Rudolph's CloudWatch alarms fires or
 
 #### `api_4xx_alarm_min_requests`
 The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. Defaults to `100`, which covers fleets from about 40 Macs; lower it for smaller fleets.
+
+#### `enable_api_access_logs` and `manage_api_gateway_account_role`
+Both default to `false`. `enable_api_access_logs` writes an API Gateway access log line per request; it needs the account's API Gateway CloudWatch role, which `manage_api_gateway_account_role` creates and sets for the whole account and region. Check `aws apigateway get-account` first and read [API access log](../../../docs/deploy.md#api-access-log) before turning either on.
+
+#### `enable_waf` and `waf_rate_limit_per_5_minutes`
+`enable_waf` (default `false`) puts an AWS WAF web ACL with the AWS IP reputation list and a per-IP rate limit in front of the stage. `waf_rate_limit_per_5_minutes` (default `100000`) is that limit; Macs behind one NAT share it. See [WAF](../../../docs/deploy.md#waf).
+
+#### `access_log_retention_days`
+Whole days after which each S3 server access log expires. Defaults to `180`; at least 1. The log buckets are versioned, so expiry only adds a delete marker and the log is deleted 3 days later: about `access_log_retention_days` + 3 days after it was written.

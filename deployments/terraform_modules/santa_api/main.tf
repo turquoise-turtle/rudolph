@@ -41,6 +41,18 @@ resource "aws_api_gateway_stage" "stage" {
   stage_name    = var.stage_name
   rest_api_id   = aws_api_gateway_rest_api.api_gateway.id
   deployment_id = aws_api_gateway_deployment.api_deployment.id
+
+  # Dynamic, so that a deployment without enable_api_access_logs plans no change to the stage. See access_log.tf.
+  dynamic "access_log_settings" {
+    for_each = var.enable_api_access_logs ? [1] : []
+    content {
+      destination_arn = aws_cloudwatch_log_group.api_access[0].arn
+      format          = local.api_access_log_format
+    }
+  }
+
+  # When this module sets the account's CloudWatch role, it must be in place before the stage turns on logging
+  depends_on = [aws_api_gateway_account.cloudwatch]
 }
 
 resource "aws_api_gateway_deployment" "api_deployment" {

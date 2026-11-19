@@ -90,6 +90,53 @@ resource "aws_s3_bucket_versioning" "s3_logging" {
   }
 }
 
+# Without expiry the bucket keeps every access log for ever. The bucket is versioned, so expiring a log at
+# access_log_retention_days only puts a delete marker on top of it: the data stays as a noncurrent version until that
+# expires 3 days later, and the delete marker, left with no versions under it, is removed by the second rule after that.
+# A log is therefore really deleted about access_log_retention_days + 3 days after it was written, give or take S3's
+# daily lifecycle run. Logs are written once and never replaced, so noncurrent versions only exist because of expiry.
+resource "aws_s3_bucket_lifecycle_configuration" "s3_logging" {
+  count = local.create_s3_logging_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.s3_logging[0].id
+
+  rule {
+    id     = "expire-access-logs"
+    status = "Enabled"
+
+    # Empty: the whole bucket, whatever prefix a source bucket logs under
+    filter {}
+
+    expiration {
+      days = var.access_log_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 3
+    }
+
+    # The parts of an unfinished multipart upload are billed but never listed, so they would otherwise stay unnoticed
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # S3 refuses days and expired_object_delete_marker in one expiration, so the delete markers get a rule of their own
+  rule {
+    id     = "remove-expired-delete-markers"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  # S3 applies noncurrent version rules only once versioning is on
+  depends_on = [aws_s3_bucket_versioning.s3_logging]
+}
+
 # S3 server access logs are only delivered to a destination bucket encrypted with SSE-S3, not SSE-KMS.
 resource "aws_s3_bucket_server_side_encryption_configuration" "s3_logging" {
   count = local.create_s3_logging_bucket ? 1 : 0
