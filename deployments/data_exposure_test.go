@@ -22,6 +22,11 @@ package deployments
 //     Round 2: those docs also say other accounts' ARNs never match, whole-segment wildcards are refused, and that
 //     passing a /rudolph/ role or changing Rudolph's code bypasses the list; deploy.md step 23 says 180 days in total
 //     and does not claim Firehose checks the producer's key on every PutRecordBatch.
+//     Round 3: the docs say a prefix wildcard (AWSReservedSSO_*) is accepted and still lets in every permission set,
+//     and the variable's comment no longer says a mid-path * is refused; comments and docs that say the key policy
+//     lets the account's principals use the key name the variable; the 180 days are said to be rounded up to midnight
+//     UTC or applied asynchronously. S4 also refuses expired_object_delete_marker beside days or date, and accepts
+//     filter { prefix = "" } as covering the whole bucket.
 //
 // The key policy is a data source with dynamic blocks, and rendering it needs the AWS provider, which does not run
 // offline here, so the S7 checks read the HCL and evaluate its for_each and attributes with go-cty. They accept either
@@ -317,6 +322,13 @@ func TestDataExposure_FirehoseEventsBucketExpiresEvents(t *testing.T) {
 				if v, diags := a.Expr.Value(nil); !diags.HasErrors() && v.Type() == cty.Bool && v.True() {
 					markers = true
 				}
+				// Review round 3: S3 refuses an expiration with ExpiredObjectDeleteMarker and Days or Date at apply.
+				for _, other := range []string{"days", "date"} {
+					if _, both := e.Body.Attributes[other]; both {
+						t.Errorf("a lifecycle expiration block sets expired_object_delete_marker together with %s: S3 refuses that "+
+							"at apply, so the marker needs an expiration block of its own: %s", other, squash(blockText(t, files, e)))
+					}
+				}
 			}
 		}
 	}
@@ -329,11 +341,18 @@ func TestDataExposure_FirehoseEventsBucketExpiresEvents(t *testing.T) {
 	for _, rule := range rules {
 		filters := nested(rule, "filter")
 		if len(filters) != 1 {
-			t.Errorf("lifecycle rule has %d filter blocks, want one empty filter {} so it covers every object of the bucket", len(filters))
+			t.Errorf("lifecycle rule has %d filter blocks, want one empty filter {} (or filter { prefix = \"\" }) so it covers every object of the bucket", len(filters))
 			continue
 		}
-		if len(filters[0].Body.Attributes) > 0 || len(filters[0].Body.Blocks) > 0 {
-			t.Errorf("lifecycle rule filter is %s, want filter {} so it covers every object of the bucket (no prefix or tag)",
+		// filter { prefix = "" } also covers every object of the bucket.
+		emptyPrefix := false
+		if p, ok := filters[0].Body.Attributes["prefix"]; ok && len(filters[0].Body.Attributes) == 1 {
+			if v, diags := p.Expr.Value(nil); !diags.HasErrors() && v.IsKnown() && v.Type() == cty.String && v.AsString() == "" {
+				emptyPrefix = true
+			}
+		}
+		if (len(filters[0].Body.Attributes) > 0 && !emptyPrefix) || len(filters[0].Body.Blocks) > 0 {
+			t.Errorf("lifecycle rule filter is %s, want filter {} or filter { prefix = \"\" } so it covers every object of the bucket (no prefix or tag)",
 				squash(blockText(t, files, filters[0])))
 		}
 	}
@@ -812,6 +831,10 @@ func lineWith(body string, patterns ...string) bool {
 	return false
 }
 
+// firehoseLifecycleTiming matches wording that S3 lifecycle rounds the expiry up to the next midnight UTC, or removes
+// expired objects asynchronously, some time after the day it is due.
+const firehoseLifecycleTiming = `midnight|asynchron|\blags?\b`
+
 // S8
 func TestDataExposure_DocsDescribeTelemetryAndRetention(t *testing.T) {
 	src, err := os.ReadFile("../docs/security-risks.md")
@@ -852,16 +875,19 @@ func TestDataExposure_DocsDescribeTelemetryAndRetention(t *testing.T) {
 		firehose = append(firehose, regexp.QuoteMeta(current))
 	}
 	for what, patterns := range map[string][]string{
-		"the store table and its TTL":                                    {`store table`, `TTL|expire|ExpiresAfter`},
-		"the events table, kept 90 days":                                 {`events table`, `90 days`},
-		"point-in-time recovery, 35 days":                                {`point.in.time recovery`, `35 days`},
-		"the Firehose bucket, 180 days, and its variable":                firehose,
-		"the Kinesis stream: operator-owned, its own encryption":         {`kinesis`, `operator|your own|you own`, `encrypt`},
-		"the Kinesis stream: its own retention":                          {`kinesis`, `retention|retain|kept|keep`},
-		"the output Lambda: operator-owned, its own encryption":          {`output lambda|eventupload_output_lambda_name`, `operator|your own|you own`, `encrypt`},
-		"the output Lambda: its own retention":                           {`output lambda|eventupload_output_lambda_name`, `retention|retain|kept|keep`},
-		"S7: who can read the store tables through the key":              {`ReadOnlyAccess|DynamoDB read`},
-		"S7: the variable that limits the store key to named principals": {regexp.QuoteMeta(storeKeyUsersVar)},
+		"the store table and its TTL":                     {`store table`, `TTL|expire|ExpiresAfter`},
+		"the events table, kept 90 days":                  {`events table`, `90 days`},
+		"point-in-time recovery, 35 days":                 {`point.in.time recovery`, `35 days`},
+		"the Firehose bucket, 180 days, and its variable": firehose,
+		// Review round 3: S3 adds the days to the object's creation time, rounds up to the next midnight UTC and removes
+		// expired objects asynchronously, so 180 days is a floor, not an exact limit.
+		"the Firehose bucket's 180 days: rounded up to midnight UTC, or removed asynchronously (with a lag)": {`firehose`, `180`, firehoseLifecycleTiming},
+		"the Kinesis stream: operator-owned, its own encryption":                                             {`kinesis`, `operator|your own|you own`, `encrypt`},
+		"the Kinesis stream: its own retention":                                                              {`kinesis`, `retention|retain|kept|keep`},
+		"the output Lambda: operator-owned, its own encryption":                                              {`output lambda|eventupload_output_lambda_name`, `operator|your own|you own`, `encrypt`},
+		"the output Lambda: its own retention":                                                               {`output lambda|eventupload_output_lambda_name`, `retention|retain|kept|keep`},
+		"S7: who can read the store tables through the key":                                                  {`ReadOnlyAccess|DynamoDB read`},
+		"S7: the variable that limits the store key to named principals":                                     {regexp.QuoteMeta(storeKeyUsersVar)},
 	} {
 		if !lineWith(inventory, patterns...) {
 			t.Errorf("section %q does not list %s (want one line or table row matching %q)", strings.TrimSpace(heading), what, patterns)
@@ -914,6 +940,10 @@ func TestDataExposure_DocsNameTheStoreKeyExceptions(t *testing.T) {
 		},
 		"whoever can pass a /rudolph/ role to a Lambda, or change Rudolph's function code, runs as a listed role": {
 			`/rudolph/`, `PassRole|\bpass`, `code`, `Lambda`,
+		},
+		// Review round 3: ArnLike's * matches /, so a prefix pattern can be as broad as a whole-segment wildcard.
+		"a prefix pattern such as AWSReservedSSO_* (no permission set name) is accepted but still lets in every Identity Center permission set": {
+			users + `|wildcard`, `AWSReservedSSO_\*`, `\bstill\b|too broad|every (IAM )?(Identity Center )?permission set`,
 		},
 	} {
 		found := false
@@ -1217,6 +1247,8 @@ var (
 		"arn:aws:iam::123456789012:user/alice",
 		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_RudolphAdmin_*",
 		"arn:aws:iam::123456789012:role/rudolph-web*",
+		// Review round 3: a prefix after a path is still accepted.
+		"arn:aws:iam::123456789012:role/ops/rudolph-*",
 		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/ap-southeast-2/AWSReservedSSO_RudolphOperators_*",
 		"arn:aws-us-gov:iam::123456789012:role/rudolph-web",
 	}
@@ -1233,6 +1265,9 @@ var (
 		// read-only ones included.
 		"arn:aws:iam::123456789012:role/aws-reserved/*",
 		"arn:aws:iam::123456789012:role/aws-reserved/sso.amazonaws.com/*",
+		// Review round 3: a whole-segment wildcard mid-path, and a single-character one at the end.
+		"arn:aws:iam::123456789012:role/aws-reserved/*/x",
+		"arn:aws:iam::123456789012:role/x/?",
 		"arn:aws:iam::123456789012:role/rudolph-web,arn:aws:iam::123456789012:role/*",
 	}
 )
@@ -1248,6 +1283,31 @@ func TestDataExposure_StoreKeyUsersAreIAMPrincipalARNs(t *testing.T) {
 	v := vs[0]
 	if a, ok := v.Body.Attributes["nullable"]; !ok || strings.TrimSpace(sourceOf(t, parent, a.Expr)) != "false" {
 		t.Errorf("variable %s: want nullable = false, so null means the empty default rather than an error in the key policy", storeKeyUsersVar)
+	}
+	// Review round 3: the validation refuses only a wildcard that is a whole path segment. The comment beside it must
+	// not claim more, and must say a prefix wildcard (AWSReservedSSO_*, role/a*) is accepted and can be as broad.
+	var comments []string
+	r := v.Range()
+	var raw string
+	for _, f := range parent {
+		if f.path == r.Filename {
+			raw = string(f.src[r.Start.Byte:r.End.Byte])
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if c, ok := strings.CutPrefix(strings.TrimSpace(line), "#"); ok {
+			comments = append(comments, strings.TrimSpace(c))
+		}
+	}
+	comment := strings.Join(comments, " ")
+	if m := regexp.MustCompile(`(?i)mid-?path \*[^.;]*\brefused`).FindString(comment); m != "" {
+		t.Errorf("variable %s: the comment says %q, but only a wildcard forming a whole path segment is refused; "+
+			"role/a* or AWSReservedSSO_* passes and, as ArnLike's * matches /, can be as broad", storeKeyUsersVar, m)
+	}
+	if !regexp.MustCompile(`(?i)prefix`).MatchString(comment) || !regexp.MustCompile(`(?i)\bstill\b|too broad|as broad`).MatchString(comment) {
+		t.Errorf("variable %s: the comment by the validation does not say that a prefix wildcard (role/a*, AWSReservedSSO_*) is "+
+			"accepted and still as broad as the path it covers (want \"prefix\" and \"still\", \"too broad\" or \"as broad\"):\n%s",
+			storeKeyUsersVar, comment)
 	}
 	if len(nested(v, "validation")) == 0 {
 		t.Errorf("variable %s has no validation: an sts assumed-role ARN or a name never matches aws:PrincipalArn, and role/* or * "+
@@ -1490,10 +1550,115 @@ func TestDataExposure_DeployDocsMatchTheLifecycleAndProducerKey(t *testing.T) {
 		t.Errorf("deploy.md step 23: no line says the Firehose bucket keeps events 180 days in total, with the noncurrent version "+
 			"kept 1 day within it (want one matching %q)", total)
 	}
+	// Review round 3: the 180 days are a floor; S3 rounds up to midnight UTC and removes expired objects asynchronously.
+	if timing := []string{`180`, firehoseLifecycleTiming}; !lineWith(step, timing...) {
+		t.Errorf("deploy.md step 23: no line with the 180 days says S3 rounds the expiry up to the next midnight UTC or removes "+
+			"expired objects asynchronously, so events stay somewhat longer than 180 days (want one matching %q)", timing)
+	}
 	for _, line := range strings.Split(doc, "\n") {
 		if lineWith(line, `\bchecks?\b`, `\bevery\b`, `PutRecordBatch`) {
 			t.Errorf("deploy.md states as fact that Firehose checks the producer's key permissions on every PutRecordBatch, "+
 				"which AWS does not document:\n%s", line)
 		}
 	}
+}
+
+// storeKeyOpenClaim matches a statement that the store key's policy lets every principal of the account use it, true
+// only while store_kms_key_user_arns is empty.
+var storeKeyOpenClaim = regexp.MustCompile(`(?i)key('s)? policy[^.]*\b(lets|allows)\b[^.]*(account's principals|principals? (of|in) the account|(every|any) principal)`)
+
+// S8, review round 3: comments and docs that say the store key's policy lets the account's principals use it through
+// DynamoDB, so a reader such as rudolph-web or the CLI needs no KMS permission, stop being true once
+// store_kms_key_user_arns is set. Each such comment block or Markdown line must name the variable. deploy.md is left
+// out: its upgrade steps describe earlier releases as they were.
+func TestDataExposure_StoreKeyClaimsNameTheList(t *testing.T) {
+	type passage struct{ where, text string }
+	var passages []passage
+
+	// Terraform: each run of consecutive comment lines is one passage.
+	err := filepath.WalkDir(santaAPI, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".tf" {
+			return err
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var block []string
+		start := 0
+		flush := func() {
+			if len(block) > 0 {
+				passages = append(passages, passage{path + ":" + strconv.Itoa(start), strings.Join(block, " ")})
+			}
+			block = nil
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			c, ok := strings.CutPrefix(trimmed, "#")
+			if !ok {
+				c, ok = strings.CutPrefix(trimmed, "//")
+			}
+			if !ok {
+				flush()
+				continue
+			}
+			if len(block) == 0 {
+				start = i + 1
+			}
+			block = append(block, strings.TrimSpace(c))
+		}
+		flush()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Markdown: each line (a paragraph, list item or table row) is one passage.
+	docs, err := filepath.Glob("../docs/*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range docs {
+		if filepath.Base(path) == "deploy.md" {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			passages = append(passages, passage{path + ":" + strconv.Itoa(i+1), line})
+		}
+	}
+
+	for _, p := range passages {
+		if m := storeKeyOpenClaim.FindString(p.text); m != "" && !strings.Contains(p.text, storeKeyUsersVar) {
+			t.Errorf("%s says %q without naming %s: once that is set, only Rudolph's Lambdas and the listed ARNs may use the store key "+
+				"through DynamoDB", p.where, m, storeKeyUsersVar)
+		}
+	}
+
+	// The outputs rudolph-web is configured from: the comment above them must say the list has to include its role.
+	parent := filepath.Join(santaAPI, "_outputs.tf")
+	src, err := os.ReadFile(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(src), "\n")
+	for i, line := range lines {
+		if !regexp.MustCompile(`^output "events_dynamodb_table_name"`).MatchString(line) {
+			continue
+		}
+		var comment []string
+		for j := i - 1; j >= 0 && strings.HasPrefix(strings.TrimSpace(lines[j]), "#"); j-- {
+			comment = append([]string{lines[j]}, comment...)
+		}
+		if !strings.Contains(strings.Join(comment, "\n"), storeKeyUsersVar) {
+			t.Errorf("%s: the comment above output \"events_dynamodb_table_name\" does not mention %s; with it set, the web view's "+
+				"role must be listed to read the events table through the store key:\n%s", parent, storeKeyUsersVar, strings.Join(comment, "\n"))
+		}
+		return
+	}
+	t.Errorf("%s has no output \"events_dynamodb_table_name\"", parent)
 }
