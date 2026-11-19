@@ -168,8 +168,8 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 	if !tf.IsGlobal {
 		printTemporaryMode(writer, config, time.Now())
 	}
-	fmt.Fprintf(writer, "BlockedPathRegex:\t %q%s\n", config.BlockedPathRegex, origin("BlockedPathRegex"))
-	fmt.Fprintf(writer, "AllowedPathRegex:\t %q%s\n", config.AllowedPathRegex, origin("AllowedPathRegex"))
+	fmt.Fprintf(writer, "BlockedPathRegex:\t %s%s\n", quoted(config.BlockedPathRegex), origin("BlockedPathRegex"))
+	fmt.Fprintf(writer, "AllowedPathRegex:\t %s%s\n", quoted(config.AllowedPathRegex), origin("AllowedPathRegex"))
 	fmt.Fprintf(writer, "BatchSize:\t %d%s\n", config.BatchSize, origin("BatchSize"))
 	fmt.Fprintf(writer, "BundlesEnabled:\t %t%s\n", config.EnableBundles, origin("EnableBundles"))
 	fmt.Fprintf(writer, "EnabledTransitiveRules:\t %t%s\n", config.EnabledTransitiveRules, origin("EnableTransitiveRules"))
@@ -180,7 +180,7 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 		fmt.Fprintln(writer, "CleanSync:\t", config.CleanSync)
 	}
 	fmt.Fprintf(writer, "FullSyncInterval:\t %d%s\n", config.FullSyncInterval, origin("FullSyncInterval"))
-	fmt.Fprintf(writer, "UploadLogUrl:\t %q%s\n", config.UploadLogsURL, origin("UploadLogsUrl"))
+	fmt.Fprintf(writer, "UploadLogUrl:\t %s%s\n", quoted(config.UploadLogsURL), origin("UploadLogsUrl"))
 	printSantaSettings(writer, config, origin)
 	writer.Flush()
 

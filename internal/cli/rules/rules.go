@@ -254,7 +254,8 @@ func renderRule(item modelrules.SantaRule) string {
 
 	rendered := fmt.Sprintf("Rule %v %v (%s)", verb, predicate, termsafe.String(item.Identifier))
 	if item.CELExpr != "" {
-		rendered = fmt.Sprintf("%s with CEL expression %q", rendered, item.CELExpr)
+		// %q leaves variation selectors and blank-looking characters raw, and an imported expression may hide text in them
+		rendered = fmt.Sprintf("%s with CEL expression %s", rendered, termsafe.String(fmt.Sprintf("%q", item.CELExpr)))
 	}
 	return rendered
 }

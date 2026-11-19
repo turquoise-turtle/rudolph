@@ -250,7 +250,8 @@ func (p *forgetPlan) apply(client writer) (changed bool, err error) {
 	timeProvider := clock.ConcreteTimeProvider{}
 	for _, group := range p.assigned {
 		if err := groups.RemoveAssigned(timeProvider, client, p.machineID, group); err != nil {
-			return changed, fmt.Errorf("group %q: %w", group, err)
+			// A group registered before its name became refusable may hold characters %q leaves raw
+			return changed, termsafe.Error(fmt.Errorf("group %q: %w", group, err))
 		}
 		changed = true
 	}
