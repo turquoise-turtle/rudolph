@@ -114,19 +114,21 @@ func (s *keySurvey) object(i int) int {
 	s.keys[s.depth] = keys
 	if hasCamelCase {
 		s.camelCase = true
-		if hasCollision(keys) {
+		if snakeKeys := collidingSnakeKeys(keys); snakeKeys != nil {
 			if s.collisions == nil {
 				s.collisions = map[int]map[string]bool{}
 			}
-			s.collisions[index] = snakeCaseKeys(keys)
+			s.collisions[index] = snakeKeys
 		}
 	}
 	return i + 1
 }
 
-// hasCollision reports whether a camelCase key and a snake_case key in one object name the same field. It is linear in
-// the number of keys: comparing every pair let one object of a few hundred KB of keys hold a handler for seconds.
-func hasCollision(keys [][]byte) bool {
+// collidingSnakeKeys returns the snake_case keys of an object in which a camelCase key and a snake_case key name the
+// same field, and nil when no field is spelled both ways. It is linear in the number of keys: comparing every pair let
+// one object of a few hundred KB of keys hold a handler for seconds. The map it builds to find the collision is the one
+// the second pass needs, so it is returned rather than built again.
+func collidingSnakeKeys(keys [][]byte) map[string]bool {
 	var snakeKeys map[string]bool
 	for _, key := range keys {
 		if !hasUpperASCII(key) {
@@ -137,28 +139,18 @@ func hasCollision(keys [][]byte) bool {
 		}
 	}
 	if snakeKeys == nil {
-		return false
+		return nil
 	}
 	var spelling []byte
 	for _, key := range keys {
 		if hasUpperASCII(key) {
 			spelling = appendSnakeCase(spelling[:0], key)
 			if snakeKeys[string(spelling)] {
-				return true
+				return snakeKeys
 			}
 		}
 	}
-	return false
-}
-
-func snakeCaseKeys(keys [][]byte) map[string]bool {
-	snakeKeys := map[string]bool{}
-	for _, key := range keys {
-		if !hasUpperASCII(key) {
-			snakeKeys[string(key)] = true
-		}
-	}
-	return snakeKeys
+	return nil
 }
 
 // keyRewriter is the second pass: it copies the document, rewriting keys and dropping the camelCase member
