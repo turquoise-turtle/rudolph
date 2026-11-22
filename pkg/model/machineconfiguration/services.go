@@ -8,9 +8,9 @@ import (
 // This service exposes all machineconfiguration access methods
 type MachineConfigurationService interface {
 	GetIntendedConfig(machineID string) (intendedConfig MachineConfiguration, err error)
-	// GetIntendedConfigWithOrigin is GetIntendedConfig, also reporting whether the client mode is set by the machine's
-	// own config row (OwnClientMode), so that a group's client mode does not replace it
-	GetIntendedConfigWithOrigin(machineID string) (intendedConfig MachineConfiguration, ownClientMode bool, err error)
+	// GetIntendedConfigWithOrigin is GetIntendedConfig, also reporting which settings a group can decide are set by the
+	// machine's own config row (OwnClientMode, OwnFileAccessOverride), so that a group's value does not replace them
+	GetIntendedConfigWithOrigin(machineID string) (intendedConfig MachineConfiguration, origin Origin, err error)
 	GetIntendedGlobalConfig() (intendedConfig MachineConfiguration, isDefaultConfig bool, err error)
 	SetGlobalConfig(config MachineConfiguration, opts ...GlobalConfigOption) error
 	SetMachineConfig(machineID string, config MachineConfiguration) error
@@ -66,7 +66,7 @@ func (s ConcreteMachineConfigurationService) GetIntendedConfig(machineID string)
 	return s.fetcher.getIntendedConfig(machineID)
 }
 
-func (s ConcreteMachineConfigurationService) GetIntendedConfigWithOrigin(machineID string) (MachineConfiguration, bool, error) {
+func (s ConcreteMachineConfigurationService) GetIntendedConfigWithOrigin(machineID string) (MachineConfiguration, Origin, error) {
 	return s.fetcher.getIntendedConfigWithOrigin(machineID)
 }
 

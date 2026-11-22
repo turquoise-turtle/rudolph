@@ -70,11 +70,11 @@ func (f ConcreteConfigurationFetcher) getIntendedConfig(machineID string) (inten
 	return
 }
 
-// getIntendedConfigWithOrigin is getIntendedConfig, also reporting whether the client mode comes from the machine's
-// own config row (see OwnClientMode)
-func (f ConcreteConfigurationFetcher) getIntendedConfigWithOrigin(machineID string) (MachineConfiguration, bool, error) {
+// getIntendedConfigWithOrigin is getIntendedConfig, also reporting which settings a group can decide come from the
+// machine's own config row (see Origin)
+func (f ConcreteConfigurationFetcher) getIntendedConfigWithOrigin(machineID string) (MachineConfiguration, Origin, error) {
 	config, machineItem, err := f.getIntendedConfigAndItem(machineID)
-	return config, OwnClientMode(machineItem), err
+	return config, originOf(machineItem), err
 }
 
 // getIntendedConfigAndItem is getIntendedConfig, also returning the machine's stored config row (nil without one)

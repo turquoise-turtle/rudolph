@@ -102,8 +102,8 @@ rudolph config update [-m <machine-id>|--global] [-c <client-mode>] [<setting fl
 rudolph config update -m <machine-id> -c <mode> (--for <duration>|--until <time>)
 rudolph config update -m <machine-id> --end-temporary-mode
 rudolph config get (--group <group>|--ungrouped)
-rudolph config update (--group <group>|--ungrouped) -c <client-mode> [--confirm-group-lockdown]
-rudolph config update (--group <group>|--ungrouped) --inherit client-mode
+rudolph config update (--group <group>|--ungrouped) [-c <client-mode> [--confirm-group-lockdown]] [--override-file-access-action <none|audit_only|disable>]
+rudolph config update (--group <group>|--ungrouped) [--inherit client-mode] [--inherit override-file-access-action]
 ```
 
 - `get` shows the global configuration, or the one a machine gets; for a machine, each setting is marked `(machine)` when the machine gets it from its own configuration and `(inherited)` when it follows the global one (a stored value that cannot be read is inherited, except remount flags, which are then not sent at all).
@@ -111,7 +111,8 @@ rudolph config update (--group <group>|--ungrouped) --inherit client-mode
 - `update` changes only the settings given. Setting flags (both commands): `--allowed-paths`/`-a`, `--blocked-paths`/`-b` (repeatable regexes), `--batch-size`, `--bundles`, `--transitive-rules`, `--full-sync-interval`, `--upload-logs`, `--enable-all-event-upload`, `--disable-unknown-event-upload`, `--override-file-access-action`, `--block-usb-mount`, `--remount-usb-mode`, `--event-detail-url`, `--event-detail-text`.
 - `--inherit <setting>` makes a machine follow the global value of a setting again; `--clean-sync` requests one clean sync of a machine; `--for`/`--until`/`--end-temporary-mode` manage a temporary client mode.
 - A global client mode that blocks unknown executions needs `--confirm-global-lockdown` as well.
-- `--group <group>` and `--ungrouped` set or remove (`--inherit client-mode`) the client mode of a device group; a group has no other setting. `lockdown` and `standalone` need `--confirm-group-lockdown`. A Mac's temporary or own client mode beats its groups', the strictest of its groups' beats the global one, and `get --machine` marks a mode from a group `(group <name>)`. See [groups.md](groups.md#client-mode-per-group).
+- `--group <group>` and `--ungrouped` set or remove (`--inherit client-mode`) the client mode of a device group; `lockdown` and `standalone` need `--confirm-group-lockdown`. A Mac's temporary or own client mode beats its groups', the strictest of its groups' beats the global one, and `get --machine` marks a mode from a group `(group <name>)`. See [groups.md](groups.md#client-mode-per-group).
+- With `--group <group>` and `--ungrouped`, `--override-file-access-action` sets a device group's file access override and `--inherit override-file-access-action` removes it, in the same update as the client mode or on its own; a group has no other setting. This is the safety valve when moving a File Access Authorization rule to enforcement: `config update --group <group> --override-file-access-action audit_only` puts that group's Macs back to audit-only at their next sync. A Mac's own override beats its groups', the **most relaxed** of its groups' (`DISABLE`, then `AUDIT_ONLY`, then `NONE`) beats the global one, and `get --machine` marks an override from a group `(group <name>)`. See [groups.md](groups.md#file-access-override-per-group).
 
 What each setting does, and how machine configurations inherit from the global one, is in [sync.md](sync.md) and [lockdown.md](lockdown.md).
 
@@ -130,7 +131,7 @@ rudolph group members <group>
 rudolph group members --rebuild [--yes|--dry-run]
 ```
 
-`delete` asks for confirmation. `list` and `get` show each group's client mode (set with `config update --group`). `members` lists the Macs in a registered group by machine ID, each marked `assigned`, `reported` or `assigned, reported`; Macs that only report a group created with `--no-reported` are left out, and `rudolph:ungrouped` cannot be listed. `members --rebuild` (no group) rebuilds the member rows of every group from every Mac's groups with one Scan of the table, shows how many rows it writes and deletes, and asks for confirmation; it writes nothing when every row is already right. Run it once after upgrading to a version with group members. See [groups.md](groups.md#listing-a-groups-macs).
+`delete` asks for confirmation. `list` and `get` show each group's client mode and file access override (set with `config update --group`; `unreadable` for a stored value that cannot be decoded). `members` lists the Macs in a registered group by machine ID, each marked `assigned`, `reported` or `assigned, reported`; Macs that only report a group created with `--no-reported` are left out, and `rudolph:ungrouped` cannot be listed. `members --rebuild` (no group) rebuilds the member rows of every group from every Mac's groups with one Scan of the table, shows how many rows it writes and deletes, and asks for confirmation; it writes nothing when every row is already right. Run it once after upgrading to a version with group members. See [groups.md](groups.md#listing-a-groups-macs).
 
 ## Finding machines
 

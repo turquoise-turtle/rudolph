@@ -23,9 +23,9 @@ func init() {
 		Use:   "get [-m <machine-id>|--global|--group <group>|--ungrouped]",
 		Short: "Show the global configuration, or the configuration a machine gets (this Mac without --machine)",
 		Long: `Show the global configuration, or the configuration a machine gets: its own settings, marked (machine), and
-the global value of every other setting, marked (inherited). A client mode from the machine's device groups is marked
-(group <group>). Without --global or --machine, this Mac's configuration is shown. --group <group> and --ungrouped show
-a device group's client mode.`,
+the global value of every other setting, marked (inherited). A client mode or file access override from the machine's
+device groups is marked (group <group>). Without --global or --machine, this Mac's configuration is shown. --group
+<group> and --ungrouped show a device group's client mode and file access override.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if tf.IsGroup() {
@@ -89,11 +89,12 @@ func machineOrigin(stored map[string]awstypes.AttributeValue) settingOrigin {
 	}
 }
 
-// withClientModeOrigin marks the client mode with clientModeOrigin, and every other setting as origin does
-func withClientModeOrigin(origin settingOrigin, clientModeOrigin string) settingOrigin {
+// withGroupOrigin marks a setting (named by its attribute) as coming from a group, and every other setting as origin
+// does
+func withGroupOrigin(origin settingOrigin, setting, group string) settingOrigin {
 	return func(attribute string) string {
-		if attribute == "ClientMode" {
-			return clientModeOrigin
+		if attribute == setting {
+			return " (group " + termsafe.String(group) + ")"
 		}
 		return origin(attribute)
 	}
@@ -139,15 +140,20 @@ func getConfig(service machineconfiguration.MachineConfigurationService, client 
 			return
 		}
 		origin = machineOrigin(stored.Item)
-		if !machineconfiguration.OwnClientMode(stored.Item) {
-			mode, group, ok, eerr := groupClientModeOrigin(client, machineID)
+		ownClientMode, ownFileAccess := machineconfiguration.OwnClientMode(stored.Item), machineconfiguration.OwnFileAccessOverride(stored.Item)
+		if !ownClientMode || !ownFileAccess {
+			settings, eerr := machineGroupSettings(client, machineID)
 			if eerr != nil {
 				err = fmt.Errorf("failed to read the machine's groups: %w", eerr)
 				return
 			}
-			if ok {
-				config = machineconfiguration.ApplyGroupClientMode(config, false, mode)
-				origin = withClientModeOrigin(origin, " (group "+termsafe.String(group)+")")
+			if settings.hasMode && !ownClientMode {
+				config = machineconfiguration.ApplyGroupClientMode(config, false, settings.mode)
+				origin = withGroupOrigin(origin, "ClientMode", settings.modeGroup)
+			}
+			if settings.hasFileAccess && !ownFileAccess {
+				config = machineconfiguration.ApplyGroupFileAccessOverride(config, false, settings.fileAccess)
+				origin = withGroupOrigin(origin, "OverrideFileAccessAction", settings.fileAccessGroup)
 			}
 		}
 	}

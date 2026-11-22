@@ -32,8 +32,9 @@ type stateTrackingService interface {
 	saveReportedGroups(machineID string, groups []string, prevSyncState *syncstate.SyncStateRow) (reportedGroupsRecord, error)
 	saveSyncState(machineID string, requestCleanSync bool, lastCleanSync string, batchSize int, feedSyncCursor string, rulesHash string, prevSyncState *syncstate.SyncStateRow, configCleanSync *syncstate.ConfigCleanSyncProgress, reportedGroups reportedGroupsRecord, policies clientPolicies) error
 	getFeedSyncStateCursor(syncState *syncstate.SyncStateRow) (string, bool)
-	// groupClientMode returns the client mode of the Mac's groups, with the groups it reports in this preflight
-	groupClientMode(machineID string, reported []string) (types.ClientMode, bool, error)
+	// groupSettings returns the client mode and file access override of the Mac's groups, as wanted, with the groups
+	// it reports in this preflight
+	groupSettings(machineID string, reported []string, wanted groupSettingsWanted) (groupSettingsResult, error)
 }
 
 type concreteStateTrackingService struct {
@@ -147,18 +148,52 @@ func (c concreteStateTrackingService) saveReportedMembership(machineID string, r
 	return basis
 }
 
-// groupClientMode returns the strictest client mode among the Mac's groups (groups.ReportedMachineClientMode), from the
-// cached registry. Without a group client mode in the registry it reads nothing more.
-func (c concreteStateTrackingService) groupClientMode(machineID string, reported []string) (types.ClientMode, bool, error) {
+// groupSettingsWanted says which settings preflight takes from the Mac's groups: those the Mac does not set itself
+type groupSettingsWanted struct {
+	clientMode bool
+	fileAccess bool
+}
+
+// groupSettingsResult holds the settings of the Mac's groups; a has* field is false when none of its groups sets it
+type groupSettingsResult struct {
+	clientMode    types.ClientMode
+	hasClientMode bool
+	fileAccess    types.FileAccessAction
+	hasFileAccess bool
+}
+
+// groupSettings returns the strictest client mode and the most relaxed file access override among the Mac's groups
+// (groups.StrictestClientMode, groups.MostRelaxedFileAccessAction), from the cached registry. The Mac's groups item is
+// read at most once for both, and only when some registered group sets a wanted setting, so a fleet without group
+// settings reads nothing more.
+func (c concreteStateTrackingService) groupSettings(machineID string, reported []string, wanted groupSettingsWanted) (groupSettingsResult, error) {
+	var result groupSettingsResult
 	if c.groupsCache == nil {
-		return 0, false, nil
+		return result, nil
 	}
 	registry, err := c.groupsCache.Registry(c.getter)
 	if err != nil {
-		return 0, false, err
+		return result, err
 	}
-	mode, _, ok, err := groups.ReportedMachineClientMode(c.getter, registry, machineID, reported)
-	return mode, ok, err
+	wanted.clientMode = wanted.clientMode && registry.HasClientModes()
+	wanted.fileAccess = wanted.fileAccess && registry.HasFileAccessOverrides()
+	if !wanted.clientMode && !wanted.fileAccess {
+		return result, nil
+	}
+	effective, err := groups.ReportedMachineGroups(c.getter, registry, machineID, reported)
+	if err != nil {
+		return result, err
+	}
+	if wanted.clientMode {
+		result.clientMode, _, result.hasClientMode = groups.StrictestClientMode(registry, effective)
+	}
+	if wanted.fileAccess {
+		for _, name := range groups.UnreadableFileAccessOverrides(registry, effective) {
+			log.Printf("  ignoring the OverrideFileAccessAction of group %q, which is not NONE, AUDIT_ONLY or DISABLE", name)
+		}
+		result.fileAccess, _, result.hasFileAccess = groups.MostRelaxedFileAccessAction(registry, effective)
+	}
+	return result, nil
 }
 
 // saveReportedGroupsItem writes the reported groups item (see saveReportedGroups)

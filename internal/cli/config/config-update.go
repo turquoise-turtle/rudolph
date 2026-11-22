@@ -53,13 +53,16 @@ is) again at its first sync after the end. --end-temporary-mode ends it early. A
 asks for confirmation; Santa blocks unknown binaries in them.
 
 --group <group> or --ungrouped (the Macs in no group) sets the client mode of a device group: -c <mode>, or
---inherit client-mode to remove it. A group has no other setting. A Mac gets its temporary client mode, else its own,
-else the strictest client mode of its groups, else the global one. Lockdown and standalone need
---confirm-group-lockdown.`,
+--inherit client-mode to remove it. A Mac gets its temporary client mode, else its own, else the strictest client mode
+of its groups, else the global one. Lockdown and standalone need --confirm-group-lockdown.
+--override-file-access-action <none|audit_only|disable> sets a group's file access override, and --inherit
+override-file-access-action removes it; both settings can be changed in one update. A Mac gets its own override, else
+the most relaxed override of its groups, else the global one: putting a group back to audit_only (or disable) backs
+its Macs out of FAA enforcement at once. A group has no other setting.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if tf.IsGroup() {
-				request, err := parseGroupClientModeRequest(cmd, &tf, clientModeArg, inheritArgs, confirmGroupLockdown)
+				request, err := parseGroupConfigRequest(cmd, &tf, clientModeArg, inheritArgs, confirmGroupLockdown)
 				if err != nil {
 					return err
 				}
@@ -67,7 +70,7 @@ else the strictest client mode of its groups, else the global one. Lockdown and 
 				if err != nil {
 					return err
 				}
-				return updateGroupClientMode(client, request, flags.ApprovalOf(cmd))
+				return updateGroupConfig(client, request, flags.ApprovalOf(cmd))
 			}
 			if cmd.Flags().Changed(flagConfirmGroupLockdown) {
 				return fmt.Errorf("--%s is only for --group or --ungrouped", flagConfirmGroupLockdown)
@@ -171,7 +174,7 @@ else the strictest client mode of its groups, else the global one. Lockdown and 
 	santaSettingsArgs.addFlags(configUpdateClientModeCmd)
 
 	configUpdateClientModeCmd.Flags().BoolVar(&cleanSyncArg, flagCleanSync, false, "Makes the next sync of the machine a clean sync, once, and changes no other setting. Only for a machine (--machine); refused with --global. --clean-sync=false cancels a requested clean sync (with --global, it removes a flag stored by an earlier version, which is ignored)")
-	configUpdateClientModeCmd.Flags().StringArrayVar(&inheritArgs, flagInherit, nil, "Removes a setting from the machine-specific configuration, so that the machine follows the global value of it again. Repeat for several settings. Only for a machine (--machine). Settings: "+strings.Join(inheritableSettingFlags(), ", "))
+	configUpdateClientModeCmd.Flags().StringArrayVar(&inheritArgs, flagInherit, nil, "Removes a setting from the machine-specific configuration, so that the machine follows the global value of it again. Repeat for several settings. Only for a machine (--machine), or for a group (--group, --ungrouped) client-mode and override-file-access-action. Settings: "+strings.Join(inheritableSettingFlags(), ", "))
 
 	ConfigCmd.AddCommand(configUpdateClientModeCmd)
 }

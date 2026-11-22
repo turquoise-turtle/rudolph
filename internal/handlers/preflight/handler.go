@@ -87,7 +87,7 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	}
 
 	// Retrieve the intended configuration for the machine
-	machineConfiguration, ownClientMode, err := h.machineConfigurationService.GetIntendedConfigWithOrigin(machineID)
+	machineConfiguration, origin, err := h.machineConfigurationService.GetIntendedConfigWithOrigin(machineID)
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the machine configuration: %w", err), response.ErrInternalServerErrorResponse)
 	}
@@ -109,17 +109,23 @@ func (h *PostPreflightHandler) handlePreflight(machineID string, preflightReques
 	}
 
 	// The client mode: the temporary one while it lasts, the machine's own, its groups' strictest, then the global one.
-	// The groups are only looked at when they could decide it.
+	// The file access override, independently: the machine's own, its groups' most relaxed, then the global one. The
+	// groups are only looked at for a setting they could decide.
 	now := h.timeProvider.Now()
-	if _, temporary := machineConfiguration.TemporaryClientModeAt(now); !temporary && !ownClientMode {
-		groupMode, ok, err := h.stateTrackingService.groupClientMode(machineID, preflightRequest.PrimaryUserGroups)
+	_, temporary := machineConfiguration.TemporaryClientModeAt(now)
+	wanted := groupSettingsWanted{clientMode: !temporary && !origin.ClientMode, fileAccess: !origin.FileAccessAction}
+	if wanted.clientMode || wanted.fileAccess {
+		settings, err := h.stateTrackingService.groupSettings(machineID, preflightRequest.PrimaryUserGroups, wanted)
 		if err != nil {
-			// Failing the sync keeps the mode Santa has; sending the global one could drop a Mac out of its group's
-			// lockdown until the next sync
-			return response.InternalServerError(fmt.Errorf("resolving the client mode of the machine's groups: %w", err), response.ErrInternalServerErrorResponse)
+			// Failing the sync keeps the mode and override Santa has; sending the global ones could drop a Mac out of
+			// its group's lockdown, or back into the enforcement its group was taken out of, until the next sync
+			return response.InternalServerError(fmt.Errorf("resolving the settings of the machine's groups: %w", err), response.ErrInternalServerErrorResponse)
 		}
-		if ok {
-			machineConfiguration = machineconfiguration.ApplyGroupClientMode(machineConfiguration, false, groupMode)
+		if settings.hasClientMode {
+			machineConfiguration = machineconfiguration.ApplyGroupClientMode(machineConfiguration, false, settings.clientMode)
+		}
+		if settings.hasFileAccess {
+			machineConfiguration = machineconfiguration.ApplyGroupFileAccessOverride(machineConfiguration, false, settings.fileAccess)
 		}
 	}
 	// A temporary client mode applies until it expires; the machine config is read on every preflight, so an expired

@@ -20,22 +20,30 @@ import (
 
 const flagConfirmGroupLockdown = "confirm-group-lockdown"
 
-// groupUpdateFlags are the flags `config update --group` accepts: a group has a client mode and no other setting
+// groupUpdateFlags are the flags `config update --group` accepts: a group has a client mode and a file access override,
+// and no other setting
 var groupUpdateFlags = map[string]bool{
-	"group": true, "ungrouped": true, "client-mode": true, flagConfirmGroupLockdown: true, flagInherit: true,
-	"yes": true, "dry-run": true, "region": true, "dynamodb_table": true, "help": true,
+	"group": true, "ungrouped": true, "client-mode": true, flagConfirmGroupLockdown: true, flagOverrideFileAccessAction: true,
+	flagInherit: true, "yes": true, "dry-run": true, "region": true, "dynamodb_table": true, "help": true,
 }
 
-// groupClientModeRequest is a validated `config update --group|--ungrouped`: mode is nil to remove the group's mode
-type groupClientModeRequest struct {
-	group string
-	mode  *types.ClientMode
+const groupSettingsText = "a device group has only a client mode (-c) and a file access override (--" + flagOverrideFileAccessAction + ")"
+
+// groupConfigRequest is a validated `config update --group|--ungrouped`
+type groupConfigRequest struct {
+	group  string
+	change groups.SettingsChange
 }
 
-// parseGroupClientModeRequest checks a config update for a group before connecting to the sync server
-func parseGroupClientModeRequest(cmd *cobra.Command, tf *flags.TargetFlags, clientMode optionalClientMode, inherit []string, confirmGroupLockdown bool) (groupClientModeRequest, error) {
+// removesOnly reports whether the request only removes settings
+func (r groupConfigRequest) removesOnly() bool {
+	return r.change.ClientMode == nil && r.change.FileAccessAction == nil
+}
+
+// parseGroupConfigRequest checks a config update for a group before connecting to the sync server
+func parseGroupConfigRequest(cmd *cobra.Command, tf *flags.TargetFlags, clientMode optionalClientMode, inherit []string, confirmGroupLockdown bool) (groupConfigRequest, error) {
 	if err := tf.RequireExplicitTarget(); err != nil {
-		return groupClientModeRequest{}, err
+		return groupConfigRequest{}, err
 	}
 	var refused []string
 	// VisitAll and Changed rather than Visit: Visit also lists flags given in an earlier execution of the same
@@ -46,42 +54,59 @@ func parseGroupClientModeRequest(cmd *cobra.Command, tf *flags.TargetFlags, clie
 		}
 	})
 	if len(refused) > 0 {
-		return groupClientModeRequest{}, fmt.Errorf("a device group has only a client mode (-c, or --%s client-mode); %v cannot be set for a group", flagInherit, refused)
+		return groupConfigRequest{}, fmt.Errorf("%s; %v cannot be set for a group", groupSettingsText, refused)
 	}
-	request := groupClientModeRequest{group: tf.Group}
+	request := groupConfigRequest{group: tf.Group}
 	settings, err := inheritedSettings(inherit)
 	if err != nil {
 		return request, err
 	}
 	for _, setting := range settings {
-		if setting != "ClientMode" {
-			return request, fmt.Errorf("a device group has only a client mode; --%s takes only client-mode for a group", flagInherit)
+		switch setting {
+		case "ClientMode":
+			request.change.RemoveClientMode = true
+		case "OverrideFileAccessAction":
+			request.change.RemoveFileAccessAction = true
+		default:
+			return request, fmt.Errorf("%s; --%s takes only client-mode or %s for a group", groupSettingsText, flagInherit, flagOverrideFileAccessAction)
 		}
 	}
-	switch {
-	case clientMode.set && len(settings) > 0:
-		return request, errors.New("the client mode cannot be both set and inherited")
-	case clientMode.set:
+	if clientMode.set {
+		if request.change.RemoveClientMode {
+			return request, errors.New("the client mode cannot be both set and inherited")
+		}
 		mode := clientMode.mode.AsClientMode()
-		request.mode = &mode
+		request.change.ClientMode = &mode
 		if machineconfiguration.RequiresGlobalLockdownConfirmation(mode) && !confirmGroupLockdown {
 			return request, fmt.Errorf("%s blocks unknown executions on every Mac of the group; pass --%s to confirm", clientModeName(mode), flagConfirmGroupLockdown)
 		}
-	case len(settings) == 0:
-		return request, fmt.Errorf("no client mode to update was given: pass -c <mode>, or --%s client-mode to remove the group's", flagInherit)
+	}
+	if cmd.Flags().Changed(flagOverrideFileAccessAction) {
+		if request.change.RemoveFileAccessAction {
+			return request, errors.New("the file access override cannot be both set and inherited")
+		}
+		value, _ := cmd.Flags().GetString(flagOverrideFileAccessAction)
+		action, err := types.ParseFileAccessAction(value)
+		if err != nil {
+			return request, fmt.Errorf("--%s: %w", flagOverrideFileAccessAction, err)
+		}
+		request.change.FileAccessAction = &action
+	}
+	if request.removesOnly() && !request.change.RemoveClientMode && !request.change.RemoveFileAccessAction {
+		return request, fmt.Errorf("no group setting to update was given: pass -c <mode> or --%s <action>, or --%s client-mode or --%s %s to remove the group's", flagOverrideFileAccessAction, flagInherit, flagInherit, flagOverrideFileAccessAction)
 	}
 	return request, nil
 }
 
-// groupConfigWriter is what changing a group's client mode needs
+// groupConfigWriter is what changing a group's settings needs
 type groupConfigWriter interface {
 	groups.RegistryWriter
 	audit.Writer
 }
 
-// updateGroupClientMode sets or removes a group's client mode. The reserved group of Macs in no group is registered
-// when its mode is first set, as when it gets its first rule.
-func updateGroupClientMode(client groupConfigWriter, request groupClientModeRequest, approval flags.Approval) error {
+// updateGroupConfig sets or removes a group's client mode and file access override, in one update. The reserved group
+// of Macs in no group is registered when one of its settings is first set, as when it gets its first rule.
+func updateGroupConfig(client groupConfigWriter, request groupConfigRequest, approval flags.Approval) error {
 	registry, err := groups.GetRegistry(client, true)
 	if err != nil {
 		return err
@@ -90,25 +115,44 @@ func updateGroupClientMode(client groupConfigWriter, request groupClientModeRequ
 	if !registered && request.group != groups.Ungrouped {
 		return fmt.Errorf("group %q: %w; create it first with rudolph group create", request.group, groups.ErrGroupNotFound)
 	}
-	if !registered && request.mode == nil {
-		return errors.New("the Macs in no group have no client mode of their own to remove")
+	if !registered && request.removesOnly() {
+		return errors.New("the Macs in no group have no settings of their own to remove")
 	}
+	change := request.change
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 0, '\t', tabwriter.AlignRight)
 	fmt.Println("Setting the following configuration")
 	fmt.Println()
 	fmt.Fprintln(writer, "Config\t Setting")
 	fmt.Fprintln(writer, "Group:\t", groupText(request.group))
-	if current, ok := entry.ClientModeOf(); ok {
-		fmt.Fprintln(writer, "Current ClientMode:\t", clientModeName(current))
+	if change.ClientMode != nil || change.RemoveClientMode {
+		if current, ok := entry.ClientModeOf(); ok {
+			fmt.Fprintln(writer, "Current ClientMode:\t", clientModeName(current))
+		}
+		if change.ClientMode != nil {
+			fmt.Fprintln(writer, "ClientMode:\t", *change.ClientMode, "-->(", clientModeName(*change.ClientMode), ")")
+		} else {
+			fmt.Fprintln(writer, "ClientMode:\t", "(none: the Macs follow their own or the global client mode)")
+		}
 	}
-	if request.mode != nil {
-		fmt.Fprintln(writer, "ClientMode:\t", *request.mode, "-->(", clientModeName(*request.mode), ")")
-	} else {
-		fmt.Fprintln(writer, "ClientMode:\t", "(none: the Macs follow their own or the global client mode)")
+	if change.FileAccessAction != nil || change.RemoveFileAccessAction {
+		if current, ok := entry.FileAccessOverrideOf(); ok {
+			fmt.Fprintln(writer, "Current OverrideFileAccessAction:\t", current)
+		}
+		if change.FileAccessAction != nil {
+			fmt.Fprintln(writer, "OverrideFileAccessAction:\t", *change.FileAccessAction)
+		} else {
+			fmt.Fprintln(writer, "OverrideFileAccessAction:\t", "(none: the Macs follow their own or the global override)")
+		}
 	}
 	writer.Flush()
-	fmt.Println("\nA Mac's own or temporary client mode beats its groups'; between its groups, the strictest mode wins.")
+	fmt.Println()
+	if change.ClientMode != nil || change.RemoveClientMode {
+		fmt.Println("A Mac's own or temporary client mode beats its groups'; between its groups, the strictest mode wins.")
+	}
+	if change.FileAccessAction != nil || change.RemoveFileAccessAction {
+		fmt.Println("A Mac's own file access override beats its groups'; between its groups, the most relaxed override wins.")
+	}
 	fmt.Println()
 	if apply, err := approval.Confirm(); !apply {
 		return err
@@ -120,19 +164,22 @@ func updateGroupClientMode(client groupConfigWriter, request groupClientModeRequ
 			return err
 		}
 	}
-	if err := groups.SetClientMode(client, request.group, request.mode); err != nil {
+	if err := groups.ChangeSettings(client, request.group, change); err != nil {
 		return fmt.Errorf("group %q: %w", request.group, err)
 	}
-	fmt.Printf("Updated the client mode of %s; it applies from each Mac's next sync (servers may take up to %s to see it)\n", groupText(request.group), groups.CacheDuration)
+	fmt.Printf("Updated the settings of %s; they apply from each Mac's next sync (servers may take up to %s to see them)\n", groupText(request.group), groups.CacheDuration)
 
-	summary := machineconfiguration.MachineConfigurationUpdateRequest{ClientMode: request.mode}
-	if request.mode == nil {
-		summary.Inherit = []string{"ClientMode"}
+	summary := machineconfiguration.MachineConfigurationUpdateRequest{ClientMode: change.ClientMode, OverrideFileAccessAction: change.FileAccessAction}
+	if change.RemoveClientMode {
+		summary.Inherit = append(summary.Inherit, "ClientMode")
+	}
+	if change.RemoveFileAccessAction {
+		summary.Inherit = append(summary.Inherit, "OverrideFileAccessAction")
 	}
 	return flags.Record(client, "config.update", flags.GroupTarget(request.group), updateSummary(summary))
 }
 
-// getGroupConfig shows a group's client mode
+// getGroupConfig shows a group's client mode and file access override
 func getGroupConfig(client dynamodb.GetItemAPI, group string) error {
 	registry, err := groups.GetRegistry(client, true)
 	if err != nil {
@@ -153,6 +200,14 @@ func getGroupConfig(client dynamodb.GetItemAPI, group string) error {
 	default:
 		fmt.Fprintln(writer, "ClientMode:\t", "(none: the Macs follow their own or the global client mode)")
 	}
+	switch action, ok := entry.FileAccessOverrideOf(); {
+	case ok:
+		fmt.Fprintln(writer, "OverrideFileAccessAction:\t", action)
+	case entry.OverrideFileAccessAction.Stored():
+		fmt.Fprintln(writer, "OverrideFileAccessAction:\t", "(stored value cannot be read, so the group has none)")
+	default:
+		fmt.Fprintln(writer, "OverrideFileAccessAction:\t", "(none: the Macs follow their own or the global override)")
+	}
 	return writer.Flush()
 }
 
@@ -163,22 +218,34 @@ func groupText(group string) string {
 	return "group " + termsafe.String(group)
 }
 
-// groupClientModeOrigin returns the client mode a machine gets from its groups, and the group, using the membership
-// stored on its groups item (as of its last preflight)
-func groupClientModeOrigin(client dynamodb.GetItemAPI, machineID string) (types.ClientMode, string, bool, error) {
+// machineGroupSettings returns the client mode and file access override a machine gets from its groups, and the group
+// each comes from, using the membership stored on its groups item (as of its last preflight). It reads the groups item
+// only when some group sets either.
+func machineGroupSettings(client dynamodb.GetItemAPI, machineID string) (settings groupSettingsOrigin, err error) {
 	registry, err := groups.GetRegistry(client, true)
 	if err != nil {
-		return 0, "", false, err
+		return settings, err
 	}
-	if !registry.HasClientModes() {
-		return 0, "", false, nil
+	if !registry.HasClientModes() && !registry.HasFileAccessOverrides() {
+		return settings, nil
 	}
 	membership, err := groups.GetMachineGroups(client, machineID, true)
 	if err != nil {
-		return 0, "", false, err
+		return settings, err
 	}
-	mode, group, ok := groups.MachineClientMode(registry, membership)
-	return mode, group, ok, nil
+	settings.mode, settings.modeGroup, settings.hasMode = groups.MachineClientMode(registry, membership)
+	settings.fileAccess, settings.fileAccessGroup, settings.hasFileAccess = groups.MachineFileAccessOverride(registry, membership)
+	return settings, nil
+}
+
+// groupSettingsOrigin is what machineGroupSettings returns
+type groupSettingsOrigin struct {
+	mode            types.ClientMode
+	modeGroup       string
+	hasMode         bool
+	fileAccess      types.FileAccessAction
+	fileAccessGroup string
+	hasFileAccess   bool
 }
 
 func groupWriter(cmd *cobra.Command) (groupConfigWriter, error) {
