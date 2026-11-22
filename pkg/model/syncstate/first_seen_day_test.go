@@ -83,8 +83,8 @@ func TestSyncState_FirstSeenDayCarriedAndSetOnce(t *testing.T) {
 
 // The date is the UTC date even when the process runs in another time zone.
 func TestSyncState_FirstSeenDayIsTheUTCDate(t *testing.T) {
-	sydney := time.FixedZone("AEDT", 11*60*60)
-	now := time.Date(2026, 11, 23, 8, 0, 0, 0, sydney) // 2026-11-22T21:00:00Z
+	tokyo := time.FixedZone("JST", 9*60*60)
+	now := time.Date(2026, 11, 23, 8, 0, 0, 0, tokyo) // 2026-11-22T23:00:00Z
 	row := CreateNewSyncState(timeProviderAt(now), "AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA", false, "", 50, "")
 	row.ContinueFrom(nil, "digest", now)
 	if got, _ := firstSeenDay(t, row); got != "2026-11-22" {

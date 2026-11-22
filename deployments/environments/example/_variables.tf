@@ -213,7 +213,7 @@ variable "fleet_schedule_expression" {
 
 variable "fleet_schedule_timezone" {
   type        = string
-  description = "IANA time zone of fleet_schedule_expression, e.g. Australia/Sydney"
+  description = "IANA time zone of fleet_schedule_expression, e.g. America/New_York"
   default     = "UTC"
 }
 

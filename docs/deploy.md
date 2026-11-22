@@ -102,7 +102,7 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `ranker_schedule_expression` | `"rate(1 hour)"` | When the ranker rebuilds the web view's top-blocked, top-allowed and top-unknown lists: an EventBridge Scheduler `rate()`, `cron()` or `at()` expression, in `ranker_schedule_timezone` (see [Ranker schedule](#ranker-schedule)). |
 | `ranker_schedule_timezone` | `"UTC"` | IANA time zone of `ranker_schedule_expression`, such as `America/New_York`. The schedule follows its daylight saving. |
 | `fleet_schedule_expression` | `"rate(1 day)"` | When the fleet job rebuilds the web view's fleet health lists and Lockdown readiness figures: an EventBridge Scheduler `rate()`, `cron()` or `at()` expression, in `fleet_schedule_timezone` (see [Fleet job schedule](#fleet-job-schedule)). |
-| `fleet_schedule_timezone` | `"UTC"` | IANA time zone of `fleet_schedule_expression`, such as `Australia/Sydney`. The schedule follows its daylight saving. |
+| `fleet_schedule_timezone` | `"UTC"` | IANA time zone of `fleet_schedule_expression`, such as `America/New_York`. The schedule follows its daylight saving. |
 | `fleet_alarm_days` | `3` | The `fleet_job` alarm fires when the fleet job has not completed a run for this many UTC days in a row: a whole number from 1 to 7 (CloudWatch evaluates at most 7 days of daily periods). The alarm only exists when `alarm_sns_topic_arn` is set. |
 | `enable_api_access_logs` | `false` | Write one API Gateway access log line per request, including requests refused before any Lambda runs (rejected tokens, throttling, WAF blocks), to the log group `/aws/apigateway/PREFIX_rudolph_access`, kept for `log_retention_in_days`. Needs the account's API Gateway CloudWatch role first (see [API access log](#api-access-log)). |
 | `manage_api_gateway_account_role` | `false` | Create an IAM role with `AmazonAPIGatewayPushToCloudWatchLogs` and set it as the account's API Gateway CloudWatch role (`aws_api_gateway_account`). The setting is shared by every REST API in the account and region and replaces any role already there: only for accounts where `aws apigateway get-account` shows no `cloudwatchRoleArn` and no other stack manages it. |
@@ -163,11 +163,11 @@ The trade-off of fewer runs:
 ### Fleet job schedule
 The fleet job, `PREFIX_rudolph_fleet`, rebuilds the web view's fleet health lists and Lockdown readiness figures (see [Fleet health and Lockdown readiness](fleet-health.md)). An EventBridge Scheduler schedule, `PREFIX_rudolph_fleet`, runs it at `fleet_schedule_expression` in the time zone `fleet_schedule_timezone`: by default once a day, in UTC. The schedule invokes the function through its own role, `PREFIX_rudolph_fleet_scheduler_role`, which may invoke only the fleet job. A failed run is not retried; the next run rebuilds everything from scratch.
 
-`rate(1 day)` runs at the time of day the schedule was created. To pick the hour, for example 6am Sydney time, before staff arrive:
+`rate(1 day)` runs at the time of day the schedule was created. To pick the hour, for example 6am New York time, before staff arrive:
 
 ```json
 "fleet_schedule_expression": "cron(0 6 * * ? *)",
-"fleet_schedule_timezone": "Australia/Sydney"
+"fleet_schedule_timezone": "America/New_York"
 ```
 
 - **Once a day is enough.** The lists change slowly (a Mac goes stale over days, readiness looks back 30 days), and each run reads every Mac. Running it hourly costs 24 times as much for the job (see [costs.md](costs.md#fleet-health-and-lockdown-readiness)).

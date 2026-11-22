@@ -295,7 +295,7 @@ variable "fleet_schedule_expression" {
 
 variable "fleet_schedule_timezone" {
   type        = string
-  description = "IANA time zone for fleet_schedule_expression, for example Australia/Sydney. EventBridge Scheduler follows its daylight saving."
+  description = "IANA time zone for fleet_schedule_expression, for example America/New_York. EventBridge Scheduler follows its daylight saving."
   default     = "UTC"
 }
 
