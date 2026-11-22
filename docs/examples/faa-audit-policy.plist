@@ -309,7 +309,7 @@
 				</dict>
 			</array>
 		</dict>
-		<!-- The temporary file dyld writes when code is loaded from memory (NSCreateObjectFileImageFromMemory), a sign of the interpreter bypass; nothing is expected to write it. -->
+		<!-- The temporary file dyld writes when code is loaded from memory through NSCreateObjectFileImageFromMemory; nothing is expected to write it. It does not catch interpreters calling native code directly or custom loaders. -->
 		<key>InMemoryCodeLoading</key>
 		<dict>
 			<key>Paths</key>

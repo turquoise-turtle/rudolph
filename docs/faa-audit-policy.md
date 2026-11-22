@@ -15,7 +15,7 @@ Rudolph cannot send this policy itself: FAA rules over the sync protocol need sy
 | `Sudoers` | `/etc/sudoers`, `/etc/sudoers.d/`, sudo's timestamps | reads and writes by anything but `sudo` |
 | `PAMConfig` | `/etc/pam.d/` | every write |
 | `SSHKeys` | `~/.ssh/` of every user | reads and writes by anything but Apple's SSH tools |
-| `InMemoryCodeLoading` | the temporary files dyld writes for `NSCreateObjectFileImageFromMemory` | every access: loading code from memory, the interpreter bypass Santa's execution rules cannot see |
+| `InMemoryCodeLoading` | the temporary files dyld writes for `NSCreateObjectFileImageFromMemory` | every access: code loaded from memory through `NSCreateObjectFileImageFromMemory`, which dyld backs with this temporary file. It does not catch every in-memory technique: an interpreter calling native code directly (Python's `ctypes`, for example) or a custom loader writes no such file |
 
 `ChromeCookies` and `Sudoers` follow North Pole's published examples ([FAA cookbook](https://northpole.dev/cookbook/faa/)), switched to audit only; `InMemoryCodeLoading` follows North Pole's in-memory execution recipe. The others are this repository's.
 
@@ -25,6 +25,8 @@ Rudolph cannot send this policy itself: FAA rules over the sync protocol need sy
 - **Check the other identifiers on your macOS version.** The Apple signing IDs (`com.apple.installer`, `com.apple.installd`, `com.apple.package-script-service`, the SSH tools) were read with `codesign -dv` on macOS 26. A rule whose processes do not match logs more, not less.
 - **Validate the file.** `plutil -lint faa-audit-policy.plist`. After it reaches a test Mac, Santa logs `Ignoring file access rule '<name>': …` for a rule it refuses and `Failed to parse watch item config` for a file it cannot read: `log show --predicate 'subsystem == "com.northpolesec.santa"' --last 15m | grep -i 'watch item\|file access'`. `santactl status` shows the number of file access rules loaded.
 - **Test Mac first.** Scope the profile to one test Mac, then a handful of pilot Macs, before the fleet.
+
+Santa 2026.9 also normalises paths with `//` or a trailing slash, and from 2026.9 file access events carry the `platform:` or team ID prefix on signing IDs again (2026.4 to 2026.8 left it off), so events from before and after the upgrade name the same process differently.
 
 Paths with `*` are globs that Santa expands when it loads the policy and again every `FileAccessPolicyUpdateIntervalSec` (600 seconds by default), so a user account or Chrome profile created after that is covered from the next evaluation.
 
@@ -45,6 +47,6 @@ Only once a rule has run in audit for long enough that its events are all explai
 2. Raise the policy's `Version` (for example `pilot-2`), so events show which version decided them.
 3. Deploy to the test Mac, then the pilot Macs, then the fleet, watching for `DENIED` events from processes that should have been allowed.
 
-From Santa 2026.9, `ParentDirectoryProtection` set to `enforce` also stops a protected path's parent directories being renamed or replaced to get round a rule; leave it unset while auditing.
+From Santa 2026.9, `ParentDirectoryProtection` also covers renaming or replacing a protected path's parent directories to get round a rule. It defaults to `audit`, so expect some extra events from it while auditing; set it to `enforce` on a rule when you enforce that rule.
 
 `ProtectJamf` and `SystemLaunchItems` are the rules most worth enforcing on student Macs. `ChromeCookies` and `SSHKeys` matter most on staff Macs. Keep `InMemoryCodeLoading` in audit at first: it catches a technique rather than a known path, and what it catches is worth reading before deciding.
