@@ -329,7 +329,7 @@
               "S": "AUDIT_ONLY"
             },
             "RulesVersion": {
-              "N": "2"
+              "N": "3"
             }
           }
         }
@@ -342,7 +342,7 @@
       "S": "GroupRegistry"
     },
     "RulesVersionCounter": {
-      "N": "2"
+      "N": "3"
     },
     "SK": {
       "S": "Current"
@@ -375,6 +375,35 @@
     },
     "SK": {
       "S": "SigningID#EQHXZ8M8AV:com.google.GeminiMacOS"
+    }
+  },
+  {
+    "CollectAllowedEvents": {
+      "BOOL": true
+    },
+    "DataType": {
+      "S": "GroupRule"
+    },
+    "Description": {
+      "S": "web contract"
+    },
+    "Group": {
+      "S": "eng"
+    },
+    "Identifier": {
+      "S": "ABCDE12345"
+    },
+    "PK": {
+      "S": "GroupRules#eng"
+    },
+    "Policy": {
+      "N": "1"
+    },
+    "RuleType": {
+      "N": "4"
+    },
+    "SK": {
+      "S": "TeamID#ABCDE12345"
     }
   },
   {

@@ -28,6 +28,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
+	modelrules "github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -123,6 +124,15 @@ func seed(t *testing.T) {
 	}
 	if err := groups.CreateGroup(tp, gw, "eng", "Engineering", true); err != nil {
 		t.Fatal(err)
+	}
+	// The group rules whose collection the examples switch on and off.
+	if err := groups.CreateGroup(tp, gw, groups.Ungrouped, "Macs in no group", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []string{"eng", groups.Ungrouped} {
+		if err := groups.PutRule(gw, g, modelrules.SantaRule{RuleType: types.RuleTypeTeamID, Policy: types.RulePolicyAllowlist, Identifier: "ABCDE12345"}, "web commands"); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
