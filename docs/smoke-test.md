@@ -796,7 +796,7 @@ aws dynamodb get-item --region "$REGION" --table-name "$EVENTS" \
   --key '{"PK":{"S":"Top#Blocked#7"},"SK":{"S":"Current"}}' | tee "$CAPTURE_DIR/09-pointer.json"
 ```
 
-Success: the invoke answers `"StatusCode": 200` without `FunctionError`; the log has only `START`, `END` and `REPORT` lines (the ranker logs nothing on success); the pointer has `Snapshot` and `GeneratedAt`. rudolph-web `/events/top-blocked?days=1` lists smoke-blocked, smoke-grouped and smoke-unknown with counts and `Machines` 1; `/events/top-allowed` lists smoke-unknown and, after step 8, Google binaries. Then check the next scheduled run happened: `aws scheduler get-schedule --region "$REGION" --name "${PREFIX}_rudolph_ranker"` shows `State` `ENABLED` and the expression from 2.5, and within about an hour of the apply (with `rate(1 hour)`), the ranker log has a second `REPORT` and the page shows a newer generation time.
+Success: the invoke answers `"StatusCode": 200` without `FunctionError`; besides `START`, `END` and `REPORT`, the log has one line `ranker: binaries=<n>`, the number of distinct binaries with a day counter in the last 90 days (a handful here), and nothing else on success; the pointer has `Snapshot` and `GeneratedAt`. rudolph-web `/events/top-blocked?days=1` lists smoke-blocked, smoke-grouped and smoke-unknown with counts and `Machines` 1; `/events/top-allowed` lists smoke-unknown and, after step 8, Google binaries. Then check the next scheduled run happened: `aws scheduler get-schedule --region "$REGION" --name "${PREFIX}_rudolph_ranker"` shows `State` `ENABLED` and the expression from 2.5, and within about an hour of the apply (with `rate(1 hour)`), the ranker log has a second `REPORT` and the page shows a newer generation time.
 
 Capture: `REPORT` lines (duration, max memory used), screenshots of both lists for 1 and 7 days.
 
@@ -1081,7 +1081,7 @@ filter @type = "REPORT"
         max(@maxMemoryUsed / 1048576) as maxMemMB, count(@initDuration) as coldStarts by @log
 ```
 
-Compare with the configured memory (preflight and eventupload 256 MB, ruledownload and postflight 512 MB, ranker 256 MB) and the eventupload timeout (10 s, of which sinks and the events table get the deadline minus 1.5 s: [sync.md](sync.md#delivery-to-the-event-sink)). Also record API Gateway `Latency` and `IntegrationLatency` for the stage.
+Compare with the configured memory (preflight and eventupload 256 MB, ruledownload, postflight and the ranker 512 MB; for the ranker, read `Max Memory Used` next to its `binaries=<n>` line, see [Top binaries](events-table.md#top-binaries)) and the eventupload timeout (10 s, of which sinks and the events table get the deadline minus 1.5 s: [sync.md](sync.md#delivery-to-the-event-sink)). Also record API Gateway `Latency` and `IntegrationLatency` for the stage.
 
 ### 12.4 Costs
 

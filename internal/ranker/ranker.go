@@ -6,8 +6,10 @@
 package ranker
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/airbnb/rudolph/pkg/counterfields"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
 )
@@ -55,9 +58,9 @@ const (
 	// a minute.
 	parallelism = 16
 
-	// maxRuleSortKeyBytes is DynamoDB's limit on a sort key. The counters' signing and team IDs come from whichever
-	// Mac first uploaded the binary that day and are cut only to 4,096 and 1,024 bytes, so a rule key built from one
-	// can be longer; no rule can have such a key, and a GetItem on it would be refused and fail the whole run.
+	// maxRuleSortKeyBytes is DynamoDB's limit on a sort key: no rule can have a longer key, and a GetItem on one would
+	// be refused and fail the whole run. The signing and team IDs the fold keeps (counterfields) are far shorter, so
+	// this only guards against those limits being raised past it.
 	maxRuleSortKeyBytes = 1024
 
 	// writeAttempts bounds the BatchWriteItem calls for one batch whose items DynamoDB keeps returning unprocessed
@@ -65,12 +68,13 @@ const (
 	writeAttempts = 8
 )
 
-// Windows are the lengths of the lists, in days ending today (UTC).
-var Windows = []int{1, 7, 30, 90}
+// Windows are the lengths of the lists, in days ending today (UTC). Arrays, here and in Kinds, so that a binary's
+// counts have a fixed size; no window may be longer than 255 days (binary.days).
+var Windows = [...]int{1, 7, 30, 90}
 
 // Kinds are the lists built. Blocked and Allowed count every stored decision; the unknown kinds count only Santa's
 // BLOCK_UNKNOWN and ALLOW_UNKNOWN, the executions no rule decided, and Unknown is their sum.
-var Kinds = []string{"Blocked", "Allowed", "Unknown", "UnknownBlocked", "UnknownAllowed"}
+var Kinds = [...]string{"Blocked", "Allowed", "Unknown", "UnknownBlocked", "UnknownAllowed"}
 
 // unknownKind reports whether the list is one an admin reads to decide what rule to add next: its first MachineRows
 // rows are ordered by Macs and marked with any global rule.
@@ -104,24 +108,61 @@ type counter struct {
 	FileName, SigningID, TeamID    string
 }
 
-// field keeps a display attribute from the newest day that has it.
-type field struct {
-	value string
-	day   int // days before today
+// The display fields of a binary, as indexes into binary.fields.
+const (
+	fileName = iota
+	signingID
+	teamID
+	displayFields
+)
+
+// binary holds one binary's totals for every window, folded in as the day partitions are read, so a run never holds
+// 90 days of counter rows. A run holds one for every binary seen in 90 days, so it is kept small: fixed arrays rather
+// than slices, and a byte for each field's day.
+type binary struct {
+	counts [len(Kinds)][len(Windows)]int64
+	// Each display field comes from the newest day that has a usable one; days[f] is that day, in days before today.
+	fields [displayFields]string
+	days   [displayFields]uint8
 }
 
-func (f *field) offer(value string, day int) {
-	if value != "" && (f.value == "" || day < f.day) {
-		f.value, f.day = value, day
+func (b *binary) offer(f int, value string, day int) {
+	if value != "" && (b.fields[f] == "" || day < int(b.days[f])) {
+		b.fields[f], b.days[f] = value, uint8(day)
 	}
 }
 
-// binary holds one binary's totals for every window, folded in as the day partitions are read, so a run never holds
-// 90 days of counter rows.
-type binary struct {
-	counts                      [][]int64 // by kind index (as Kinds), then window index
-	fileName, signingID, teamID field
+// totals holds every binary of the fold. Day counters are keyed by the binary's SHA-256, which is kept as its 32
+// bytes, a third of what the 64 hex characters take as a map key with their string header. Counters written before
+// the event writer refused other hashes can have any sort key; those few are kept as they are, so they rank as before
+// until they expire.
+type totals struct {
+	bySHA   map[[sha256.Size]byte]*binary
+	byOther map[string]*binary
 }
+
+func (t *totals) get(sk string) *binary {
+	var key [sha256.Size]byte
+	// ValidateSha256 first: hex.Decode also takes upper-case digits, which would come back out in lower case.
+	if rudolphtypes.ValidateSha256(sk) == nil {
+		if _, err := hex.Decode(key[:], []byte(sk)); err == nil {
+			b := t.bySHA[key]
+			if b == nil {
+				b = &binary{}
+				t.bySHA[key] = b
+			}
+			return b
+		}
+	}
+	b := t.byOther[sk]
+	if b == nil {
+		b = &binary{}
+		t.byOther[sk] = b
+	}
+	return b
+}
+
+func (t *totals) len() int { return len(t.bySHA) + len(t.byOther) }
 
 type entry struct {
 	sha                         string
@@ -160,7 +201,7 @@ func Run(ctx context.Context, opts Options) error {
 		starts[wi] = today.AddDate(0, 0, -(w - 1)).Format(dateLayout)
 	}
 
-	binaries := map[string]*binary{}
+	binaries := &totals{bySHA: map[[sha256.Size]byte]*binary{}, byOther: map[string]*binary{}}
 	var mu sync.Mutex
 	err := parallel(ctx, maxWindow, func(ctx context.Context, d int) error {
 		day := today.AddDate(0, 0, -d).Format(dateLayout)
@@ -171,17 +212,10 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			b := binaries[c.SK]
-			if b == nil {
-				b = &binary{counts: make([][]int64, len(Kinds))}
-				for ki := range b.counts {
-					b.counts[ki] = make([]int64, len(Windows))
-				}
-				binaries[c.SK] = b
-			}
+			b := binaries.get(c.SK)
 			// In the order of Kinds. Counters written before the writer counted unknown decisions have neither
 			// attribute, so the unknown lists fill only from that day.
-			add := []int64{c.Blocked, c.Allowed, c.UnknownBlocked + c.UnknownAllowed, c.UnknownBlocked, c.UnknownAllowed}
+			add := [len(Kinds)]int64{c.Blocked, c.Allowed, c.UnknownBlocked + c.UnknownAllowed, c.UnknownBlocked, c.UnknownAllowed}
 			for wi, w := range Windows {
 				if d < w {
 					for ki, n := range add {
@@ -189,9 +223,11 @@ func Run(ctx context.Context, opts Options) error {
 					}
 				}
 			}
-			b.fileName.offer(c.FileName, d)
-			b.signingID.offer(c.SigningID, d)
-			b.teamID.offer(c.TeamID, d)
+			// Counters written before the event writer checked the fields hold values of up to 4,096 bytes; kept, about
+			// 45,000 of them would fill the Lambda's memory and fail every run until they expired.
+			b.offer(fileName, counterfields.FileName(c.FileName), d)
+			b.offer(signingID, counterfields.SigningID(c.SigningID), d)
+			b.offer(teamID, counterfields.TeamID(c.TeamID), d)
 			return nil
 		})
 		if err != nil {
@@ -202,6 +238,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+
+	// The figure to watch against the Lambda's memory: docs/events-table.md, "Top binaries".
+	log.Printf("ranker: binaries=%d", binaries.len())
 
 	var lists []list
 	for ki, kind := range Kinds {
@@ -334,24 +373,57 @@ func Run(ctx context.Context, opts Options) error {
 }
 
 // top returns the MaxRows binaries with the highest count of kind ki in window wi, ties ordered by SHA-256; zero
-// counts are left out.
-func top(binaries map[string]*binary, ki, wi int) []entry {
-	var rows []entry
-	for sha, b := range binaries {
-		if n := b.counts[ki][wi]; n > 0 {
-			rows = append(rows, entry{sha: sha, count: n, fileName: b.fileName.value, signingID: b.signingID.value, teamID: b.teamID.value})
+// counts are left out. It keeps only the best MaxRows as it goes, in a heap whose root is the last of them, rather
+// than a row for every binary: twenty lists of every binary would take as much memory as the fold itself.
+func top(binaries *totals, ki, wi int) []entry {
+	var rows worstFirst
+	offer := func(sha func() string, b *binary) {
+		n := b.counts[ki][wi]
+		if n == 0 {
+			return
+		}
+		full := len(rows) >= MaxRows
+		if full && n < rows[0].count {
+			return
+		}
+		e := entry{sha: sha(), count: n, fileName: b.fields[fileName], signingID: b.fields[signingID], teamID: b.fields[teamID]}
+		if !full {
+			heap.Push(&rows, e)
+		} else if before(e, rows[0]) {
+			rows[0] = e
+			heap.Fix(&rows, 0)
 		}
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].count != rows[j].count {
-			return rows[i].count > rows[j].count
-		}
-		return rows[i].sha < rows[j].sha
-	})
-	if len(rows) > MaxRows {
-		rows = rows[:MaxRows]
+	for key, b := range binaries.bySHA {
+		offer(func() string { return hex.EncodeToString(key[:]) }, b)
 	}
+	for sk, b := range binaries.byOther {
+		offer(func() string { return sk }, b)
+	}
+	sort.Slice(rows, func(i, j int) bool { return before(rows[i], rows[j]) })
 	return rows
+}
+
+// before is the order of a list: highest count first, ties by SHA-256.
+func before(a, b entry) bool {
+	if a.count != b.count {
+		return a.count > b.count
+	}
+	return a.sha < b.sha
+}
+
+// worstFirst is a heap of rows whose root is the one that comes last in the list.
+type worstFirst []entry
+
+func (h worstFirst) Len() int           { return len(h) }
+func (h worstFirst) Less(i, j int) bool { return before(h[j], h[i]) }
+func (h worstFirst) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *worstFirst) Push(x any)        { *h = append(*h, x.(entry)) }
+func (h *worstFirst) Pop() any {
+	old := *h
+	e := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return e
 }
 
 // findGlobalRules returns, for each binary in the first MachineRows rows of the unknown lists, the sort key of the

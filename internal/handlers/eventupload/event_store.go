@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go"
 
+	"github.com/airbnb/rudolph/pkg/counterfields"
 	"github.com/airbnb/rudolph/pkg/eventsink"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
@@ -523,7 +524,9 @@ type counterChange struct {
 
 // counterUpdate adds events of one binary on one day to its day counter. The display attributes and the expiry are
 // set only if absent, so concurrent uploads never overwrite each other and the counter expires 100 days after its
-// first event.
+// first event. Each display attribute comes from the first event whose value a counter may carry (counterfields): the
+// ranker holds every counter's fields of 90 days in memory, and the events' own 4,096-byte cut would let one Mac
+// fill it.
 func counterUpdate(events []*storableEvent, expiry string) counterChange {
 	var blocked, allowed, unknownBlocked, unknownAllowed int
 	var fileName, signingID, teamID string
@@ -539,13 +542,13 @@ func counterUpdate(events []*storableEvent, expiry string) counterChange {
 			unknownAllowed++
 		}
 		if fileName == "" {
-			fileName = e.event.FileName
+			fileName = counterfields.FileName(e.event.FileName)
 		}
 		if signingID == "" {
-			signingID = e.event.SigningIDs
+			signingID = counterfields.SigningID(e.event.SigningIDs)
 		}
 		if teamID == "" {
-			teamID = e.event.TeamID
+			teamID = counterfields.TeamID(e.event.TeamID)
 		}
 	}
 	values := map[string]types.AttributeValue{":exp": &types.AttributeValueMemberN{Value: expiry}}
