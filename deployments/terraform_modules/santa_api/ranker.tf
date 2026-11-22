@@ -154,9 +154,11 @@ resource "aws_lambda_function" "ranker" {
   s3_bucket        = aws_s3_object.ranker_source.bucket
   s3_key           = aws_s3_object.ranker_source.key
   source_code_hash = local.lambda_ranker_hash
-  # A run holds one small total per binary seen in 90 days (about 400 bytes each, so ~40 MB for 100,000 binaries),
-  # never the counter rows or the markers themselves.
-  memory_size = 256
+  # A run holds one small total per binary seen in 90 days (about 350 bytes each, at most about 800 with a file name
+  # and signing ID of 255 bytes, so ~35 MB for 100,000 binaries), never the counter rows or the markers themselves.
+  # Nothing bounds the number of binaries, so the size leaves headroom: each run logs binaries=<n> to compare with
+  # the REPORT line's Max Memory Used (docs/events-table.md, "Top binaries").
+  memory_size = 512
 
   # A run reads 90 day partitions and the markers of up to 2,000 binaries (the first 100 rows of 20 lists; in practice
   # far fewer, as the unknown lists mostly repeat binaries already in the blocked and allowed ones), plus up to three

@@ -2,13 +2,14 @@
 
 package ranker_test
 
-// Review finding R1 (path traversal review): the day counter is shared by the whole fleet, and its SigningID and
-// TeamID come from whichever Mac first uploaded the binary that day, cut only to 4,096 and 1,024 bytes. The ranker
-// looks up a global rule for each of the first rows of the unknown lists by GetItem on "SigningID#<signing ID>" and
-// "TeamID#<team ID>", and DynamoDB refuses a sort key over 1,024 bytes. One Mac uploading BLOCK_UNKNOWN executions
-// with a 1,015-byte signing ID (or a 1,018-byte team ID) must not stop every ranker run, and so every list, while the
-// counter is in a window: an identifier too long to be a rule's sort key can have no global rule, so the row simply
-// has none.
+// The day counter is shared by the whole fleet, and its SigningID and TeamID come from whichever Mac first uploaded
+// the binary that day. The ranker looks up a global rule for each of the first rows of the unknown lists by GetItem on
+// "SigningID#<signing ID>" and "TeamID#<team ID>". Review finding R1 (path traversal review) made a key over
+// DynamoDB's 1,024 bytes harmless; since the ranker memory fix (2026-11-22) the ranker drops a signing ID over 255
+// bytes and a team ID that is not exactly 10 upper-case letters or digits as it reads the counter, so no lookup is
+// made with one. One Mac uploading BLOCK_UNKNOWN executions with such identifiers must not stop the run or hide other
+// binaries' rules, a binary's other identifiers must still find its rule, and an identifier at the limit (counted in
+// bytes of UTF-8, not characters) is a real one and must still find its rule.
 
 import (
 	"fmt"
@@ -21,7 +22,13 @@ import (
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 )
 
-const maxRuleSortKeyBytes = 1024
+const maxSigningIDBytes = 255
+
+// signingAt returns a signing ID of team TEAM000001 exactly n bytes long.
+func signingAt(n int) string {
+	prefix := teamN(1) + ":"
+	return prefix + strings.Repeat("s", n-len(prefix))
+}
 
 // identifierCounter writes today's counter of binary i, all of whose executions were blocked as unknown.
 func identifierCounter(t *testing.T, i int, signingID, teamID string) {
@@ -52,83 +59,75 @@ func ruleOf(rows []urow, i int) (string, bool) {
 	return "", false
 }
 
-func TestRanker_IdentifierTooLongForARuleKeyDoesNotStopTheRun_R1(t *testing.T) {
-	signingPrefix, teamPrefix := "SigningID#", "TeamID#"
+func TestRanker_UnusableIdentifierDoesNotStopTheRun(t *testing.T) {
 	for _, c := range []struct {
 		name              string
 		signingID, teamID string
 	}{
-		{"signing ID one byte over", "TEAM1:" + strings.Repeat("s", maxRuleSortKeyBytes-len(signingPrefix)+1-len("TEAM1:")), "TEAM1"},
-		{"signing ID as cut by the writer", strings.Repeat("s", 4096), "TEAM1"},
-		{"team ID one byte over", "", strings.Repeat("T", maxRuleSortKeyBytes-len(teamPrefix)+1)},
+		{"signing ID one byte over", signingAt(maxSigningIDBytes + 1), teamN(1)},
+		{"signing ID as cut by the writer", strings.Repeat("s", 4096), teamN(1)},
+		{"team ID one character over", "", teamN(1) + "X"},
 		{"team ID as cut by the writer", "", strings.Repeat("T", 1024)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ddblocal.Reset(t)
 			identifierCounter(t, 1, c.signingID, c.teamID)
 			marker(t, 1, "MAC-A", 0)
-			// Another binary whose global rule must still be found: the long identifier leaves only its own row
+			// Another binary whose global rule must still be found: the unusable identifier leaves only its own row
 			// without a rule.
-			identifierCounter(t, 2, "TEAM2:bin2", "TEAM2")
+			identifierCounter(t, 2, teamN(2)+":bin2", teamN(2))
 			marker(t, 2, "MAC-B", 0)
-			storeRule(t, "GlobalRules", "SigningID#TEAM2:bin2")
+			storeRule(t, "GlobalRules", "SigningID#"+teamN(2)+":bin2")
 
 			if err := runStoreErr(t); err != nil {
 				t.Fatalf("one counter with a %d-byte signing ID and a %d-byte team ID stopped the ranker run: %v",
-					len(c.signingID), len(c.teamID), err)
+					len(c.signingID), len(c.teamID), truncate(err.Error()))
 			}
 			for _, kind := range []string{"Unknown", "UnknownBlocked", "Blocked"} {
 				rows := unknownList(t, kind, 1)
 				if got, ok := ruleOf(rows, 1); !ok || got != "" {
-					t.Errorf("%s 1 day: binary 1 present %v with GlobalRule %q, want present without one", kind, ok, got)
+					t.Errorf("%s 1 day: binary 1 present %v with GlobalRule %q, want present without one", kind, ok, truncate(got))
 				}
 			}
-			if got, _ := ruleOf(unknownList(t, "Unknown", 7), 2); got != "SigningID#TEAM2:bin2" {
-				t.Errorf("Unknown 7 days: binary 2 has GlobalRule %q, want SigningID#TEAM2:bin2", got)
+			if got, _ := ruleOf(unknownList(t, "Unknown", 7), 2); got != "SigningID#"+teamN(2)+":bin2" {
+				t.Errorf("Unknown 7 days: binary 2 has GlobalRule %q, want SigningID#%s:bin2", got, teamN(2))
 			}
 		})
 	}
 }
 
-// The limit is DynamoDB's, so an identifier whose rule key is exactly 1,024 bytes is a real rule and must still be
-// matched; skipping anything shorter than that would hide a rule an admin added.
-func TestRanker_IdentifierAtTheRuleKeyLimitStillFindsItsRule_R1(t *testing.T) {
+// An identifier at the limit is a real one, and its rule must still be found.
+func TestRanker_IdentifierAtTheLimitStillFindsItsRule(t *testing.T) {
 	ddblocal.Reset(t)
-	signingID := "TEAM1:" + strings.Repeat("s", maxRuleSortKeyBytes-len("SigningID#")-len("TEAM1:"))
-	teamID := strings.Repeat("T", maxRuleSortKeyBytes-len("TeamID#"))
-	if n := len("SigningID#" + signingID); n != maxRuleSortKeyBytes {
-		t.Fatalf("fixture: signing ID rule key is %d bytes", n)
-	}
-	identifierCounter(t, 1, signingID, "TEAM1")
-	identifierCounter(t, 2, "TEAM2:bin2", teamID)
+	signingID := signingAt(maxSigningIDBytes)
+	identifierCounter(t, 1, signingID, teamN(1))
+	identifierCounter(t, 2, "", "ABCDEFGHI9")
 	marker(t, 1, "MAC-A", 0)
 	marker(t, 2, "MAC-A", 0)
 	storeRule(t, "GlobalRules", "SigningID#"+signingID)
-	storeRule(t, "GlobalRules", "TeamID#"+teamID)
+	storeRule(t, "GlobalRules", "TeamID#ABCDEFGHI9")
 
 	if err := runStoreErr(t); err != nil {
-		t.Fatalf("ranker: %v", err)
+		t.Fatalf("ranker: %v", truncate(err.Error()))
 	}
 	rows := unknownList(t, "Unknown", 1)
 	if got, _ := ruleOf(rows, 1); got != "SigningID#"+signingID {
-		t.Errorf("binary 1 has GlobalRule of %d bytes, want its 1,024-byte signing ID rule", len(got))
+		t.Errorf("binary 1 has GlobalRule of %d bytes, want its 255-byte signing ID's rule", len(got))
 	}
-	if got, _ := ruleOf(rows, 2); got != "TeamID#"+teamID {
-		t.Errorf("binary 2 has GlobalRule of %d bytes, want its 1,024-byte team ID rule", len(got))
+	if got, _ := ruleOf(rows, 2); got != "TeamID#ABCDEFGHI9" {
+		t.Errorf("binary 2 has GlobalRule %q, want TeamID#ABCDEFGHI9", got)
 	}
 }
 
-// Review finding 3: an identifier too long for a rule key has no rule, but the binary's other identifiers may. The
-// lookup must go on to the next, less specific candidate rather than give up on the row, or a long signing ID would
-// hide the team ID rule that covers the binary.
-func TestRanker_TooLongIdentifierFallsThroughToTheNextRule_R1(t *testing.T) {
-	longSigningID := "TEAM1:" + strings.Repeat("s", maxRuleSortKeyBytes)
-	longTeamID := strings.Repeat("T", maxRuleSortKeyBytes)
+// Review finding 3: an unusable identifier has no rule, but the binary's other identifiers may. The lookup must go on
+// to the next, less specific candidate rather than give up on the row, or a long signing ID would hide the team ID
+// rule that covers the binary.
+func TestRanker_UnusableIdentifierFallsThroughToTheNextRule(t *testing.T) {
 	for _, c := range []struct {
 		name, signingID, teamID, rule string
 	}{
-		{"signing ID too long, team ID rule", longSigningID, "TEAM1", "TeamID#TEAM1"},
-		{"team ID too long, binary rule", "TEAM1:bin1", longTeamID, "Binary#" + sha(1)},
+		{"signing ID too long, team ID rule", signingAt(maxSigningIDBytes + 1), teamN(1), "TeamID#" + teamN(1)},
+		{"team ID not 10 characters, binary rule", teamN(1) + ":bin1", strings.Repeat("T", 1024), "Binary#" + sha(1)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ddblocal.Reset(t)
@@ -146,46 +145,48 @@ func TestRanker_TooLongIdentifierFallsThroughToTheNextRule_R1(t *testing.T) {
 	}
 }
 
-// Review finding 4: DynamoDB's limit is 1,024 bytes of UTF-8, not 1,024 characters. A signing ID of 2- or 3-byte
-// characters whose rule key is exactly 1,024 bytes is a rule an admin can add and must be found; one more character
-// takes the key over the limit while it is still well under 1,024 characters, and that row must simply have no rule.
-func TestRanker_MultiByteIdentifierAtTheRuleKeyLimit_R1(t *testing.T) {
-	signingPrefix := "SigningID#"
-	room := maxRuleSortKeyBytes - len(signingPrefix)
+// Review finding 4: the limit is in bytes of UTF-8, not characters. A signing ID of 2- or 3-byte characters exactly
+// 255 bytes long must find its rule; one more character takes it over the limit while it is still under 255
+// characters, and that row must simply have no rule.
+func TestRanker_MultiByteIdentifierAtTheLimit(t *testing.T) {
+	prefix := teamN(1) + ":"
+	room := maxSigningIDBytes - len(prefix)
 	for _, c := range []struct {
 		name, char string
 	}{
 		{"2-byte characters", "\u00e9"},
 		{"3-byte characters", "\u4e2d"},
 	} {
-		atLimit := strings.Repeat(c.char, room/len(c.char))
-		over := strings.Repeat(c.char, room/len(c.char)+1)
+		fill := room / len(c.char)
+		atLimit := prefix + strings.Repeat(c.char, fill) + strings.Repeat("s", room-fill*len(c.char))
+		over := prefix + strings.Repeat(c.char, fill+1)
 		t.Run(c.name+" at the limit", func(t *testing.T) {
-			if n := len(signingPrefix + atLimit); n != maxRuleSortKeyBytes {
-				t.Fatalf("fixture: rule key is %d bytes", n)
+			if n := len(atLimit); n != maxSigningIDBytes {
+				t.Fatalf("fixture: signing ID is %d bytes", n)
 			}
 			ddblocal.Reset(t)
-			identifierCounter(t, 1, atLimit, "TEAM1")
+			identifierCounter(t, 1, atLimit, teamN(1))
 			marker(t, 1, "MAC-A", 0)
-			storeRule(t, "GlobalRules", signingPrefix+atLimit)
+			storeRule(t, "GlobalRules", "SigningID#"+atLimit)
 
 			if err := runStoreErr(t); err != nil {
 				t.Fatalf("ranker: %v", truncate(err.Error()))
 			}
-			if got, _ := ruleOf(unknownList(t, "Unknown", 1), 1); got != signingPrefix+atLimit {
-				t.Errorf("binary 1 has GlobalRule of %d bytes, want its 1,024-byte signing ID rule", len(got))
+			if got, _ := ruleOf(unknownList(t, "Unknown", 1), 1); got != "SigningID#"+atLimit {
+				t.Errorf("binary 1 has GlobalRule of %d bytes, want its 255-byte signing ID's rule", len(got))
 			}
 		})
 		t.Run(c.name+" one character over", func(t *testing.T) {
-			if n, runes := len(signingPrefix+over), utf8.RuneCountInString(signingPrefix+over); n <= maxRuleSortKeyBytes || runes >= maxRuleSortKeyBytes {
-				t.Fatalf("fixture: rule key is %d bytes and %d characters", n, runes)
+			if n, runes := len(over), utf8.RuneCountInString(over); n <= maxSigningIDBytes || runes >= maxSigningIDBytes {
+				t.Fatalf("fixture: signing ID is %d bytes and %d characters", n, runes)
 			}
 			ddblocal.Reset(t)
-			identifierCounter(t, 1, over, "TEAM1")
+			identifierCounter(t, 1, over, "")
 			marker(t, 1, "MAC-A", 0)
-			identifierCounter(t, 2, "TEAM2:bin2", "TEAM2")
+			identifierCounter(t, 2, teamN(2)+":bin2", teamN(2))
 			marker(t, 2, "MAC-B", 0)
-			storeRule(t, "GlobalRules", "SigningID#TEAM2:bin2")
+			storeRule(t, "GlobalRules", "SigningID#"+teamN(2)+":bin2")
+			storeRule(t, "GlobalRules", "SigningID#"+over)
 
 			if err := runStoreErr(t); err != nil {
 				t.Fatalf("a %d-byte, %d-character signing ID stopped the ranker run: %v", len(over), utf8.RuneCountInString(over), truncate(err.Error()))
@@ -194,8 +195,8 @@ func TestRanker_MultiByteIdentifierAtTheRuleKeyLimit_R1(t *testing.T) {
 			if got, ok := ruleOf(rows, 1); !ok || got != "" {
 				t.Errorf("binary 1 present %v with GlobalRule of %d bytes, want present without one", ok, len(got))
 			}
-			if got, _ := ruleOf(rows, 2); got != "SigningID#TEAM2:bin2" {
-				t.Errorf("binary 2 has GlobalRule %q, want SigningID#TEAM2:bin2", got)
+			if got, _ := ruleOf(rows, 2); got != "SigningID#"+teamN(2)+":bin2" {
+				t.Errorf("binary 2 has GlobalRule %q, want SigningID#%s:bin2", got, teamN(2))
 			}
 		})
 	}

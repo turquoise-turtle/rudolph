@@ -43,7 +43,7 @@ func unknownCounter(t *testing.T, daysAgo, i, unknownBlocked, unknownAllowed int
 	put(t, map[string]any{"PK": "BinaryDay#" + day(daysAgo), "SK": sha(i),
 		"Blocked": unknownBlocked, "Allowed": unknownAllowed,
 		"UnknownBlocked": unknownBlocked, "UnknownAllowed": unknownAllowed,
-		"FileName": name, "TeamID": fmt.Sprintf("TEAM%d", i), "SigningID": fmt.Sprintf("TEAM%d:%s", i, name)})
+		"FileName": name, "TeamID": teamN(i), "SigningID": teamN(i) + ":" + name})
 }
 
 func storeRule(t *testing.T, pk, sk string) {
@@ -222,16 +222,16 @@ func TestRanker_UnknownMarksGlobalRulesAndSortsThemLast(t *testing.T) {
 		marker(t, i, "MAC-A", 0)
 	}
 	storeRule(t, "GlobalRules", "Binary#"+sha(6))
-	storeRule(t, "GlobalRules", "SigningID#TEAM5:bin5")
-	storeRule(t, "GlobalRules", "TeamID#TEAM4")
+	storeRule(t, "GlobalRules", "SigningID#"+teamN(5)+":bin5")
+	storeRule(t, "GlobalRules", "TeamID#"+teamN(4))
 	// Not global: these don't mark the row.
 	storeRule(t, "MachineRules#MAC-A", "Binary#"+sha(3))
 	storeRule(t, "GroupRules#lab", "Binary#"+sha(2))
 	// A binary with both a binary and a team ID rule names the binary rule.
-	storeRule(t, "GlobalRules", "TeamID#TEAM6")
+	storeRule(t, "GlobalRules", "TeamID#"+teamN(6))
 	runWithStore(t)
 
-	want := "3:30/1 2:20/1 1:10/1 6:60/1[Binary#" + sha(6) + "] 5:50/1[SigningID#TEAM5:bin5] 4:40/1[TeamID#TEAM4]"
+	want := "3:30/1 2:20/1 1:10/1 6:60/1[Binary#" + sha(6) + "] 5:50/1[SigningID#" + teamN(5) + ":bin5] 4:40/1[TeamID#" + teamN(4) + "]"
 	if got := usummary(unknownList(t, "Unknown", 1)); got != want {
 		t.Errorf("Unknown 1 day:\n got %s\nwant %s\n(no global rule first; then Macs, count, SHA)", got, want)
 	}
