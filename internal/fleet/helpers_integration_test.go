@@ -263,7 +263,7 @@ func globalConfig(t *testing.T, mode rudolphtypes.ClientMode, disableUpload *boo
 	cfg.ClientMode = mode
 	cfg.DisableUnknownEventUpload = disableUpload
 	svc := machineconfiguration.GetUncachedMachineConfigurationService(ddblocal.Client(t), clock.ConcreteTimeProvider{})
-	if err := svc.SetGlobalConfig(cfg); err != nil {
+	if err := svc.SetGlobalConfig(cfg, machineconfiguration.ConfirmGlobalLockdown()); err != nil {
 		t.Fatal(err)
 	}
 }
