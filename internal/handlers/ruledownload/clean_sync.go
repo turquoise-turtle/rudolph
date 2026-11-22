@@ -29,13 +29,13 @@ type concreteGlobalRuleDownloader struct {
 }
 
 func (d concreteGlobalRuleDownloader) handle(machineID string, cursor ruledownloadCursor) (*events.APIGatewayProxyResponse, error) {
-	// Pages are sized by what the response can carry, not by the cursor's batch size: that is Santa's event upload
-	// batch size (50 by default), which made a clean sync of 80,000 rules 1,600 requests, each rounding its read
-	// capacity up. DynamoDB returns at most 1 MB per query, so a page is read with as many queries as it takes.
 	if cursor.onTail() {
 		// Every global rule has been sent; this page goes on with the machine-specific rules
 		return lastPageOrNext(machineID, cursor, nil, nil, d.machineRules, nil)
 	}
+	// Pages are sized by what the response can carry, not by the cursor's batch size: that is Santa's event upload
+	// batch size (50 by default), which made a clean sync of 80,000 rules 1,600 requests, each rounding its read
+	// capacity up. DynamoDB returns at most 1 MB per query, so a page is read with as many queries as it takes.
 	page := newRulePage(d.machineRules.budget(), cursor.SilentBlocklistOnly)
 	var pageRules []rules.SantaRule
 	// nextKey is the key the next page starts after: the last rule on this page, or nil after the last global rule

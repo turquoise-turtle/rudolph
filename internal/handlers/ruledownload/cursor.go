@@ -10,7 +10,6 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
-	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/model/syncstate"
 )
 
@@ -105,14 +104,14 @@ func (r ruledownloadCursor) validate() error {
 	}
 	if r.TailSection != 0 || r.TailSortKey != "" {
 		// The place in the tail is only compared with the sort keys of the machine's own rules, never sent to
-		// DynamoDB; it is still held to what Rudolph issues: a section, and no key or the sort key of a rule
+		// DynamoDB. It is held to what Rudolph can issue: one of the sections, and a sort key no longer than DynamoDB
+		// stores. The key's form is not checked: it is that of a stored row, and a row whose key is not a rule's
+		// would otherwise stop every sync at the page after it.
 		if r.TailSection < tailMachineRules || r.TailSection > tailReplacements {
 			return fmt.Errorf("tail section %d outside %d-%d", r.TailSection, tailMachineRules, tailReplacements)
 		}
-		if r.TailSortKey != "" {
-			if _, _, ok := rules.RuleTypeIdentifierFromSortKey(r.TailSortKey); !ok || len(r.TailSortKey) > maxSortKeyBytes {
-				return fmt.Errorf("the tail sort key is not a rule sort key of at most %d bytes", maxSortKeyBytes)
-			}
+		if len(r.TailSortKey) > maxSortKeyBytes {
+			return fmt.Errorf("the tail sort key is longer than %d bytes", maxSortKeyBytes)
 		}
 	}
 	var partition string
