@@ -44,8 +44,8 @@ Assumptions:
 * **A sync with no changes** is 3 requests: preflight, one ruledownload page (the feed of rule changes since the Mac's last completed syncs, with the machine and group rules at the end of that page) and postflight. Eventupload is only called when there are events (Santa skips it otherwise). Santa only calls `/xsrf` after a 403 and never calls `/health`, so neither is counted.
 * **DynamoDB per sync**, as measured by the integration tests (`TestCOST2_SteadyStateSyncCapacityBudget`): 3 write units and 5.5 read units for a Mac with 1,000 global and 100 machine rules; `TestC3_SteadyStateSyncIsCheapOnDynamoDB` checks it makes no `Scan`. An incremental sync reads only feed rows written since its cursor (10 minutes before the older of the Mac's last two completed syncs), so it does not depend on the number of global rules. Each Mac also costs the two machine list indexes about 2 writes a day (`LastSeenDay`).
 * **Rule changes**: a few a day (say 5). A changed rule reaches each Mac in the feed page its next syncs read anyway, a row of about 150 bytes inside a query already counted, so rule changes add no requests and next to no capacity.
-* **Clean syncs** happen periodically, every 7 to 17 days depending on the machine ID (about 2.5 a Mac a month), plus a Mac's first sync, a clean sync requested with `rudolph config update --machine <uuid> --clean-sync`, a Mac reporting no rules and a Santa upgrade across 2026.6 (rare; not counted). A clean sync sends every global rule in pages of the preflight's `batch_size` (default 50): about 3, 21 and 201 ruledownload pages for 100, 1,000 and 10,000 rules, each page about 1.6 read units, plus about 2 more write units for its bookkeeping. This is the only place the rule count shows: at 5,000 Macs it adds about US$1 a month for 1,000 rules and about US$12 for 10,000.
-* **Lambda** (arm64, billed per millisecond): warm durations of about 60 ms for preflight (256 MB), 60 ms per ruledownload page (512 MB), 40 ms for postflight (512 MB) and 150 ms for eventupload (256 MB). Cold starts add little at these request rates.
+* **Clean syncs** happen periodically, every 7 to 17 days depending on the machine ID (about 2.5 a Mac a month), plus a Mac's first sync, a clean sync requested with `rudolph config update --machine <uuid> --clean-sync`, a Mac reporting no rules and a Santa upgrade across 2026.6 (rare; not counted). A clean sync sends every global rule in pages of about 2 MB of rules (about 14,500 small rules a page, see [rule-pagination](./rule-pagination.md#page-size)), so it is one ruledownload request for 100, 1,000 or 10,000 rules, like any other sync. It reads every global rule row, about 176 bytes for a small rule: about 2.5, 21.5 and 215 read units for 100, 1,000 and 10,000 rules (`TestCOST2_FirstSyncCapacityBudget` measures 31 read units for a Mac's first sync with 1,000 global and 100 machine rules on a cold server), plus about 2 more write units for its bookkeeping. This is the only place the rule count shows, and it is small: at 5,000 Macs, 10,000 rules add about 30 cents a month.
+* **Lambda** (arm64, billed per millisecond): warm durations of about 60 ms for preflight (256 MB), 60 ms per ruledownload page (512 MB), 40 ms for postflight (512 MB) and 150 ms for eventupload (256 MB). Cold starts add little at these request rates. A clean sync's ruledownload page takes longer the more global rules it carries (a full page of about 14,500 takes a few hundred milliseconds on a developer's machine against DynamoDB Local; not measured on Lambda), which the estimates leave out: clean syncs are about one sync in 1,700 at a 10-minute interval.
 * **Authoriser**: the whole fleet shares one sync token, and API Gateway caches the authoriser's decision per token for `authorizer_result_ttl_in_seconds` (300), so it runs roughly once per 5 minutes for the whole fleet (about 9,000 invocations a month, under US$0.01), however many Macs sync.
 * **Logs**: about 600 bytes of CloudWatch Logs per Lambda invocation (Rudolph's request line and a handler line or two, Lambda's START/END/REPORT lines, and CloudWatch's 26 bytes per log event), kept 30 days (`log_retention_in_days`). API Gateway execution logging is off.
 * **Data transfer out** to the Macs: about 5 KB a sync (TLS handshake with the certificate chain, and the three responses), counted in the API Gateway column.
@@ -71,52 +71,52 @@ Unit prices used (us-east-1, on-demand, list):
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **366** |
-| 1,000 | 1 min | 66.5 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
-| 10,000 | 1 min | 66.7 M | 33 | 243 | 56 | 20 | 4.6 | 10 | **368** |
+| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
+| 1,000 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
+| 10,000 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
 | 100 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
-| 1,000 | 10 min | 7.1 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
-| 10,000 | 10 min | 7.3 M | 3.7 | 27 | 5.7 | 2.2 | 4.6 | 10 | **53** |
+| 1,000 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
+| 10,000 | 10 min | 7.0 M | 3.6 | 26 | 5.7 | 2.1 | 4.6 | 10 | **52** |
 | 100 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
-| 1,000 | 30 min | 2.4 M | 1.3 | 8.9 | 1.9 | 0.7 | 4.6 | 10 | **28** |
-| 10,000 | 30 min | 2.7 M | 1.4 | 9.7 | 1.9 | 0.8 | 4.6 | 10 | **29** |
+| 1,000 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
+| 10,000 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **28** |
 | 100 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
-| 1,000 | 60 min | 1.2 M | 0.6 | 4.5 | 1.0 | 0.4 | 4.6 | 10 | **21** |
-| 10,000 | 60 min | 1.5 M | 0.8 | 5.3 | 1.0 | 0.4 | 4.6 | 10 | **22** |
+| 1,000 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
+| 10,000 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
 
 2,000 Macs, monitor mode, US$ a month:
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 1 min | 266 M | 132 | 969 | 225 | 80 | 19 | 11 | **1,436** |
-| 1,000 | 1 min | 266 M | 132 | 970 | 225 | 80 | 19 | 11 | **1,437** |
-| 10,000 | 1 min | 267 M | 133 | 973 | 225 | 81 | 19 | 11 | **1,441** |
+| 1,000 | 1 min | 266 M | 132 | 969 | 225 | 80 | 19 | 11 | **1,436** |
+| 10,000 | 1 min | 266 M | 132 | 969 | 225 | 80 | 19 | 11 | **1,436** |
 | 100 | 10 min | 28.2 M | 14 | 103 | 23 | 8.5 | 19 | 11 | **177** |
-| 1,000 | 10 min | 28.3 M | 14 | 103 | 23 | 8.6 | 19 | 11 | **178** |
-| 10,000 | 10 min | 29.2 M | 15 | 106 | 23 | 8.8 | 19 | 11 | **182** |
+| 1,000 | 10 min | 28.2 M | 14 | 103 | 23 | 8.5 | 19 | 11 | **177** |
+| 10,000 | 10 min | 28.2 M | 14 | 103 | 23 | 8.5 | 19 | 11 | **178** |
 | 100 | 30 min | 9.7 M | 5.0 | 35 | 7.6 | 2.9 | 19 | 11 | **80** |
-| 1,000 | 30 min | 9.8 M | 5.1 | 36 | 7.6 | 3.0 | 19 | 11 | **81** |
-| 10,000 | 30 min | 10.7 M | 5.6 | 39 | 7.8 | 3.2 | 19 | 11 | **85** |
+| 1,000 | 30 min | 9.7 M | 5.0 | 35 | 7.6 | 2.9 | 19 | 11 | **80** |
+| 10,000 | 30 min | 9.7 M | 5.0 | 35 | 7.7 | 2.9 | 19 | 11 | **80** |
 | 100 | 60 min | 4.9 M | 2.5 | 18 | 3.8 | 1.5 | 19 | 11 | **55** |
-| 1,000 | 60 min | 5.0 M | 2.6 | 18 | 3.8 | 1.5 | 19 | 11 | **55** |
-| 10,000 | 60 min | 5.9 M | 3.1 | 21 | 4.0 | 1.8 | 19 | 11 | **60** |
+| 1,000 | 60 min | 4.9 M | 2.5 | 18 | 3.8 | 1.5 | 19 | 11 | **55** |
+| 10,000 | 60 min | 4.9 M | 2.5 | 18 | 4.0 | 1.5 | 19 | 11 | **55** |
 
 5,000 Macs, monitor mode, US$ a month:
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 1 min | 664 M | 331 | 2,192 | 561 | 201 | 46 | 12 | **3,344** |
-| 1,000 | 1 min | 665 M | 331 | 2,192 | 562 | 201 | 46 | 12 | **3,344** |
-| 10,000 | 1 min | 667 M | 332 | 2,199 | 562 | 202 | 46 | 12 | **3,353** |
-| 100 | 10 min | 70.5 M | 36 | 256 | 56 | 21 | 46 | 12 | **428** |
-| 1,000 | 10 min | 70.7 M | 36 | 257 | 56 | 21 | 46 | 12 | **429** |
-| 10,000 | 10 min | 73.0 M | 37 | 265 | 57 | 22 | 46 | 12 | **440** |
-| 100 | 30 min | 24.3 M | 13 | 88 | 19 | 7.3 | 46 | 12 | **185** |
-| 1,000 | 30 min | 24.5 M | 13 | 89 | 19 | 7.4 | 46 | 12 | **186** |
-| 10,000 | 30 min | 26.8 M | 14 | 97 | 19 | 8.1 | 46 | 12 | **197** |
+| 1,000 | 1 min | 664 M | 331 | 2,192 | 561 | 201 | 46 | 12 | **3,344** |
+| 10,000 | 1 min | 664 M | 331 | 2,192 | 562 | 201 | 46 | 12 | **3,344** |
+| 100 | 10 min | 70.4 M | 36 | 256 | 56 | 21 | 46 | 12 | **428** |
+| 1,000 | 10 min | 70.4 M | 36 | 256 | 56 | 21 | 46 | 12 | **428** |
+| 10,000 | 10 min | 70.4 M | 36 | 256 | 57 | 21 | 46 | 12 | **429** |
+| 100 | 30 min | 24.2 M | 13 | 88 | 19 | 7.3 | 46 | 12 | **185** |
+| 1,000 | 30 min | 24.2 M | 13 | 88 | 19 | 7.3 | 46 | 12 | **185** |
+| 10,000 | 30 min | 24.2 M | 13 | 88 | 19 | 7.3 | 46 | 12 | **186** |
 | 100 | 60 min | 12.2 M | 6.3 | 44 | 9.6 | 3.7 | 46 | 12 | **122** |
-| 1,000 | 60 min | 12.4 M | 6.4 | 45 | 9.6 | 3.8 | 46 | 12 | **123** |
-| 10,000 | 60 min | 14.7 M | 7.8 | 53 | 10 | 4.4 | 46 | 12 | **134** |
+| 1,000 | 60 min | 12.2 M | 6.3 | 44 | 9.6 | 3.7 | 46 | 12 | **122** |
+| 10,000 | 60 min | 12.2 M | 6.3 | 44 | 9.9 | 3.7 | 46 | 12 | **122** |
 
 Per sync this is about US$16 per million syncs: API Gateway about US$11 (US$10.50 for the 3 requests, about US$0.45 for data transfer out), DynamoDB about US$2.60, Lambda about US$1.50 and CloudWatch Logs about US$0.90. Above 333 million requests a month (about 2,500 Macs syncing every minute), API Gateway's lower tiers bring the per-sync cost down a little.
 
@@ -125,7 +125,7 @@ The free tier is left out above. AWS's always-free allowances (1 million Lambda 
 Takeaways:
 
 * API Gateway's per-request price is about two thirds of every sync-driven figure, followed by DynamoDB; at intervals of 30 minutes and more, the events table and the fixed items become a large share of a small bill.
-* The sync interval matters far more than the rule count: 1-minute syncs cost about 8 times as much as Santa's 10-minute default and 20 to 30 times as much as 60-minute syncs, while 1,000 rules instead of 100 change the total by about a dollar or less, because only the periodic clean syncs page through the global rules. Even 10,000 rules add only a few per cent at a 10-minute interval.
+* The sync interval matters far more than the rule count: 1-minute syncs cost about 8 times as much as Santa's 10-minute default and 20 to 30 times as much as 60-minute syncs, while the rule count barely changes the total, because only the periodic clean syncs read the global rules: even 10,000 rules add less than a dollar a month at 5,000 Macs.
 * For most fleets, keep Santa's default of 10 minutes (about US$52, US$180 and US$430 a month for 500, 2,000 and 5,000 Macs if every Mac is always online, much less in practice), or 30 minutes (about US$27, US$80 and US$185) if a rule change or temporary mode may take up to half an hour to arrive; `santactl sync` applies a change at once on a Mac that needs it. Avoid 1 minute: it is Santa's minimum and costs about US$365, US$1,435 and US$3,345 a month for little gain.
 
 ## Fixed monthly costs
@@ -185,7 +185,7 @@ Blocked and unknown executions, those allowed by rules flagged for collection, a
 The ranker, which builds the web view's top-blocked, top-allowed and top-unknown lists, reads 90 days of day counters, the machine markers of up to 2,000 binaries (usually a few hundred) and up to about 300 global rules per run, and writes up to 10,000 snapshot rows: about US$4 a month for 1,000 Macs and about US$21 a month for 100,000 Macs (up to about US$150 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). Its Lambda runs with 512 MB, as it holds a total of about 350 bytes for every distinct binary of the 90 days (at most about 800: a counter only carries a file name or signing ID of up to 255 bytes and a 10-character team ID): about 5 cents a month at ten seconds a run, and under US$0.40 even at a minute a run, twice what 256 MB would cost. See [Top binaries](./events-table.md#top-binaries).
 
 ## Costs of Rules
-The number of global rules barely affects cost. A sync with no changes reads only the rules feed since the Mac's last completed syncs, not the global rules, so it costs the same with 100 rules or 80,000. Only clean syncs (a Mac's first sync, then every 7 to 17 days) page through every global rule, in pages of the preflight's `batch_size` (default 50); for 1,000 rules that is about 20 extra small requests per Mac every couple of weeks, about a dollar a month for 5,000 Macs (see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). Machine and group rules are read on every sync (about 150 KB, 20 read units at eventual consistency, for 1,000 of them on one Mac), so a Mac with very many machine rules does cost more per sync.
+The number of global rules barely affects cost. A sync with no changes reads only the rules feed since the Mac's last completed syncs, not the global rules, so it costs the same with 100 rules or 80,000. Only clean syncs (a Mac's first sync, then every 7 to 17 days) read every global rule, in pages of about 2 MB of rules whatever the preflight's `batch_size`: one request up to about 14,500 small rules, 6 for 80,000 (about 1,750 read units). For 1,000 rules that is about 22 read units per Mac every couple of weeks, a few cents a month for 5,000 Macs (see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). Machine and group rules are read on every sync (about 150 KB, 20 read units at eventual consistency, for 1,000 of them on one Mac), so a Mac with very many machine rules does cost more per sync, and one whose machine and group rules exceed a page (about 2 MB of rules, some 15,000 small ones) reads them all again for every further page they take (see [rule-pagination](./rule-pagination.md#when-they-do-not-fit-one-page)).
 
 
 ## Group members
