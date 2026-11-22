@@ -25,14 +25,24 @@ A full clean sync will occur, in which all GlobalRules are returned and a clean-
 Additional calls will use the Pagination Strategy Method which is set in the cursor to instruct what sync needs to happen.
 
 ### Strategies Definitions:
-- 1 = Downloads all GlobalRules (pages of the configured batch size)
-- 2 = Downloads all FeedRules which is determined via the last sync state time (pages of up to 5000 rules)
-- 3 = Downloads all MachineRules. Only cursors issued by earlier versions of Rudolph use it: the machine-specific
-  rules are now sent at the end of the last GlobalRules or FeedRules page.
+- 1 = Downloads all GlobalRules (pages sized by the response, see [Page size](#page-size))
+- 2 = Downloads all FeedRules which is determined via the last sync state time (pages of up to 5000 rules, within the same response budget)
+- 3 = Downloads all MachineRules. Only a sync whose first cursor was issued by an earlier version of Rudolph uses it: the machine-specific rules are now sent after the last GlobalRules or FeedRules page, under that page's strategy.
+
+## Page size
+A response carries at most 2 MiB of rules, a third of the 6 MB a Lambda may return. Each rule is measured as it counts against that limit: its JSON, plus one byte for every quote and backslash in it, because the rules are JSON inside the body of the Lambda proxy response, which is itself a JSON string. A small rule (a SHA-256 and a policy) is 136 bytes, so a page of global rules, which is sent once it is within a sixteenth of the budget, holds about 14,500 of them and a clean sync of 80,000 takes 6 requests; a rule with every optional field at its limit, full of characters that need escaping, is about 176 KB. A page always carries at least one rule, whatever its size.
+
+The budget is well below the limit on purpose: a rule written before the field limits can be as large as a DynamoDB item (400 KB); Santa gives a request 30 seconds in all, download included, and API Gateway does not compress responses, so a page has to get through a slow link in that time (2 MiB in 30 seconds is about 0.6 Mbit/s); and the ruledownload Lambda has 10 seconds to build it.
+
+Pages are not sized by the configured `batch_size`: that is Santa's event upload batch size. The cursor still carries it, checked as before, so that cursors keep their shape across versions.
+
+- **Global rules.** DynamoDB returns at most 1 MB per Query, so a full page takes several (about 4 for small rules). The first has no limit; each later one asks for no more rules than are likely to fit, judging by the size of those already on the page, so that few rows are read and then left for the next page. A page that has spent 3 seconds on queries is sent with what it has. A fleet of up to about 5,000 small rules is one Query and one page.
+- **Feed rules.** One Query of at most 5,000 rows a page, cut at the budget if their rules would not fit.
+- **Machine-specific rules.** They share the budget of the page they start on and go on over further pages when they do not fit; see below.
 
 ## Machine-specific rules
-Machine-specific rules are sent at the end of the last page of every sync, after the global rules or the feed, so that
-they take precedence. Only rules that apply are sent: a rule that expired (`ExpiresAfter`, which is also the table's
+Machine-specific rules are sent at the end of every sync, after the global rules or the feed, so that
+they take precedence: on the last global or feed page, and on further pages of their own when they do not fit the response budget (see [When they do not fit one page](#when-they-do-not-fit-one-page)). Only rules that apply are sent: a rule that expired (`ExpiresAfter`, which is also the table's
 TTL attribute; DynamoDB can take days to delete an expired row) or that was removed (`rudolph rule remove --machine`)
 is not. Updating a rule that is being removed (`rudolph rule update --machine`) brings it back with the new policy.
 
@@ -101,10 +111,14 @@ placeholder binary identifier (`000…0`, 64 zeros). Santa clears its rules at a
 at least one rule it can parse; without it, a Mac whose machine rules, sync state and tracking all expired while it
 was offline would keep those rules forever.
 
-Scale: a Mac's machine rules are all sent on the last page of every sync, so their number is bounded by the Lambda
-response size (6 MB, roughly 30,000 binary rules) and by the ruledownload Lambda's run time when many change at once
-(the first sync of a Mac with N machine rules writes N tracking items, N/25 requests; see above for timeouts). Each
-machine rule costs about 130 bytes of storage for tracking while the Mac may hold it.
+### When they do not fit one page
+The machine-specific rules of a sync are three sections, sent in this order, each in rule sort key order: the machine's own rules that apply, the rules of its groups (one per rule type and identifier, see [groups](./groups.md)), and what replaces the rules the Mac may hold that no longer apply (the global rule, or a `REMOVE`). No rule type and identifier is in two sections. They start on the last global or feed page, in whatever that page has left of its budget, and when they do not all fit, the response carries a cursor with the place reached: `tail`, the section the next page goes on with (1, 2 or 3), and `tail_sk`, the sort key of the last rule of that section already sent (absent when none was). The cursor keeps its strategy (1 or 2; 3 for a sync started by an earlier version), `seq` and `silent_only`. Its `pk` and `sk` are no longer read from: for an incremental sync they name the newest feed row the sync served, which the last page needs for what it records (see [Macs whose postflight never arrives](#macs-whose-postflight-never-arrives)), and are absent when it served none; a clean sync's carries none.
+
+Every such page builds the machine-specific rules again: it reads the sync state, every machine rule row of the Mac and, when the tracking summary does not match, the tracking items, exactly as a single last page does, and sends what follows the cursor's place. So each of them is refused like a last page when the sync was superseded (409) or has no sync state (400). Delivery tracking is brought up to date by the first of them, before anything is sent; the later ones find it up to date and write nothing, unless something changed in between. Rows marked for deletion are deleted by the first. Only the page that ends the sync, the one without a cursor, records the last page as served.
+
+Rules can change between two pages. Because a page goes on from a sort key and not from a count, a change never shifts the rest so that a rule is skipped or sent twice: a rule added before the place reached is sent by the next sync (every rule that applies is sent on every sync); a rule that stops applying after it was sent is replaced by a later page of the same sync, as the replacements come last, or by the next sync. One case counts a removal one sync early: a rule that stops applying after the replacements have passed its key is recorded as first sent by this sync although the next one is the first to send it, so its removal then counts as delivered after one more completed sync rather than two. It takes a Mac whose replacements alone exceed a page and a removal in the seconds between two of its pages.
+
+Scale: a Mac's machine-specific rules are no longer bounded by the Lambda response size (25,000 rules with 250-byte custom messages, about 10 MB, take 5 pages). What bounds them is the ruledownload Lambda's run time and the cost of reading them: every page of machine-specific rules reads all of the Mac's machine rule rows again, so a set that takes N pages is read N times on every sync (25,000 such rules: about 1,500 read units a page, 7,600 a sync), and the first sync of a Mac with N machine rules writes N tracking items, N/25 requests, which at that size does not finish within one Lambda invocation (see above for timeouts: it completes over several syncs). Up to about 2 MiB of machine-specific rules, some 15,000 small ones, nothing changes: one page, read once. Each machine rule costs about 130 bytes of storage for tracking while the Mac may hold it.
 
 ### Known limitation: cloned machine IDs and stray postflights
 Santa sends no sync ID, so Rudolph cannot tell which sync a postflight closes. A stray postflight (a delayed duplicate,
@@ -190,6 +204,7 @@ Rows written by earlier versions keep working:
   sync started by an old preflight during the deployment (no `SyncSeq`) sends removals but records nothing; the next
   sync does.
 - A cursor with strategy 3 issued by the previous version during the deployment is still served.
+- A strategy 1 or 2 cursor issued by a version that sized global rule pages by `batch_size` has the same fields as today's and is served: its sync simply goes on in larger pages. The other way round (a cursor issued by this version reaching the previous one, during the deployment or after a rollback) also works for a global or feed page, which then holds `batch_size` rules. A cursor on the machine-specific rules (`tail`) means nothing to the previous version, which ignores the fields it does not know: with a key it sends all the machine-specific rules in one response, as it always did, some of them a second time; without one it answers 400, which ends that sync, and the Mac's next sync starts again from preflight.
 - A clean sync started by an earlier version that has not completed (no `PreviousCleanSync`) does not count as a
   clean sync: the next sync is a clean sync again.
 - A sync state without `PreflightRulesHash` (written by an earlier version) is never proven applied by the hash. One without `LastPageServedNothingNew` never counts as having served nothing new; one without `LastPageServedRun` or `ContentRun` starts its run again, and one without `FallbackContentServings` is treated as following a completed sync that did not count through the fallback.

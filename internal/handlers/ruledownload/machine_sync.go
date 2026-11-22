@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"sort"
 	"time"
 
@@ -20,8 +19,9 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-// The machine-specific rules of a sync are sent at the end of its last page, after the global rules (clean sync) or
-// the rules feed (incremental sync), so that they take precedence over them. They are re-sent on every sync.
+// The machine-specific rules of a sync are sent at its end, after the global rules (clean sync) or the rules feed
+// (incremental sync), so that they take precedence over them: on the last global or feed page, and on further pages
+// when they do not fit it (see machineTail). They are re-sent on every sync.
 //
 // A machine rule that stops applying (it expired, was marked for removal, or its row is gone, e.g. deleted by the
 // table's TTL) must also leave the Mac. Rudolph tracks which machine rules the Mac may hold (see
@@ -39,8 +39,9 @@ type machineRuleDownloder interface {
 	handle(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error)
 }
 
-// concreteMachineRuleDownloader serves a page holding only the machine-specific rules. Current syncs get them on
-// their last global or feed page; this page is only requested with cursors issued by earlier versions of Rudolph.
+// concreteMachineRuleDownloader serves a page holding only the machine-specific rules, for a cursor with the machine
+// strategy. Current syncs get them from their last global or feed page on, under that page's strategy; a sync is only
+// on this strategy when an earlier version of Rudolph issued its cursor.
 type concreteMachineRuleDownloader struct {
 	machineRules machineRulePage
 }
@@ -48,10 +49,13 @@ type concreteMachineRuleDownloader struct {
 func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequest *RuledownloadRequest) (*events.APIGatewayProxyResponse, error) {
 	log.Printf("  Ruledownload machine page")
 
-	cursorSyncSeq := 0
+	cursor := ruledownloadCursor{}
 	if ruledownloadRequest != nil && ruledownloadRequest.Cursor != nil {
-		cursorSyncSeq = ruledownloadRequest.Cursor.SyncSeq
+		cursor = *ruledownloadRequest.Cursor
 	}
+	cursor.Strategy = ruledownloadStrategyMachine
+	// Earlier versions issued machine cursors with a key, which no machine page reads; it is not handed back
+	cursor.ruledownloadCursorDDBLastEvaluatedKey = ruledownloadCursorDDBLastEvaluatedKey{}
 	syncState, err := syncstate.GetByMachineID(d.machineRules.getter, machineID)
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading the sync state: %w", err), response.ErrInternalServerErrorResponse)
@@ -59,24 +63,14 @@ func (d concreteMachineRuleDownloader) handle(machineID string, ruledownloadRequ
 	if syncState == nil {
 		return syncErrorResponse("serving the machine rules page", errNoSyncState)
 	}
-	if cursorSyncSeq == 0 {
+	if cursor.SyncSeq == 0 {
 		// Earlier versions of Rudolph issued machine cursors without seq, so one without seq is taken as the current
 		// sync's
-		cursorSyncSeq = syncState.SyncSeq
+		cursor.SyncSeq = syncState.SyncSeq
 	}
-	machineRules, err := d.machineRules.rules(machineID, syncState, nil, cursorSyncSeq)
-	if err != nil {
-		return syncErrorResponse("building the machine rules page", err)
-	}
-
-	// The lack of a cursor in this response signals to the sensor that there is no more stuff to paginate over.
-	return response.APIResponse(
-		http.StatusOK,
-		RuledownloadResponse{
-			Rules: ResponseRulesForClient(machineRules, syncState.SilentBlocklistOnly),
-			// Omit the cursor to signal to the sensor that there are no more pages to paginate through
-		},
-	)
+	cursor.syncState = syncState
+	cursor.SilentBlocklistOnly = syncState.SilentBlocklistOnly
+	return lastPageOrNext(machineID, cursor, nil, nil, d.machineRules, nil)
 }
 
 // machineRulePage builds the machine-specific part of a sync.
@@ -90,18 +84,85 @@ type machineRulePage struct {
 	timer       clock.TimeProvider
 	// groups caches the group registry and group rules for this server instance; nil serves no group rules
 	groups *groups.Cache
+	// responseBudget is how many bytes of rules a response carries (see encodedRuleBytes); 0 for
+	// defaultResponseBudgetBytes
+	responseBudget int
 }
 
-// rules returns the machine-specific rules to send at the end of the sync's last page, and records which rules the
-// Mac may hold from now on.
+func (p machineRulePage) budget() int {
+	if p.responseBudget > 0 {
+		return p.responseBudget
+	}
+	return defaultResponseBudgetBytes
+}
+
+// tailRule is a rule of the machine-specific tail, with the rule sort key it is tracked and paged by
+type tailRule struct {
+	sortKey string
+	rule    rules.SantaRule
+}
+
+// The sections of the machine-specific tail, in the order they are sent. No rule sort key is in two of them, so the
+// order between them does not change what the Mac ends up with; what matters is that all of them follow the global
+// or feed rules. The replacements come last so that a rule that stops applying after an earlier page sent it is
+// replaced by a later page of the same sync.
+const (
+	tailMachineRules = iota + 1
+	tailGroupRules
+	tailReplacements
+)
+
+// tailPosition is how far a sync has got through the tail: the section the next page goes on with, and the sort key
+// of the last rule of that section already sent ("" for none). The zero value is the start of the tail.
+type tailPosition struct {
+	section int
+	sortKey string
+}
+
+// machineTail is the machine-specific end of a sync: the machine's own rules that apply, the rules of its groups,
+// and what replaces the rules the Mac may hold that no longer apply. Each section is in sort key order, which is what
+// lets a sync whose tail does not fit one response go on from a key (see fill).
+type machineTail struct {
+	syncState *syncstate.SyncStateRow
+	sections  [tailReplacements][]tailRule
+	// removalsFirstSentUpTo is the latest sync in which one of the replacements was first sent, 0 without any
+	removalsFirstSentUpTo int
+}
+
+// fill adds the rules of the tail after from to the page, and reports where the next page goes on when they do not
+// all fit. The tail is built again for every page (see machineRulePage.tail) and may have changed in between; going
+// on from a sort key rather than a count means a change before that key is left to the next sync, which sends every
+// rule that applies again anyway, and never shifts the rest so that a rule is skipped.
+func (t *machineTail) fill(page *rulePage, from tailPosition) (next tailPosition, more bool) {
+	for section := max(from.section, tailMachineRules); section <= tailReplacements; section++ {
+		sent := ""
+		if section == from.section {
+			sent = from.sortKey
+		}
+		for _, entry := range t.sections[section-1] {
+			if sent != "" && entry.sortKey <= sent {
+				continue
+			}
+			if !page.add(entry.rule) {
+				return tailPosition{section: section, sortKey: sent}, true
+			}
+			sent = entry.sortKey
+		}
+	}
+	return tailPosition{}, false
+}
+
+// tail returns the machine-specific rules to send at the end of the sync, and records which rules the Mac may hold
+// from now on. When they do not fit the sync's last global or feed page they go on over further pages, each of which
+// calls tail again: the rules are read again, and the tracking, already brought up to date by the first of those
+// pages, is only written again if something changed in between.
 //
 // syncState is the machine's sync state as read at the start of this ruledownload; when nil, it is read again.
-// feedServedUpTo is, for an incremental sync, the stamp of the newest feed row the sync served (or of its cursor when
-// it served none), and nil for any other sync. cursorSyncSeq is the sync the request's cursor was issued for (its
-// seq, 0 when it has none). Every global or feed cursor this version issues for a numbered sync carries the sync's seq,
-// so one without was issued by an older version (a sync in flight across an upgrade is refused once and the next sync
-// works) or forged, and is refused like a superseded one.
-func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateRow, feedServedUpTo *time.Time, cursorSyncSeq int) ([]rules.SantaRule, error) {
+// cursorSyncSeq is the sync the request's cursor was issued for (its seq, 0 when it has none). Every global or feed
+// cursor this version issues for a numbered sync carries the sync's seq, so one without was issued by an older version
+// (a sync in flight across an upgrade is refused once and the next sync works) or forged, and is refused like a
+// superseded one.
+func (p machineRulePage) tail(machineID string, syncState *syncstate.SyncStateRow, cursorSyncSeq int) (*machineTail, error) {
 	if syncState == nil {
 		var err error
 		syncState, err = syncstate.GetByMachineID(p.getter, machineID)
@@ -118,13 +179,14 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		return nil, fmt.Errorf("ruledownload of a superseded sync: %w", syncstate.ErrSyncSuperseded)
 	}
 
+	// DynamoDB returns the rows in sort key order, which fill relies on
 	rows, err := machinerules.GetMachineRules(p.queryer, machineID)
 	if err != nil {
 		return nil, err
 	}
 
 	now := p.timer.Now()
-	var page []rules.SantaRule
+	tail := &machineTail{syncState: syncState}
 	applying := map[string]machinerules.Delivery{}
 	for _, row := range *rows {
 		if !row.AppliesAt(now) {
@@ -134,7 +196,7 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			// Never sent to Santa (see DDBRulesToResponseRules), so the Mac cannot hold it
 			continue
 		}
-		page = append(page, row.SantaRule)
+		tail.sections[tailMachineRules-1] = append(tail.sections[tailMachineRules-1], tailRule{sortKey: row.SortKey, rule: row.SantaRule})
 		applying[row.SortKey] = machinerules.Delivery{}
 	}
 
@@ -145,12 +207,10 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		return nil, err
 	}
 	for _, rule := range groupRules {
-		page = append(page, rule.SantaRule)
+		tail.sections[tailGroupRules-1] = append(tail.sections[tailGroupRules-1], tailRule{sortKey: rule.SortKey, rule: rule.SantaRule})
 		applying[rule.SortKey] = machinerules.Delivery{}
 	}
 
-	stopped := 0
-	removalsFirstSentUpTo := 0
 	refresh := trackingNeedsRefresh(syncState, now)
 	if refresh || machinerules.DeliveryDigest(applying) != syncState.MachineRulesTracked {
 		// Something was added or stopped applying, a removal is pending, delivery is not tracked yet, the summary may
@@ -159,13 +219,12 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 		if err != nil {
 			return nil, err
 		}
-		page = append(page, replacements...)
-		stopped = len(replacements)
-		removalsFirstSentUpTo = firstSentUpTo
+		tail.sections[tailReplacements-1] = replacements
+		tail.removalsFirstSentUpTo = firstSentUpTo
 	}
 
 	// Never log the rules themselves: they identify the binaries a machine is allowed or blocked from running.
-	log.Printf("  Ruledownload machine rules: %d in force (%d from groups), %d no longer applying", len(applying), len(groupRules), stopped)
+	log.Printf("  Ruledownload machine rules: %d in force (%d from groups), %d no longer applying", len(applying), len(groupRules), len(tail.sections[tailReplacements-1]))
 
 	// Rows marked for deletion are no longer needed once delivery is tracked: whether the Mac still has to be told is
 	// decided by the tracked deliveries, not by the row. Without tracking (rows written by older versions of Rudolph,
@@ -180,27 +239,34 @@ func (p machineRulePage) rules(machineID string, syncState *syncstate.SyncStateR
 			}
 		}
 	}
+	return tail, nil
+}
 
-	// This is the sync's last page. For a clean sync, or after syncs that received no postflight, record that it was
-	// served, which the next preflight may count as the sync's completion or as a clean sync performed (see
-	// syncstate.SyncState.LastPageServedMayCount). It is recorded after the tracking above, so a sync whose last page
-	// was served never has tracking writes still to come.
-	if syncState.SyncSeq > 0 && syncState.LastPageServedMayCount() {
-		// Machine rules that apply are sent on every sync whether or not earlier ones completed, so only the feed rows
-		// and the removals decide whether this sync served anything new
-		nothingNew := feedServedUpTo != nil && syncState.ServedNothingNew(*feedServedUpTo, removalsFirstSentUpTo)
-		// A clean sync serves every global rule, including rules written just before it that no earlier sync served,
-		// which neither its feed position nor the next sync's would show as new
-		newContent := syncState.CleanSync || removalsFirstSentUpTo == syncState.SyncSeq ||
-			(feedServedUpTo != nil && syncState.ServesFeedRowsFirst(*feedServedUpTo))
-		run := syncState.NextContentRun(newContent)
-		err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew, run)
-		if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
-			// Not fatal: the sync is then only counted as completed if its postflight arrives
-			log.Printf("  %v", err)
-		}
+// recordLastPageServed is called for the sync's last page, the one that ends the tail. For a clean sync, or after
+// syncs that received no postflight, it records that the page was served, which the next preflight may count as the
+// sync's completion or as a clean sync performed (see syncstate.SyncState.LastPageServedMayCount). It is recorded
+// after the tracking of tail, so a sync whose last page was served never has tracking writes still to come.
+//
+// feedServedUpTo is, for an incremental sync, the stamp of the newest feed row the sync served (the zero time when it
+// served none), and nil for any other sync or when it cannot be told.
+func (p machineRulePage) recordLastPageServed(machineID string, tail *machineTail, feedServedUpTo *time.Time) {
+	syncState := tail.syncState
+	if syncState.SyncSeq == 0 || !syncState.LastPageServedMayCount() {
+		return
 	}
-	return page, nil
+	// Machine rules that apply are sent on every sync whether or not earlier ones completed, so only the feed rows
+	// and the removals decide whether this sync served anything new
+	nothingNew := feedServedUpTo != nil && syncState.ServedNothingNew(*feedServedUpTo, tail.removalsFirstSentUpTo)
+	// A clean sync serves every global rule, including rules written just before it that no earlier sync served,
+	// which neither its feed position nor the next sync's would show as new
+	newContent := syncState.CleanSync || tail.removalsFirstSentUpTo == syncState.SyncSeq ||
+		(feedServedUpTo != nil && syncState.ServesFeedRowsFirst(*feedServedUpTo))
+	run := syncState.NextContentRun(newContent)
+	err := syncstate.MarkLastPageServed(p.timer, p.updater, machineID, syncState.SyncSeq, nothingNew, run)
+	if err != nil && !errors.Is(err, syncstate.ErrSyncSuperseded) {
+		// Not fatal: the sync is then only counted as completed if its postflight arrives
+		log.Printf("  %v", err)
+	}
 }
 
 // groupRules returns the rules of the Mac's groups to send, one per rule type and identifier, sorted by rule sort key
@@ -269,7 +335,7 @@ func (p machineRulePage) trackDeliveries(
 	applying map[string]machinerules.Delivery,
 	refresh bool,
 	now time.Time,
-) ([]rules.SantaRule, int, error) {
+) ([]tailRule, int, error) {
 	tracked, err := machinerules.GetDeliveries(p.queryer, machineID)
 	if err != nil {
 		return nil, 0, err
@@ -411,9 +477,10 @@ func (p machineRulePage) invalidateAfterItemWrites(machineID string, err error) 
 	return err
 }
 
-// replacementsFor returns what to send for machine rules the Mac may hold but that no longer apply, by rule sort key:
-// the global rule for the same identifier and type if there is one Santa can apply, and otherwise a REMOVE.
-func (p machineRulePage) replacementsFor(sortKeys []string) ([]rules.SantaRule, error) {
+// replacementsFor returns what to send for machine rules the Mac may hold but that no longer apply, in the order of
+// their rule sort keys as given: the global rule for the same identifier and type if there is one Santa can apply, and
+// otherwise a REMOVE.
+func (p machineRulePage) replacementsFor(sortKeys []string) ([]tailRule, error) {
 	if len(sortKeys) == 0 {
 		return nil, nil
 	}
@@ -422,7 +489,7 @@ func (p machineRulePage) replacementsFor(sortKeys []string) ([]rules.SantaRule, 
 		return nil, fmt.Errorf("failed to read the global rules machine rules fall back to: %w", err)
 	}
 
-	replacements := make([]rules.SantaRule, 0, len(sortKeys))
+	replacements := make([]tailRule, 0, len(sortKeys))
 	for _, sortKey := range sortKeys {
 		ruleType, identifier, ok := rules.RuleTypeIdentifierFromSortKey(sortKey)
 		if !ok {
@@ -431,15 +498,15 @@ func (p machineRulePage) replacementsFor(sortKeys []string) ([]rules.SantaRule, 
 			continue
 		}
 		if globalRule := globalRules[sortKey]; globalRule != nil && globalRule.RuleType == ruleType && rules.ValidatePolicy(globalRule.SantaRule) == nil {
-			replacements = append(replacements, globalRule.SantaRule)
+			replacements = append(replacements, tailRule{sortKey: sortKey, rule: globalRule.SantaRule})
 			continue
 		}
 		// No global rule, or one Santa cannot apply (e.g. the legacy ALLOWLIST_TRANSITIVE policy): the Mac drops the rule
-		replacements = append(replacements, rules.SantaRule{
+		replacements = append(replacements, tailRule{sortKey: sortKey, rule: rules.SantaRule{
 			RuleType:   ruleType,
 			Policy:     rudolphtypes.RulePolicyRemove,
 			Identifier: identifier,
-		})
+		}})
 	}
 	return replacements, nil
 }

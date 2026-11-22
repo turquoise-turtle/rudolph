@@ -26,12 +26,26 @@ func GetPaginatedGlobalRules(
 	lastEvaluatedKey *dynamodb.PrimaryKey,
 	err error,
 ) {
-	partitionKey := globalRulesPK
-
 	if limit <= 0 {
 		err = errors.New("invalid limit/batchsize specified")
 		return
 	}
+	return QueryGlobalRules(client, limit, exclusiveStartKey)
+}
+
+// QueryGlobalRules is one Query of the global rules, in sort key order, after exclusiveStartKey. With a limit of 0
+// DynamoDB returns as many rules as fit in 1 MB, which is what a caller that sizes its pages itself wants: a limit in
+// rules costs a request per page however small the rules are.
+func QueryGlobalRules(
+	client dynamodb.QueryAPI,
+	limit int,
+	exclusiveStartKey *dynamodb.PrimaryKey,
+) (
+	items []*GlobalRuleRow,
+	lastEvaluatedKey *dynamodb.PrimaryKey,
+	err error,
+) {
+	partitionKey := globalRulesPK
 
 	keyCond := expression.KeyEqual(
 		expression.Key("PK"), expression.Value(partitionKey),
@@ -57,7 +71,9 @@ func GetPaginatedGlobalRules(
 		ExpressionAttributeValues: expr.Values(),
 		KeyConditionExpression:    expr.KeyCondition(),
 		ExclusiveStartKey:         exclusiveStartKeyInput,
-		Limit:                     aws.Int32(int32(limit)),
+	}
+	if limit > 0 {
+		input.Limit = aws.Int32(int32(limit))
 	}
 
 	// log.Printf("Executing DynamoDB Query:\n%+v", input)

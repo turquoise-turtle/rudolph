@@ -80,11 +80,13 @@ LOG_BYTES_PER_REQUEST = 600  # router line, a handler line or two, START/END/REP
 LOG_STORED_FRACTION = 0.15  # stored compressed (about 15% of ingested) for the 30 day retention
 DATA_OUT_BYTES_PER_SYNC = 5000  # TLS handshake (certificate chain) and the three responses
 
-# Clean syncs: periodic every 7 to 17 days (about 12 on average). Global rule pages hold the preflight batch_size
-# (default 50) rules; each page Query reads about 1.6 read units for 50 small rules.
+# Clean syncs: periodic every 7 to 17 days (about 12 on average). Global rule pages are sized by the response, about
+# 2 MB of rules each: a small rule (a SHA-256, no custom message) takes about 136 bytes of it and is a row of about
+# 176 bytes, read at eventual consistency (half a read unit per 4 KB).
 CLEAN_SYNCS_PER_MONTH = DAYS / 12
-RULES_PER_PAGE = 50
-READ_UNITS_PER_PAGE = 1.6
+PAGE_BUDGET_BYTES = 2 * 1024 * 1024
+RULE_RESPONSE_BYTES = 136
+RULE_ROW_BYTES = 176
 CLEAN_EXTRA_WRITE_UNITS = 2  # LastPageServedAt and the clean sync bookkeeping
 
 # Events: Santa's default upload setting, monitor mode, about 50 a Mac a day, almost all ALLOW_UNKNOWN, which Santa
@@ -188,7 +190,8 @@ def fixed_without_ranker(p: dict) -> float:
 def row(p: dict, rules: int, macs: int, interval: int, ranker_runs: float) -> dict:
     syncs = macs * DAYS * 1440 / interval
     clean = macs * CLEAN_SYNCS_PER_MONTH
-    pages = rules // RULES_PER_PAGE + 1
+    pages = max(1, math.ceil(rules * RULE_RESPONSE_BYTES / PAGE_BUDGET_BYTES))
+    clean_read_units = math.ceil(rules * RULE_ROW_BYTES / 4096) / 2
     extra_pages = clean * (pages - 1)
     uploads = macs * DAYS * eventupload_requests_per_mac_day(interval)
     requests = 3 * syncs + extra_pages + uploads
@@ -200,7 +203,7 @@ def row(p: dict, rules: int, macs: int, interval: int, ranker_runs: float) -> di
     api = (tiered(requests / 1e6, p["api_requests_per_million"])
            + syncs * DATA_OUT_BYTES_PER_SYNC / GB * p["data_out_gb"])
     ddb = (syncs * (STEADY_WRITE_UNITS * write + STEADY_READ_UNITS * read)
-           + clean * (pages * READ_UNITS_PER_PAGE * read + CLEAN_EXTRA_WRITE_UNITS * write)
+           + clean * (clean_read_units * read + CLEAN_EXTRA_WRITE_UNITS * write)
            + macs * DAYS * INDEX_WRITES_PER_MAC_DAY * write)
     log_gb = requests * LOG_BYTES_PER_REQUEST / GB
     logs = log_gb * (p["logs_ingest_gb"] + LOG_STORED_FRACTION * p["logs_storage_gb_month"])

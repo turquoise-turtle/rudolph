@@ -21,7 +21,9 @@ type ruledownloadCursor struct {
 	Strategy ruledownloadStrategy `json:"strategy,omitempty"`
 	ruledownloadCursorDDBLastEvaluatedKey
 	PageNumber int `json:"page,omitempty"`
-	BatchSize  int `json:"batch_size,omitempty"`
+	// BatchSize is the sync's event upload batch size. It no longer sizes a page (see rulePage); it stays in the cursor,
+	// and is checked like before, so that cursors keep the shape the previous version issues and accepts.
+	BatchSize int `json:"batch_size,omitempty"`
 	// SyncSeq is the sync (syncstate.SyncState.SyncSeq) whose first page issued the cursor, so that the last page of
 	// an older sync, served after a newer sync of the machine started, is not recorded as the newer sync's. Absent in
 	// cursors issued by earlier versions of Rudolph.
@@ -29,6 +31,13 @@ type ruledownloadCursor struct {
 	// SilentBlocklistOnly carries syncstate.SyncState.SilentBlocklistOnly of the sync to its later pages, which do not
 	// read the sync state: the client predates the silent GUI and TTY policies.
 	SilentBlocklistOnly bool `json:"silent_only,omitempty"`
+	// TailSection and TailSortKey are only set once the sync's global or feed rules have all been sent and its
+	// machine-specific rules did not fit on that page: the section of the tail the next page goes on with (see
+	// machineTail), and the sort key of the last rule of that section already sent ("" for none). A page with such a
+	// cursor reads no global or feed rules. Its key is then not where to read on from, but what the last page records
+	// about the feed: the last feed row the sync served, or no key when it served none (see tailFeedServedUpTo).
+	TailSection int    `json:"tail,omitempty"`
+	TailSortKey string `json:"tail_sk,omitempty"`
 
 	// syncState is the sync state read for the first page of a sync; it is never sent to the client. When the first
 	// page is also the last one (e.g. a steady-state incremental sync), the machine rules page reuses it instead of
@@ -55,6 +64,15 @@ func (r ruledownloadCursor) GetLastEvaluatedKey() *dynamodb.PrimaryKey {
 	return nil
 }
 
+// onTail reports whether the cursor asks for a later page of the machine-specific rules (see TailSection)
+func (r ruledownloadCursor) onTail() bool {
+	return r.TailSection != 0
+}
+
+func (r ruledownloadCursor) tailPosition() tailPosition {
+	return tailPosition{section: r.TailSection, sortKey: r.TailSortKey}
+}
+
 func (r ruledownloadCursor) CloneForNextPage() ruledownloadCursor {
 	return ruledownloadCursor{
 		Strategy:   r.Strategy,
@@ -77,12 +95,24 @@ const maxPageNumber = 1_000_000
 // validate refuses a cursor the server could never have issued. The cursor comes back from the client as it was sent,
 // so it is client input: without these checks a forged one reached DynamoDB and was answered 500, which the api_5xx
 // alarm counts as a server failure and Santa retries. Machine pages read neither the batch size nor the key, and are
-// only requested with cursors from earlier versions of Rudolph, which issued them with any page or none, so only their
-// strategy and the sign of their page and seq are checked.
+// only first requested with cursors from earlier versions of Rudolph, which issued them with any page or none, so only
+// their strategy, the sign of their page and seq, and their place in the tail are checked.
 func (r ruledownloadCursor) validate() error {
 	// Pages count from 1 and seq is the preflight time in milliseconds, so neither is ever negative.
 	if r.PageNumber < 0 || r.SyncSeq < 0 {
 		return fmt.Errorf("negative page %d or seq %d", r.PageNumber, r.SyncSeq)
+	}
+	if r.TailSection != 0 || r.TailSortKey != "" {
+		// The place in the tail is only compared with the sort keys of the machine's own rules, never sent to
+		// DynamoDB. It is held to what Rudolph can issue: one of the sections, and a sort key no longer than DynamoDB
+		// stores. The key's form is not checked: it is that of a stored row, and a row whose key is not a rule's
+		// would otherwise stop every sync at the page after it.
+		if r.TailSection < tailMachineRules || r.TailSection > tailReplacements {
+			return fmt.Errorf("tail section %d outside %d-%d", r.TailSection, tailMachineRules, tailReplacements)
+		}
+		if len(r.TailSortKey) > maxSortKeyBytes {
+			return fmt.Errorf("the tail sort key is longer than %d bytes", maxSortKeyBytes)
+		}
 	}
 	var partition string
 	switch r.Strategy {
@@ -104,7 +134,12 @@ func (r ruledownloadCursor) validate() error {
 		return fmt.Errorf("batch size %d outside %d-%d", r.BatchSize, machineconfiguration.MinBatchSize, machineconfiguration.MaxBatchSize)
 	}
 	// Rudolph only issues a global or feed cursor for a later page, with the whole key DynamoDB returned after the last
-	// row of the page before; DynamoDB refuses a start key with an empty part or a sort key over 1024 bytes.
+	// row of the page before; DynamoDB refuses a start key with an empty part or a sort key over 1024 bytes. A cursor
+	// on the tail is the one exception: it has no key at all when the sync served no feed row (a clean sync never
+	// carries one there).
+	if r.onTail() && r.PartitionKey == "" && r.SortKey == "" {
+		return nil
+	}
 	if r.PartitionKey != partition {
 		return errors.New("the cursor's key is not in the partition its strategy reads")
 	}
@@ -133,9 +168,9 @@ const (
 	// been read from the feed.
 	ruledownloadStrategyIncremental
 
-	// The machine download strategy
-	// Currently the LastEvaluatedKey is ignored as this strategy will always download
-	// the entire set of machine-specific rules, regardless of how large it is.
+	// The machine download strategy: a page of machine-specific rules only, for a sync whose first cursor was issued
+	// by an earlier version of Rudolph. The LastEvaluatedKey is ignored; TailSection and TailSortKey say where a later
+	// page goes on.
 	ruledownloadStrategyMachine
 )
 
