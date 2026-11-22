@@ -71,15 +71,15 @@ Unit prices used (us-east-1, on-demand, list):
 
 | Rules | Interval | Requests/month | Lambda | API Gateway | DynamoDB | Logs | Events | Fixed | Total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
-| 1,000 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
+| 100 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **366** |
+| 1,000 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **366** |
 | 10,000 | 1 min | 66.4 M | 33 | 242 | 56 | 20 | 4.6 | 10 | **367** |
 | 100 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
 | 1,000 | 10 min | 7.0 M | 3.6 | 26 | 5.6 | 2.1 | 4.6 | 10 | **52** |
 | 10,000 | 10 min | 7.0 M | 3.6 | 26 | 5.7 | 2.1 | 4.6 | 10 | **52** |
 | 100 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
 | 1,000 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
-| 10,000 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **28** |
+| 10,000 | 30 min | 2.4 M | 1.3 | 8.8 | 1.9 | 0.7 | 4.6 | 10 | **27** |
 | 100 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
 | 1,000 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
 | 10,000 | 60 min | 1.2 M | 0.6 | 4.4 | 1.0 | 0.4 | 4.6 | 10 | **21** |
@@ -182,7 +182,7 @@ The budget only sees costs tagged `Name = Rudolph` once `Name` is activated as a
 ## Events Table
 Blocked and unknown executions, those allowed by rules flagged for collection, and file access events are stored in a DynamoDB table for the web view. Its cost grows with the number of events Santa uploads (with Santa's default upload setting, about US$9 a month per 1,000 Macs in monitor mode at us-east-1 list prices, or about US$6 when its storage fits in the free tier, and about a tenth of that in lockdown mode; see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). File access events add about 3 write units each, and how many there are depends on the FAA policy in the Macs' configuration profiles; see [Events table](./events-table.md#costs).
 
-The ranker, which builds the web view's top-blocked, top-allowed and top-unknown lists, reads 90 days of day counters, the machine markers of up to 2,000 binaries (usually a few hundred) and up to about 300 global rules per run, and writes up to 10,000 snapshot rows: about US$4 a month for 1,000 Macs and about US$21 a month for 100,000 Macs (up to about US$150 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). Its Lambda runs with 512 MB, as it holds a total of about 350 bytes for every distinct binary of the 90 days (at most about 800: a counter only carries a file name or signing ID of up to 255 bytes and a 10-character team ID): about 5 cents a month at ten seconds a run, and under US$0.40 even at a minute a run, twice what 256 MB would cost. See [Top binaries](./events-table.md#top-binaries).
+The ranker, which builds the web view's top-blocked, top-allowed and top-unknown lists, reads 90 days of day counters, the machine markers of up to 2,000 binaries (usually a few hundred) and up to about 300 global rules per run, and writes up to 10,000 snapshot rows: about US$4 a month for 1,000 Macs and about US$21 a month for 100,000 Macs (up to about US$150 if the listed binaries all run on every Mac) at us-east-1 prices, mostly reading the day counters; other regions differ, and running it only in working hours on weekdays (11 runs a weekday) cuts it by about two thirds (see [Fixed monthly costs](#fixed-monthly-costs)). Its Lambda runs with 256 MB, which holds a total of about 350 bytes for every distinct binary of the 90 days (at most about 800: a counter only carries a file name or signing ID of up to 255 bytes and a 10-character team ID), several hundred thousand binaries in all: about 2 cents a month at ten seconds a run, and under US$0.20 even at a minute a run. See [Top binaries](./events-table.md#top-binaries).
 
 ## Costs of Rules
 The number of global rules barely affects cost. A sync with no changes reads only the rules feed since the Mac's last completed syncs, not the global rules, so it costs the same with 100 rules or 80,000. Only clean syncs (a Mac's first sync, then every 7 to 17 days) read every global rule, in pages of about 2 MB of rules whatever the preflight's `batch_size`: one request up to about 14,500 small rules, 6 for 80,000 (about 1,750 read units). For 1,000 rules that is about 22 read units per Mac every couple of weeks, a few cents a month for 5,000 Macs (see [Estimates](#estimates-by-fleet-size-rule-count-and-sync-interval)). Machine and group rules are read on every sync (about 150 KB, 20 read units at eventual consistency, for 1,000 of them on one Mac), so a Mac with very many machine rules does cost more per sync, and one whose machine and group rules exceed a page (about 2 MB of rules, some 15,000 small ones) reads them all again for every further page they take (see [rule-pagination](./rule-pagination.md#when-they-do-not-fit-one-page)).

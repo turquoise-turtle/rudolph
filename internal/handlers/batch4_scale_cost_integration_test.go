@@ -177,8 +177,10 @@ func TestCOST2_FirstSyncCapacityBudget(t *testing.T) {
 	ddblocal.ResetCounts()
 	host.MustSync(t)
 	c := ddblocal.ConsumedCapacity()
-	if c.ReadUnits > 30 {
-		t.Errorf("first sync consumed %.1f RCU; budget 30: %s", c.ReadUnits, c)
+	// 31 since device groups (2026-11-06): a cold first sync also reads the group registry in preflight and in
+	// ruledownload and the Mac's Groups item, all strongly consistent (3 RCU); the rules themselves take 25.
+	if c.ReadUnits > 31 {
+		t.Errorf("first sync consumed %.1f RCU; budget 31: %s", c.ReadUnits, c)
 	}
 	// 112 since the web view's machine list indexes (R4): a Mac's first sensor data row is one write in each.
 	if c.WriteUnits > 112 {

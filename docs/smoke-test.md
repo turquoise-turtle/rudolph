@@ -1081,7 +1081,7 @@ filter @type = "REPORT"
         max(@maxMemoryUsed / 1048576) as maxMemMB, count(@initDuration) as coldStarts by @log
 ```
 
-Compare with the configured memory (preflight and eventupload 256 MB, ruledownload, postflight and the ranker 512 MB; for the ranker, read `Max Memory Used` next to its `binaries=<n>` line, see [Top binaries](events-table.md#top-binaries)) and the eventupload timeout (10 s, of which sinks and the events table get the deadline minus 1.5 s: [sync.md](sync.md#delivery-to-the-event-sink)). Also record API Gateway `Latency` and `IntegrationLatency` for the stage.
+Compare with the configured memory (preflight, eventupload and the ranker 256 MB, ruledownload and postflight 512 MB; for the ranker, read `Max Memory Used` next to its `binaries=<n>` line, see [Top binaries](events-table.md#top-binaries)) and the eventupload timeout (10 s, of which sinks and the events table get the deadline minus 1.5 s: [sync.md](sync.md#delivery-to-the-event-sink)). Also record API Gateway `Latency` and `IntegrationLatency` for the stage.
 
 ### 12.4 Costs
 
