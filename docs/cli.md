@@ -175,6 +175,33 @@ It first prints what it will delete, with the Mac's hostname and serial number a
 - **Events** in the events table are not deleted: they expire on their own (see [Events from the test binaries](smoke-test.md#135-events-from-the-test-binaries-7-8) for when), and rudolph-web keeps showing them until then.
 - **If the Mac syncs again**, it starts afresh, as a Mac Rudolph has never seen: no configuration of its own (it gets the global one), no machine rules and no assigned groups, and its first sync is a clean sync.
 
+## Fleet health
+
+```sh
+rudolph fleet holiday --stale-days <days> --until <YYYY-MM-DD> [--yes|--dry-run]
+rudolph fleet holiday --end [--yes|--dry-run]
+```
+
+The fleet job lists a Mac as stale when its last completed sync is older than the stale threshold, 10 days unless changed (see [fleet-health.md](fleet-health.md#the-stale-threshold-and-holiday-mode)). Over a holiday, when Macs are simply off, `fleet holiday` raises the threshold until a date.
+
+### `fleet holiday`
+
+- `--stale-days` is the threshold while the holiday lasts: 1 to 365, and not below the normal threshold.
+- `--until` is the holiday's last day as `YYYY-MM-DD`, a UTC date, inclusive: today or later, and at most 366 days ahead. The day after it the normal threshold applies again by itself; nothing has to end the holiday.
+- `--end` removes the holiday now. With no holiday stored it changes nothing and says so.
+- A holiday needs both `--stale-days` and `--until`, and `--end` takes neither. A refused command stores nothing and records nothing.
+- A new holiday replaces the one set. The normal threshold is never changed by this command.
+- The command prints what it will change and asks `Apply changes?` (`--yes` skips the question; `--dry-run` writes nothing).
+- The fleet job uses the setting from its next run, once a day by default.
+- Each change is recorded in the audit trail with the action `fleet.holiday` and the target `fleet`.
+
+```sh
+./rudolph fleet holiday --stale-days 60 --until 2027-02-01
+./rudolph fleet holiday --end
+```
+
+The setting is one item of the store table, `FleetHealth` / `Config`; credentials restricted by partition key need `dynamodb:GetItem` and `dynamodb:UpdateItem` on it (see [cli-iam.md](cli-iam.md#rule-administrator)).
+
 ## The audit trail
 
 ```sh

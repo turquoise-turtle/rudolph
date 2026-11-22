@@ -5,11 +5,12 @@
 # which are published for free: api_5xx, api_4xx, lambda_errors and the four dynamodb_throttles alarms (reads and
 # writes of each table). Three alarm on metrics that metric filters extract from the Lambda logs: request_too_large,
 # lambda_timeouts and event_sink_failures (filters are free, each extracted metric is billed as one custom metric).
-# Alarms are billed per metric they evaluate: 33 in all, as lambda_errors sums one metric per function (7: the ranker
-# included, the authoriser left out), dynamodb_throttles sums each table with its indexes (20: the rule store and its
+# Alarms are billed per metric they evaluate: 33 in all here (the fleet job's own alarm, in fleet.tf, adds 2 when
+# alarm_sns_topic_arn is set), as lambda_errors sums one metric per function (7: the ranker included, the authoriser
+# and the fleet job left out), dynamodb_throttles sums each table with its indexes (20: the rule store and its
 # five indexes, the events table and its three, for reads and for writes) and api_4xx divides 4xx responses by
 # requests (2). At us-east-1 prices that is about 4.20 US dollars a month (3.80 without an event sink), independent of
-# fleet size. Keep docs/costs.md and docs/deploy.md in step with this list.
+# fleet size, or 4.40 and 4.00 with the fleet job's alarm. Keep docs/costs.md and docs/deploy.md in step with this list.
 #
 # Every alarm notifies var.alarm_sns_topic_arn when set, both when it fires and when it recovers.
 #
