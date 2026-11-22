@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 )
 
 func TestRankerSchedule_IsConfigurableWithATimeZone(t *testing.T) {
@@ -25,9 +27,17 @@ func TestRankerSchedule_IsConfigurableWithATimeZone(t *testing.T) {
 		t.Errorf("an EventBridge rule still schedules something (%s); the ranker must have exactly one schedule", rules[0].Labels[1])
 	}
 
-	schedules := blocks(module, "resource", "aws_scheduler_schedule")
+	// The ranker's schedule; the fleet job has one of its own (fleet_test.go).
+	var schedules []*hclsyntax.Block
+	for _, sch := range blocks(module, "resource", "aws_scheduler_schedule") {
+		for _, target := range nested(sch, "target") {
+			if a, ok := target.Body.Attributes["arn"]; ok && strings.Contains(sourceOf(t, module, a.Expr), "aws_lambda_function.ranker") {
+				schedules = append(schedules, sch)
+			}
+		}
+	}
 	if len(schedules) != 1 {
-		t.Fatalf("found %d aws_scheduler_schedule resources, want 1", len(schedules))
+		t.Fatalf("found %d aws_scheduler_schedule resources targeting the ranker, want 1", len(schedules))
 	}
 	s := schedules[0]
 	for attr, want := range map[string]string{"schedule_expression": "var.ranker_schedule_expression", "schedule_expression_timezone": "var.ranker_schedule_timezone"} {
