@@ -71,6 +71,15 @@ func (p *rulePage) add(rule rules.SantaRule) bool {
 	return true
 }
 
+// put appends a rule that has to go on this page whatever room is left: one its caller already measured with a page
+// of the same budget.
+func (p *rulePage) put(rule rules.SantaRule) {
+	if responseRule, sent := responseRuleForClient(rule, p.silentBlocklistOnly); sent {
+		p.rules = append(p.rules, responseRule)
+		p.bytes += encodedRuleBytes(responseRule)
+	}
+}
+
 // queryLimit returns how many more rules to ask DynamoDB for, judging by the size of those the page holds: 0 for no
 // limit while the page is empty, and -1 when the page is as good as full. Asking for no more than are likely to fit
 // keeps the rows read and then left for the next page, which are paid for twice, to a few.

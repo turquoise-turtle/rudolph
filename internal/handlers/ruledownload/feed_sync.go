@@ -30,6 +30,10 @@ type concreteFeedRuleDownloader struct {
 }
 
 func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownloadCursor) (*events.APIGatewayProxyResponse, error) {
+	if cursor.onTail() {
+		// Every feed row has been sent; this page goes on with the machine-specific rules
+		return lastPageOrNext(machineID, cursor, nil, nil, d.machineRules, tailFeedServedUpTo(cursor))
+	}
 	ddbCursor := cursor.GetLastEvaluatedKey()
 
 	feedRules, lastEvaluatedKey, err := feedrules.GetPaginatedFeedRules(d.queryer, feedPageSize, ddbCursor)
@@ -56,7 +60,29 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 		rules[i] = rule.SantaRule
 	}
 
-	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, feedServedUpTo(cursor, feedRules))
+	servedUpTo := feedServedUpTo(cursor, feedRules)
+	// Should the machine-specific rules go on over further pages, their cursor carries what the last of them needs to
+	// work servedUpTo out again (see tailFeedServedUpTo): the key of the newest feed row served, or none
+	switch {
+	case len(feedRules) > 0:
+		cursor.ruledownloadCursorDDBLastEvaluatedKey = ruledownloadCursorDDBLastEvaluatedKey(feedRules[len(feedRules)-1].PrimaryKey)
+	case cursor.PageNumber <= 1:
+		cursor.ruledownloadCursorDDBLastEvaluatedKey = ruledownloadCursorDDBLastEvaluatedKey{}
+	}
+	return lastPageOrNext(machineID, cursor, rules, lastEvaluatedKey, d.machineRules, servedUpTo)
+}
+
+// tailFeedServedUpTo is feedServedUpTo for a page of machine-specific rules after the feed's last page, from the key
+// that page left in the cursor: the newest feed row the sync served, or no key when it served none.
+func tailFeedServedUpTo(cursor ruledownloadCursor) *time.Time {
+	if cursor.SortKey == "" {
+		return &time.Time{}
+	}
+	stamp, err := feedrules.TimeOfSortKey(cursor.SortKey)
+	if err != nil {
+		return nil
+	}
+	return &stamp
 }
 
 // feedServedUpTo returns the stamp of the newest feed row a sync served once it serves this page, or nil when it
