@@ -50,7 +50,7 @@ With `store_kms_key_user_arns` set (see [Telemetry and Retention](security-risks
 
 ## Rule administrator
 
-For every command, including those that write: rules, configurations, temporary client modes, device groups, `machine forget`, `group members --rebuild`, `rules import`, `rules backfill-policy-index` and `repair --delete`. It reads like the read-only operator (on the store table only), and writes only the partitions the CLI writes, found from the code (`pkg/model` and `internal/cli`):
+For every command, including those that write: rules, configurations, temporary client modes, device groups, the fleet health holiday, `machine forget`, `group members --rebuild`, `rules import`, `rules backfill-policy-index` and `repair --delete`. It reads like the read-only operator (on the store table only), and writes only the partitions the CLI writes, found from the code (`pkg/model` and `internal/cli`):
 
 | Partition key | Written by |
 |---|---|
@@ -61,6 +61,7 @@ For every command, including those that write: rules, configurations, temporary 
 | `MachineRuleDelivery#*` | delivery tracking of machine rules, deleted by `machine forget` |
 | `GroupRules#*`, `GroupRegistry` | group rules and the registry of groups (`rule --group\|--ungrouped`, `group create\|update\|delete`, `config update --group\|--ungrouped`) |
 | `GroupMembers#*` | a group's member rows (`group add\|remove`, `group members --rebuild`, `machine forget`) |
+| `FleetHealth` | the stale threshold's holiday (`fleet holiday`): `UpdateItem` |
 | `EventCollection` | the index of rules whose allowed executions are collected (`rule --collect-allowed-events`, `rule update`, `rule remove`, `machine forget`) |
 | `MachineInfo#*`, `MachineConfig#*` | legacy items deleted by `repair --delete`; leave them out if you never run it |
 | `Audit#*` | the audit entry every change records: `PutItem` only |
@@ -106,6 +107,7 @@ For every command, including those that write: rules, configurations, temporary 
             "GroupRules#*",
             "GroupRegistry",
             "GroupMembers#*",
+            "FleetHealth",
             "EventCollection",
             "MachineInfo#*",
             "MachineConfig#*"
@@ -143,7 +145,7 @@ Notes:
 - **Partition keys only.** `dynamodb:LeadingKeys` limits the partition key, never the sort key: `Machine#*` lets the role write any row of a Mac's partition, including the sensor data and sync state the Lambdas keep there.
 - **The audit trail.** `PutItem` on `Audit#*` cannot update or delete an entry with `UpdateItem` or `DeleteItem`, but a `PutItem` can replace one. The CLI writes each entry with a conditional put (`attribute_not_exists`), so it never overwrites one; IAM does not enforce that. Reading the trail (`rudolph audit`) is a `Query`, covered by the read statement. Without `PutItem` on `Audit#*`, every change is still written, but the command warns that it was not audited and exits non-zero (see [The audit trail](cli.md#the-audit-trail)).
 - **KMS.** Add the read-only example's KMS statement, with `kms:GenerateDataKey` and `kms:Encrypt` as well, only if your organisation has tightened the store key's policy, or `store_kms_key_user_arns` is set and does not list the operator.
-- **The events table.** The CLI never reads or writes it. Its only writers are the eventupload Lambda and the ranker.
+- **The events table.** The CLI never reads or writes it. Its only writers are the eventupload Lambda, the ranker and the fleet job.
 
 ## Deployer
 
@@ -151,9 +153,9 @@ The role that runs Terraform (`make deploy`) creates and changes everything in t
 
 | Role (all under the IAM path `/rudolph/`) | Passed to |
 |---|---|
-| `PREFIX_rudolph_<endpoint>_role`, one per Lambda (`health`, `xsrf`, `preflight`, `eventupload`, `ruledownload`, `postflight`, `authorizer`), and `PREFIX_rudolph_ranker_role` | Lambda |
+| `PREFIX_rudolph_<endpoint>_role`, one per Lambda (`health`, `xsrf`, `preflight`, `eventupload`, `ruledownload`, `postflight`, `authorizer`), `PREFIX_rudolph_ranker_role` and `PREFIX_rudolph_fleet_role` | Lambda |
 | `PREFIX_rudolph_api_gateway_authorizer` (the role API Gateway invokes the authoriser with) | API Gateway |
-| `PREFIX_rudolph_ranker_scheduler_role` | EventBridge Scheduler |
+| `PREFIX_rudolph_ranker_scheduler_role`, `PREFIX_rudolph_fleet_scheduler_role` | EventBridge Scheduler |
 | `PREFIX_rudolph_eventsupload_firehose_role` (only when Terraform creates the Firehose sink) | Kinesis Data Firehose |
 
 Every Rudolph role is under `/rudolph/` and named after the prefix, so one statement covers them, limited to those four services:

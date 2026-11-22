@@ -29,6 +29,7 @@ module "santa_api" {
   lambda_api_zip        = var.lambda_api_zip
   lambda_authorizer_zip = var.lambda_authorizer_zip
   lambda_ranker_zip     = var.lambda_ranker_zip
+  lambda_fleet_zip      = var.lambda_fleet_zip
 
   enable_s3_logging = var.enable_s3_logging
 
@@ -54,6 +55,11 @@ module "santa_api" {
   # Ranker
   ranker_schedule_expression = var.ranker_schedule_expression
   ranker_schedule_timezone   = var.ranker_schedule_timezone
+
+  # Fleet job
+  fleet_schedule_expression = var.fleet_schedule_expression
+  fleet_schedule_timezone   = var.fleet_schedule_timezone
+  fleet_alarm_days          = var.fleet_alarm_days
 
   # Access logs and edge protection
   enable_api_access_logs          = var.enable_api_access_logs

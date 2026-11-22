@@ -33,10 +33,14 @@ const (
 	eventPKPrefix       = "Exec#"
 	dayCounterPKPrefix  = "BinaryDay#"
 	machineMarkerPrefix = "BinarySeen#"
+	unknownSeenPKPrefix = "UnknownSeen#"
 	eventFleet          = "Exec"
 
 	eventTTL   = 90 * 24 * time.Hour
 	counterTTL = 100 * 24 * time.Hour
+	// The fleet job (internal/fleet) counts a Mac's unknown binaries of the last 30 days; five more days keep a marker
+	// readable through the whole window even when the Mac's next upload of the binary is late.
+	unknownMarkerTTL = 35 * 24 * time.Hour
 
 	// storeParallelism bounds the DynamoDB calls in flight for one upload. A full upload is a few hundred events;
 	// one at a time they would not fit in the Lambda's deadline.
@@ -317,25 +321,47 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 	// Markers are written for every stored event, new or not: a marker write lost with an earlier upload is then
 	// made up for by Santa's retry. Writing a marker again only moves its expiry and LastSeenDay, the UTC date of the
 	// upload, from which the ranker (internal/ranker) counts the Macs that ran a binary within a window.
-	var markers []string
+	//
+	// A binary with a stored BLOCK_UNKNOWN or ALLOW_UNKNOWN execution also gets a marker under the Mac
+	// (UnknownSeen#<machine>), from which the fleet job (internal/fleet) counts the unknown binaries each Mac ran in
+	// the last 7 and 30 days. Neither marker has TS, Fleet or Decision, so it enters no index and costs one write unit.
+	var markers []map[string]types.AttributeValue
 	marked := map[string]bool{}
-	for i, c := range candidates {
-		if stored[i] && !marked[c.event.FileSHA256] {
-			marked[c.event.FileSHA256] = true
-			markers = append(markers, c.event.FileSHA256)
-		}
-	}
+	unknown := map[string]*unknownMarker{}
+	var unknownOrder []string
 	lastSeenDay := now.UTC().Format("2006-01-02")
-	markerErr := parallel(ctx, len(markers), func(ctx context.Context, i int) error {
-		_, err := s.api.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(s.table),
-			Item: map[string]types.AttributeValue{
-				"PK":           str(machineMarkerPrefix + markers[i]),
+	for i, c := range candidates {
+		if !stored[i] {
+			continue
+		}
+		sha := c.event.FileSHA256
+		if !marked[sha] {
+			marked[sha] = true
+			markers = append(markers, map[string]types.AttributeValue{
+				"PK":           str(machineMarkerPrefix + sha),
 				"SK":           str(machineID),
 				"ExpiresAfter": &types.AttributeValueMemberN{Value: counterExpiry},
 				"LastSeenDay":  str(lastSeenDay),
-			},
-		})
+			})
+		}
+		if c.unknown && unknown[sha] == nil {
+			unknown[sha] = &unknownMarker{}
+			unknownOrder = append(unknownOrder, sha)
+		}
+	}
+	// The display fields come from every stored event of the binary, as on its day counter, so the first event with a
+	// usable value supplies it even when an event of another decision came first.
+	for i, c := range candidates {
+		if m := unknown[c.event.FileSHA256]; m != nil && stored[i] {
+			m.offer(c.event)
+		}
+	}
+	unknownExpiry := strconv.FormatInt(now.Add(unknownMarkerTTL).Unix(), 10)
+	for _, sha := range unknownOrder {
+		markers = append(markers, unknown[sha].item(machineID, sha, lastSeenDay, unknownExpiry))
+	}
+	markerErr := parallel(ctx, len(markers), func(ctx context.Context, i int) error {
+		_, err := s.api.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(s.table), Item: markers[i]})
 		return err
 	})
 
@@ -343,6 +369,40 @@ func (s *eventStore) Store(ctx context.Context, machineID string, events []Event
 		return written, writtenFileAccess, fmt.Errorf("events table: %w", err)
 	}
 	return written, writtenFileAccess, nil
+}
+
+// unknownMarker collects the display fields of one unknown binary's marker. Only values a day counter may carry
+// (counterfields) are kept, whole: the fleet job looks global rules up by signing ID and team ID, and a cut value could
+// name another rule; it also keeps the marker under 1 KB, one write unit.
+type unknownMarker struct{ fileName, signingID, teamID string }
+
+func (m *unknownMarker) offer(e EventUploadEvent) {
+	if m.fileName == "" {
+		m.fileName = counterfields.FileName(e.FileName)
+	}
+	if m.signingID == "" {
+		m.signingID = counterfields.SigningID(e.SigningIDs)
+	}
+	if m.teamID == "" {
+		m.teamID = counterfields.TeamID(e.TeamID)
+	}
+}
+
+// item builds the marker. LastDay is the upload's UTC date from Rudolph's clock, never the execution time the Mac
+// reports, so a Mac cannot backdate a binary out of the window.
+func (m *unknownMarker) item(machineID, sha, lastDay, expiry string) map[string]types.AttributeValue {
+	item := map[string]types.AttributeValue{
+		"PK":           str(unknownSeenPKPrefix + machineID),
+		"SK":           str(sha),
+		"LastDay":      str(lastDay),
+		"ExpiresAfter": &types.AttributeValueMemberN{Value: expiry},
+	}
+	for name, value := range map[string]string{"FileName": m.fileName, "SigningID": m.signingID, "TeamID": m.teamID} {
+		if value != "" {
+			item[name] = str(value)
+		}
+	}
+	return item
 }
 
 func logDropped(machineID string, n int, reason string) {

@@ -18,6 +18,7 @@ module "rule_store" {
     module.postflight_function.lambda_role_arn,
     module.eventupload_function.lambda_role_arn,
     aws_iam_role.ranker.arn,
+    aws_iam_role.fleet.arn,
   ]
 
   # The sync Lambdas that read the store table and write its per-machine partitions. Health has its own, narrower

@@ -11,7 +11,8 @@ package deployments
 //     administrators manage keys but cannot encrypt, decrypt or make data keys.
 //   - Store table: the health Lambda only Queries GlobalRules (a policy of its own, not the shared store policy); the
 //     shared Lambda store policy grants no Scan or DescribeTable, no index ARN and no legacy MachineInfo# partition.
-//   - Events table: eventupload writes only Exec#, FileAccess#, BinaryDay# and BinarySeen#.
+//   - Events table: eventupload writes only Exec#, FileAccess#, BinaryDay#, BinarySeen# and (Lockdown readiness,
+//     2026-11-22) UnknownSeen#.
 //   - Every ForAllValues condition on dynamodb:LeadingKeys has a Null check beside it, as ForAllValues is true when
 //     the request carries no key at all (a Scan added to the statement later would otherwise be allowed).
 //   - Logs: no Lambda gets AWSLambdaBasicExecutionRole (logs on every group of the account); each writes its own.
@@ -237,7 +238,7 @@ func TestIAMReview_EventuploadWritesOnlyItsPartitions(t *testing.T) {
 	if doc == nil {
 		t.Fatal("no events_write policy document")
 	}
-	want := []string{"BinaryDay#*", "BinarySeen#*", "Exec#*", "FileAccess#*"}
+	want := []string{"BinaryDay#*", "BinarySeen#*", "Exec#*", "FileAccess#*", "UnknownSeen#*"}
 	for _, st := range statementsOf(doc) {
 		text := squash(blockText(t, files, st))
 		if !strings.Contains(text, `"dynamodb:PutItem"`) || !strings.Contains(text, "aws_dynamodb_table.events.arn") {

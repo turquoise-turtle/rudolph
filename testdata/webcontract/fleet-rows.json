@@ -1,0 +1,340 @@
+[
+  {
+    "Attention": {
+      "N": "1"
+    },
+    "Capped": {
+      "N": "0"
+    },
+    "GeneratedAt": {
+      "S": "2026-11-22T12:00:00Z"
+    },
+    "Health": {
+      "M": {
+        "Incomplete": {
+          "N": "0"
+        },
+        "Mode": {
+          "N": "0"
+        },
+        "Rules": {
+          "N": "0"
+        },
+        "SIP": {
+          "N": "0"
+        },
+        "Stale": {
+          "N": "1"
+        },
+        "Version": {
+          "N": "0"
+        }
+      }
+    },
+    "Holiday": {
+      "BOOL": false
+    },
+    "Macs": {
+      "N": "2"
+    },
+    "MinSantaVersion": {
+      "S": "2026.9"
+    },
+    "PK": {
+      "S": "FleetPointer"
+    },
+    "Readiness": {
+      "M": {
+        "All": {
+          "M": {
+            "Few": {
+              "N": "1"
+            },
+            "Locked": {
+              "N": "0"
+            },
+            "Macs": {
+              "N": "2"
+            },
+            "Many": {
+              "N": "0"
+            },
+            "Ready": {
+              "N": "0"
+            },
+            "Unmeasured": {
+              "N": "1"
+            }
+          }
+        },
+        "eng": {
+          "M": {
+            "Few": {
+              "N": "1"
+            },
+            "Locked": {
+              "N": "0"
+            },
+            "Macs": {
+              "N": "1"
+            },
+            "Many": {
+              "N": "0"
+            },
+            "Ready": {
+              "N": "0"
+            },
+            "Unmeasured": {
+              "N": "0"
+            }
+          }
+        },
+        "rudolph:ungrouped": {
+          "M": {
+            "Few": {
+              "N": "0"
+            },
+            "Locked": {
+              "N": "0"
+            },
+            "Macs": {
+              "N": "1"
+            },
+            "Many": {
+              "N": "0"
+            },
+            "Ready": {
+              "N": "0"
+            },
+            "Unmeasured": {
+              "N": "1"
+            }
+          }
+        }
+      }
+    },
+    "SK": {
+      "S": "Current"
+    },
+    "Snapshot": {
+      "S": "<snapshot>"
+    },
+    "StaleDays": {
+      "N": "10"
+    },
+    "VersionUnknown": {
+      "N": "0"
+    }
+  },
+  {
+    "ExpiresAfter": {
+      "N": "1795608000"
+    },
+    "Hostname": {
+      "S": "contract-stale"
+    },
+    "LastCompleted": {
+      "S": "2026-11-02T12:01:00Z"
+    },
+    "LastSeen": {
+      "S": "2026-11-02T12:00:00Z"
+    },
+    "MachineID": {
+      "S": "00000002-1111-4111-8111-000000000002"
+    },
+    "Never": {
+      "BOOL": false
+    },
+    "PK": {
+      "S": "FleetSnapshot#<snapshot>#Health#Stale"
+    },
+    "SK": {
+      "S": "20261102T120100Z#00000002-1111-4111-8111-000000000002"
+    },
+    "SerialNum": {
+      "S": "C02STALE"
+    }
+  },
+  {
+    "Capped": {
+      "BOOL": false
+    },
+    "ExpiresAfter": {
+      "N": "1795608000"
+    },
+    "Hostname": {
+      "S": "contract-few"
+    },
+    "IntendedMode": {
+      "S": "MONITOR"
+    },
+    "MachineID": {
+      "S": "00000001-1111-4111-8111-000000000001"
+    },
+    "ObservedDays": {
+      "N": "40"
+    },
+    "PK": {
+      "S": "FleetSnapshot#<snapshot>#Ready#All"
+    },
+    "Pending30": {
+      "N": "1"
+    },
+    "Pending7": {
+      "N": "1"
+    },
+    "ReportedMode": {
+      "S": "MONITOR"
+    },
+    "SK": {
+      "S": "1#000001#00000001-1111-4111-8111-000000000001"
+    },
+    "SerialNum": {
+      "S": "C02FEW"
+    },
+    "Unknown30": {
+      "N": "1"
+    },
+    "Unknown7": {
+      "N": "1"
+    }
+  },
+  {
+    "Capped": {
+      "BOOL": false
+    },
+    "ExpiresAfter": {
+      "N": "1795608000"
+    },
+    "Hostname": {
+      "S": "contract-stale"
+    },
+    "IntendedMode": {
+      "S": "MONITOR"
+    },
+    "MachineID": {
+      "S": "00000002-1111-4111-8111-000000000002"
+    },
+    "ObservedDays": {
+      "N": "40"
+    },
+    "PK": {
+      "S": "FleetSnapshot#<snapshot>#Ready#All"
+    },
+    "Pending30": {
+      "N": "0"
+    },
+    "Pending7": {
+      "N": "0"
+    },
+    "ReportedMode": {
+      "S": "MONITOR"
+    },
+    "SK": {
+      "S": "3#000000#00000002-1111-4111-8111-000000000002"
+    },
+    "SerialNum": {
+      "S": "C02STALE"
+    },
+    "Unknown30": {
+      "N": "0"
+    },
+    "Unknown7": {
+      "N": "0"
+    },
+    "Why": {
+      "S": "stale"
+    }
+  },
+  {
+    "Capped": {
+      "BOOL": false
+    },
+    "ExpiresAfter": {
+      "N": "1795608000"
+    },
+    "Hostname": {
+      "S": "contract-few"
+    },
+    "IntendedMode": {
+      "S": "MONITOR"
+    },
+    "MachineID": {
+      "S": "00000001-1111-4111-8111-000000000001"
+    },
+    "ObservedDays": {
+      "N": "40"
+    },
+    "PK": {
+      "S": "FleetSnapshot#<snapshot>#Ready#Group#eng"
+    },
+    "Pending30": {
+      "N": "1"
+    },
+    "Pending7": {
+      "N": "1"
+    },
+    "ReportedMode": {
+      "S": "MONITOR"
+    },
+    "SK": {
+      "S": "1#000001#00000001-1111-4111-8111-000000000001"
+    },
+    "SerialNum": {
+      "S": "C02FEW"
+    },
+    "Unknown30": {
+      "N": "1"
+    },
+    "Unknown7": {
+      "N": "1"
+    }
+  },
+  {
+    "Capped": {
+      "BOOL": false
+    },
+    "ExpiresAfter": {
+      "N": "1795608000"
+    },
+    "Hostname": {
+      "S": "contract-stale"
+    },
+    "IntendedMode": {
+      "S": "MONITOR"
+    },
+    "MachineID": {
+      "S": "00000002-1111-4111-8111-000000000002"
+    },
+    "ObservedDays": {
+      "N": "40"
+    },
+    "PK": {
+      "S": "FleetSnapshot#<snapshot>#Ready#Group#rudolph:ungrouped"
+    },
+    "Pending30": {
+      "N": "0"
+    },
+    "Pending7": {
+      "N": "0"
+    },
+    "ReportedMode": {
+      "S": "MONITOR"
+    },
+    "SK": {
+      "S": "3#000000#00000002-1111-4111-8111-000000000002"
+    },
+    "SerialNum": {
+      "S": "C02STALE"
+    },
+    "Unknown30": {
+      "N": "0"
+    },
+    "Unknown7": {
+      "N": "0"
+    },
+    "Why": {
+      "S": "stale"
+    }
+  }
+]

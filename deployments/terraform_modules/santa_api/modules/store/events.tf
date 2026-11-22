@@ -118,8 +118,9 @@ resource "aws_dynamodb_table" "events" {
 #
 data "aws_iam_policy_document" "events_write" {
   # Execution events (Exec#, in a transaction with their day counter's UpdateItem), file access events (FileAccess#),
-  # day counters (BinaryDay#) and machine markers (BinarySeen#). The ranker's TopSnapshot# and Top# rows are not
-  # eventupload's to write.
+  # day counters (BinaryDay#), machine markers (BinarySeen#) and each Mac's unknown markers (UnknownSeen#, read by the
+  # fleet job). The ranker's TopSnapshot# and Top# rows and the fleet job's FleetSnapshot# and FleetPointer rows are
+  # not eventupload's to write.
   statement {
     actions = [
       "dynamodb:PutItem",
@@ -133,7 +134,7 @@ data "aws_iam_policy_document" "events_write" {
     condition {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
-      values   = ["Exec#*", "FileAccess#*", "BinaryDay#*", "BinarySeen#*"]
+      values   = ["Exec#*", "FileAccess#*", "BinaryDay#*", "BinarySeen#*", "UnknownSeen#*"]
     }
 
     condition {

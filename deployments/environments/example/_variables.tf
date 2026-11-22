@@ -13,6 +13,11 @@ variable "lambda_ranker_zip" {
   description = "Full path to zip with the ranker's go binary (build/package/ranker_deployment.zip) to be uploaded to S3"
 }
 
+variable "lambda_fleet_zip" {
+  type        = string
+  description = "Full path to zip with the fleet job's go binary (build/package/fleet_deployment.zip) to be uploaded to S3"
+}
+
 // These variables are provided by config.auto.tfvars.json
 variable "region" {
   type = string
@@ -198,6 +203,24 @@ variable "ranker_schedule_timezone" {
   type        = string
   description = "IANA time zone of ranker_schedule_expression, e.g. America/New_York"
   default     = "UTC"
+}
+
+variable "fleet_schedule_expression" {
+  type        = string
+  description = "When the fleet job rebuilds the web view's fleet health lists and Lockdown readiness figures, e.g. rate(1 day) or cron(0 6 * * ? *)"
+  default     = "rate(1 day)"
+}
+
+variable "fleet_schedule_timezone" {
+  type        = string
+  description = "IANA time zone of fleet_schedule_expression, e.g. America/New_York"
+  default     = "UTC"
+}
+
+variable "fleet_alarm_days" {
+  type        = number
+  description = "Days in a row without a completed fleet job run before its alarm fires (1 to 7); the alarm needs alarm_sns_topic_arn"
+  default     = 3
 }
 
 variable "firehose_events_retention_in_days" {

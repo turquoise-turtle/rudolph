@@ -42,9 +42,15 @@ func GetMachineGroups(client dynamodb.GetItemAPI, machineID string, consistent b
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the machine's groups: %w", err)
 	}
+	return MachineGroupsFromItem(out.Item)
+}
+
+// MachineGroupsFromItem decodes a Mac's groups item, for readers that fetch the Mac's partition with their own client
+// (the fleet job). A Mac without one is in no group.
+func MachineGroupsFromItem(item map[string]types.AttributeValue) (*MachineGroups, error) {
 	groups := &MachineGroups{}
-	if len(out.Item) > 0 {
-		if err := attributevalue.UnmarshalMap(out.Item, groups); err != nil {
+	if len(item) > 0 {
+		if err := attributevalue.UnmarshalMap(item, groups); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal the machine's groups: %w", err)
 		}
 	}

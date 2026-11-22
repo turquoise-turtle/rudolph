@@ -7,6 +7,11 @@ package handlers
 // fails when an attribute in the fixture disappears, changes type, or changes its (normalized) value. New attributes
 // and new rows are allowed. Regenerate the fixture with WEBCONTRACT_UPDATE=1 when a change is intended, and tell the
 // rudolph-web maintainers.
+//
+// Lockdown readiness (2026-11-22) adds the sync state's FirstSeenDay and the events table's unknown markers
+// (`UnknownSeen#<machine ID>` / `<file SHA-256>`, written by eventupload) to the contract: the generator uploads one
+// BLOCK_UNKNOWN execution, and the fixture holds that Mac's marker partition beside the store table's rows. The fleet
+// job's own rows (pointer, health and readiness lists) are pinned by internal/fleet's TestWEBCONTRACT_FleetRows.
 
 import (
 	"bytes"
@@ -31,6 +36,8 @@ import (
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
@@ -116,7 +123,13 @@ func generateWebContractRows(t *testing.T) {
 	host.RulesHash = "0123456789abcdef"
 	host.PrimaryUserGroups = []string{"Eng", "staff"}
 	host.MustSync(t)
+	// An unknown binary run once: eventupload stores the execution and writes the Mac's unknown marker.
+	host.PendingEvents = []string{execEvent(shaN(21), "BLOCK_UNKNOWN", 4242, time.Now().Add(-time.Hour).Truncate(time.Millisecond),
+		fmt.Sprintf(`"team_id":%q,"signing_id":%q`, chromeTeamID, chromeSigningID))}
 	host.MustSync(t)
+	if len(host.PendingEvents) != 0 {
+		t.Fatalf("the generator's unknown execution was not uploaded")
+	}
 	if err := mr.Remove(machineA, shaN(1), types.RuleTypeBinary); err != nil { // falls back to the global rule
 		t.Fatal(err)
 	}
@@ -142,7 +155,7 @@ func toDynamoJSON(name string, v awstypes.AttributeValue) any {
 			s = "<digest>"
 		}
 		s = rfc3339Prefix.ReplaceAllString(s, "<timestamp>")
-		if name == "LastSeenDay" && utcDay.MatchString(s) {
+		if (name == "LastSeenDay" || name == "LastDay" || name == "FirstSeenDay") && utcDay.MatchString(s) {
 			s = "<day>"
 		}
 		return map[string]any{"S": s}
@@ -181,7 +194,15 @@ func currentWebContractRows(t *testing.T) []map[string]any {
 	t.Helper()
 	generateWebContractRows(t)
 	var rows []map[string]any
-	for _, item := range scanAll(t) {
+	stored := scanAll(t)
+	// From the events table, only the Mac's unknown markers: the event, day counter and BinarySeen rows have their
+	// contract in docs/events-table.md.
+	stored = append(stored, eventsQuery(t, &awsdynamodb.QueryInput{
+		KeyConditionExpression:    aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]awstypes.AttributeValue{":pk": &awstypes.AttributeValueMemberS{Value: "UnknownSeen#" + machineA}},
+		ConsistentRead:            aws.Bool(true),
+	})...)
+	for _, item := range stored {
 		row := map[string]any{}
 		for k, v := range item {
 			row[k] = toDynamoJSON(k, v)

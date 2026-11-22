@@ -119,9 +119,13 @@ type SyncState struct {
 	// Set while the Mac may hold rules sent as SILENT_BLOCKLIST in place of their real policy: from a sync with
 	// SilentBlocklistOnly until a clean sync of a client that knows the real policies completes. See
 	// SyncState.MayHoldDowngradedPolicies.
-	HoldsDowngradedPolicies bool           `dynamodbav:"HoldsDowngradedPolicies,omitempty"`
-	ExpiresAfter            int64          `dynamodbav:"ExpiresAfter,omitempty"`
-	DataType                types.DataType `dynamodbav:"DataType"`
+	HoldsDowngradedPolicies bool `dynamodbav:"HoldsDowngradedPolicies,omitempty"`
+	// The UTC date (2006-01-02) of the first preflight on record for the Mac, carried from sync to sync (see
+	// ContinueFrom). The fleet job (internal/fleet) reads from it for how many days the Mac's unknown binaries have
+	// been observed. Empty on rows written before it existed.
+	FirstSeenDay string         `dynamodbav:"FirstSeenDay,omitempty"`
+	ExpiresAfter int64          `dynamodbav:"ExpiresAfter,omitempty"`
+	DataType     types.DataType `dynamodbav:"DataType"`
 
 	// Whether the served last page counts as this sync's completion, whether the Mac is proven to have applied this
 	// sync, and whether it counts through the fallback; decided by the next preflight (SettleCompletion), never stored.
