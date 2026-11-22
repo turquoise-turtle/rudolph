@@ -90,6 +90,16 @@ type machineRulePage struct {
 	timer       clock.TimeProvider
 	// groups caches the group registry and group rules for this server instance; nil serves no group rules
 	groups *groups.Cache
+	// responseBudget is how many bytes of rules a response carries (see encodedRuleBytes); 0 for
+	// defaultResponseBudgetBytes
+	responseBudget int
+}
+
+func (p machineRulePage) budget() int {
+	if p.responseBudget > 0 {
+		return p.responseBudget
+	}
+	return defaultResponseBudgetBytes
 }
 
 // rules returns the machine-specific rules to send at the end of the sync's last page, and records which rules the

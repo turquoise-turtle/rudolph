@@ -35,32 +35,37 @@ type RuledownloadRule struct {
 // Rules with the ALLOWLIST_TRANSITIVE policy (only possible in rows written by older versions of Rudolph) are
 // omitted: it is not a policy of the Santa sync protocol and Santa would silently ignore them.
 func DDBRulesToResponseRules(rulesList []rules.SantaRule) (responseRules []RuledownloadRule) {
-	responseRules = make([]RuledownloadRule, 0, len(rulesList))
-	skipped := 0
-	for _, rule := range rulesList {
-		if rule.Policy == types.RulePolicyAllowlistTransitive {
-			skipped++
-			continue
-		}
-		responseRules = append(responseRules, RuledownloadRule(rule))
-	}
-	if skipped > 0 {
-		log.Printf("  omitted %d rule(s) with the non-protocol ALLOWLIST_TRANSITIVE policy", skipped)
-	}
-	return
+	return ResponseRulesForClient(rulesList, false)
 }
 
-// ResponseRulesForClient converts rules like DDBRulesToResponseRules, for the sync's client. When silentBlocklistOnly
-// (Santa before 2026.6, see syncstate.SyncState.SilentBlocklistOnly), SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST are
-// sent as SILENT_BLOCKLIST: such a client skips a rule whose policy it does not know (SNTSyncRuleDownload.mm in
-// testdata/santa-2025.12), which would leave the binary unblocked. Only what is sent changes; delivery tracking keys
-// on rule type and identifier, so it is the same whichever policy the Mac got.
+// ResponseRulesForClient converts rules like DDBRulesToResponseRules, for the sync's client (see
+// responseRuleForClient).
 func ResponseRulesForClient(rulesList []rules.SantaRule, silentBlocklistOnly bool) []RuledownloadRule {
-	responseRules := DDBRulesToResponseRules(rulesList)
-	if silentBlocklistOnly {
-		for i := range responseRules {
-			responseRules[i].Policy = responseRules[i].Policy.WithoutSilentGUITTY()
+	responseRules := make([]RuledownloadRule, 0, len(rulesList))
+	for _, rule := range rulesList {
+		if responseRule, sent := responseRuleForClient(rule, silentBlocklistOnly); sent {
+			responseRules = append(responseRules, responseRule)
 		}
 	}
+	if skipped := len(rulesList) - len(responseRules); skipped > 0 {
+		log.Printf("  omitted %d rule(s) with the non-protocol ALLOWLIST_TRANSITIVE policy", skipped)
+	}
 	return responseRules
+}
+
+// responseRuleForClient returns the rule as the sync's client is sent it, and false for a rule that is never sent:
+// one with the ALLOWLIST_TRANSITIVE policy. When silentBlocklistOnly (Santa before 2026.6, see
+// syncstate.SyncState.SilentBlocklistOnly), SILENT_GUI_BLOCKLIST and SILENT_TTY_BLOCKLIST are sent as
+// SILENT_BLOCKLIST: such a client skips a rule whose policy it does not know (SNTSyncRuleDownload.mm in
+// testdata/santa-2025.12), which would leave the binary unblocked. Only what is sent changes; delivery tracking keys
+// on rule type and identifier, so it is the same whichever policy the Mac got.
+func responseRuleForClient(rule rules.SantaRule, silentBlocklistOnly bool) (RuledownloadRule, bool) {
+	if rule.Policy == types.RulePolicyAllowlistTransitive {
+		return RuledownloadRule{}, false
+	}
+	responseRule := RuledownloadRule(rule)
+	if silentBlocklistOnly {
+		responseRule.Policy = responseRule.Policy.WithoutSilentGUITTY()
+	}
+	return responseRule, true
 }

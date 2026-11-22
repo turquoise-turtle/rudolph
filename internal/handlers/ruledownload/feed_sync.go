@@ -16,7 +16,8 @@ import (
 //
 // Feed pages are not sized by the configured batch size (which Santa uses for event uploads): every sync re-reads
 // the feed rows of the overlap before its cursor (see syncstate.FeedSyncCursorOverlap), and reading them in pages of
-// 50 would cost a request per 50 rows on every sync. DynamoDB returns at most 1 MB per query, which bounds a page too.
+// 50 would cost a request per 50 rows on every sync. DynamoDB returns at most 1 MB per query, which bounds a page too,
+// as does the response budget (see rulePage).
 const feedPageSize = 5000
 
 type feedRuleDownloader interface {
@@ -34,6 +35,17 @@ func (d concreteFeedRuleDownloader) handle(machineID string, cursor ruledownload
 	feedRules, lastEvaluatedKey, err := feedrules.GetPaginatedFeedRules(d.queryer, feedPageSize, ddbCursor)
 	if err != nil {
 		return response.InternalServerError(fmt.Errorf("reading a page of feed rules: %w", err), struct{}{})
+	}
+
+	// A query returns up to 1 MB of rows, which is more than a response can carry when the rules' text needs much
+	// escaping. The rows that do not fit are left to the next page, which starts after the last one that did.
+	page := newRulePage(d.machineRules.budget(), cursor.SilentBlocklistOnly)
+	for i, rule := range feedRules {
+		if !page.add(rule.SantaRule) {
+			feedRules = feedRules[:i]
+			lastEvaluatedKey = &feedRules[i-1].PrimaryKey
+			break
+		}
 	}
 
 	// Never log the rules or the pagination key itself: they identify the binaries a fleet blocks or allows.
