@@ -23,6 +23,7 @@ variables {
   lambda_api_zip        = "tests/optional_features.tftest.hcl"
   lambda_authorizer_zip = "tests/optional_features.tftest.hcl"
   lambda_ranker_zip     = "tests/optional_features.tftest.hcl"
+  lambda_fleet_zip      = "tests/optional_features.tftest.hcl"
 
   sync_token_sha256               = ["0000000000000000000000000000000000000000000000000000000000000000"]
   eventupload_handler             = "NONE"

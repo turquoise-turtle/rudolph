@@ -16,6 +16,7 @@ Options:
     --rules 100,1000,10000      global rule counts
     --intervals 1,10,30,60      Santa FullSyncInterval, in minutes
     --ranker-runs 720           ranker runs a month (720 hourly; about 240 for 11 runs a weekday)
+    --fleet-runs 30.42          fleet job runs a month (30.42 daily)
     --prices FILE.json          override unit prices
 
 The default prices are us-east-1 on-demand list prices in US dollars, excluding tax and without any free tier,
@@ -115,7 +116,32 @@ RANKER_ROWS_KEPT_DAYS = 8
 RANKER_RULE_LOOKUPS = 300
 RANKER_LAMBDA = (0.256, 10.0)
 
-ALARM_METRICS = 33
+# Fleet job (docs/fleet-health.md), per Mac and run, as TestCOST_FleetRunCapacityPerMac measures: half a read unit for
+# the Mac's own rows; in monitor mode about 3 more for its unknown markers (about 100 in the 30-day window, about 230
+# bytes each), which are not read once Rudolph intends the Mac to be in Lockdown; about 2.5 rows written (readiness for
+# the fleet and for 1.5 groups, and a health row for some Macs), one write unit each. Each run also lists the Macs
+# (about 100 bytes each in the index) and, when any Mac has an unknown binary to check, reads the global rules once.
+# Rows are kept 3 days. The run is paced at 1,000 rows a second.
+#
+# Unknown markers, written by eventupload: one write unit per unknown binary per upload. The 50 events a Mac a day of
+# monitor mode are taken to make about 25 marker writes (a guess: the same binary run twice between two syncs is one
+# write); Lockdown, with a tenth of the events, a tenth of that.
+FLEET_RUNS_PER_MONTH = DAYS
+FLEET_MAC_READ_UNITS = 0.5
+FLEET_MARKER_READ_UNITS = 3.0
+FLEET_ROWS_PER_MAC = 2.5
+FLEET_INDEX_BYTES_PER_MAC = 100
+FLEET_ROW_STORED_BYTES = 350
+FLEET_ROWS_KEPT_DAYS = 3
+FLEET_ROWS_PER_SECOND = 1000
+FLEET_LAMBDA_GB = 0.256
+FLEET_MARKER_WRITES_PER_MAC_DAY = 25
+FLEET_MARKERS_PER_MAC = 100
+FLEET_MARKER_BYTES = 230
+FLEET_LOCKDOWN_SHARE_OF_EVENTS = 0.1
+FLEET_ALARM_METRICS = 2  # Invocations and Errors; only with alarm_sns_topic_arn set
+
+ALARM_METRICS = 33 + FLEET_ALARM_METRICS
 CUSTOM_METRICS = 3
 KMS_KEYS = 2
 
@@ -182,12 +208,34 @@ def ranker(p: dict, macs: int, runs: float) -> float:
             + stored_gb * p["ddb_storage_gb_month"])
 
 
+def fleet_markers(p: dict, macs: int, lockdown: bool = False) -> float:
+    """Unknown marker writes and storage a month."""
+    share = FLEET_LOCKDOWN_SHARE_OF_EVENTS if lockdown else 1.0
+    writes = macs * DAYS * FLEET_MARKER_WRITES_PER_MAC_DAY * share
+    stored_gb = macs * FLEET_MARKERS_PER_MAC * share * FLEET_MARKER_BYTES / GB
+    return (writes * p["ddb_write_per_million"] / 1e6
+            + stored_gb * (p["ddb_storage_gb_month"] + p["ddb_pitr_gb_month"]))
+
+
+def fleet_job(p: dict, macs: int, rules: int, runs: float, lockdown: bool = False) -> float:
+    """The fleet job a month, without its alarm."""
+    reads = macs * FLEET_INDEX_BYTES_PER_MAC / 4096 * 0.5 + macs * FLEET_MAC_READ_UNITS + 1.5
+    if not lockdown:
+        reads += macs * FLEET_MARKER_READ_UNITS + math.ceil(rules * RULE_ROW_BYTES / 4096) / 2
+    rows = macs * FLEET_ROWS_PER_MAC
+    seconds = 2 + rows / FLEET_ROWS_PER_SECOND
+    stored_gb = rows * FLEET_ROW_STORED_BYTES * min(runs, runs * FLEET_ROWS_KEPT_DAYS / DAYS) / GB
+    return (runs * (reads * p["ddb_read_per_million"] / 1e6 + rows * p["ddb_write_per_million"] / 1e6
+                    + lambda_cost(p, (FLEET_LAMBDA_GB, seconds)))
+            + stored_gb * (p["ddb_storage_gb_month"] + p["ddb_pitr_gb_month"]))
+
+
 def fixed_without_ranker(p: dict) -> float:
     return (KMS_KEYS * p["kms_key_month"] + ALARM_METRICS * p["alarm_metric_month"]
             + CUSTOM_METRICS * p["custom_metric_month"] + p["s3_month"])
 
 
-def row(p: dict, rules: int, macs: int, interval: int, ranker_runs: float) -> dict:
+def row(p: dict, rules: int, macs: int, interval: int, ranker_runs: float, fleet_runs: float = FLEET_RUNS_PER_MONTH) -> dict:
     syncs = macs * DAYS * 1440 / interval
     clean = macs * CLEAN_SYNCS_PER_MONTH
     pages = max(1, math.ceil(rules * RULE_RESPONSE_BYTES / PAGE_BUDGET_BYTES))
@@ -209,8 +257,9 @@ def row(p: dict, rules: int, macs: int, interval: int, ranker_runs: float) -> di
     logs = log_gb * (p["logs_ingest_gb"] + LOG_STORED_FRACTION * p["logs_storage_gb_month"])
     ev = (events * EVENT_WRITE_UNITS * write
           + macs * EVENTS_PER_MAC_DAY * EVENT_DAYS_KEPT
-          * (EVENT_STORED_BYTES * p["ddb_storage_gb_month"] + EVENT_ITEM_BYTES * p["ddb_pitr_gb_month"]) / GB)
-    fixed = fixed_without_ranker(p) + ranker(p, macs, ranker_runs)
+          * (EVENT_STORED_BYTES * p["ddb_storage_gb_month"] + EVENT_ITEM_BYTES * p["ddb_pitr_gb_month"]) / GB
+          + fleet_markers(p, macs))
+    fixed = fixed_without_ranker(p) + ranker(p, macs, ranker_runs) + fleet_job(p, macs, rules, fleet_runs)
     total = lam + api + ddb + logs + ev + fixed
     return dict(requests=requests, lam=lam, api=api, ddb=ddb, logs=logs, ev=ev, fixed=fixed, total=total)
 
@@ -246,6 +295,7 @@ def main() -> None:
     parser.add_argument("--rules", type=parse_list, default=[100, 1000, 10000], help="global rule counts (default 100,1000,10000)")
     parser.add_argument("--intervals", type=parse_list, default=[1, 10, 30, 60], help="sync intervals in minutes (default 1,10,30,60)")
     parser.add_argument("--ranker-runs", type=float, default=720, help="ranker runs a month (default 720, hourly)")
+    parser.add_argument("--fleet-runs", type=float, default=FLEET_RUNS_PER_MONTH, help="fleet job runs a month (default 30.42, daily)")
     parser.add_argument("--prices", help="JSON file of unit prices to override (see the docstring for the keys)")
     args = parser.parse_args()
     p = load_prices(args.prices)
@@ -256,7 +306,7 @@ def main() -> None:
         print("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for interval in args.intervals:
             for rules in args.rules:
-                r = row(p, rules, macs, interval, args.ranker_runs)
+                r = row(p, rules, macs, interval, args.ranker_runs, args.fleet_runs)
                 print(f"| {rules:,} | {interval} min | {requests_text(r['requests'])} | {money(r['lam'])} | "
                       f"{money(r['api'])} | {money(r['ddb'])} | {money(r['logs'])} | {money(r['ev'])} | "
                       f"{money(r['fixed'])} | **{money(r['total'])}** |")
@@ -267,11 +317,22 @@ def main() -> None:
           f"CloudWatch Logs {s['logs']:.2f}.")
 
     weekday_runs = 11 * 5 * DAYS / 7
-    print(f"\nFixed, US$ a month: {fixed_without_ranker(p):.2f} without the ranker. Ranker:\n")
+    print(f"\nFixed, US$ a month: {fixed_without_ranker(p):.2f} without the ranker and the fleet job. Ranker:\n")
     print(f"| Macs | Ranker, {args.ranker_runs:,.0f} runs | Ranker, 11 runs a weekday ({weekday_runs:.0f} runs) |")
     print("|---:|---:|---:|")
     for macs in args.macs:
         print(f"| {macs:,} | {ranker(p, macs, args.ranker_runs):.2f} | {ranker(p, macs, weekday_runs):.2f} |")
+
+    alarm = FLEET_ALARM_METRICS * p["alarm_metric_month"]
+    rules = args.rules[len(args.rules) // 2]
+    print(f"\nFleet health and Lockdown readiness, {args.fleet_runs:.4g} runs a month, {rules:,} global rules, US$ a month "
+          f"(the alarm, {alarm:.2f}, is already in the fixed figure and only exists with alarm_sns_topic_arn):\n")
+    print("| Macs | Mode | Unknown markers | Fleet job | Alarm | Total |")
+    print("|---:|---|---:|---:|---:|---:|")
+    for macs in sorted(set(args.macs) | {1000}):
+        for mode, lockdown in (("monitor", False), ("Lockdown", True)):
+            m, j = fleet_markers(p, macs, lockdown), fleet_job(p, macs, rules, args.fleet_runs, lockdown)
+            print(f"| {macs:,} | {mode} | {m:.2f} | {j:.2f} | {alarm:.2f} | {m + j + alarm:.2f} |")
 
     for macs in args.macs:
         gb = macs * EVENTS_PER_MAC_DAY * EVENT_DAYS_KEPT * EVENT_STORED_BYTES / GB

@@ -44,6 +44,7 @@ Use the cli to sync rules ([docs/rules.md](docs/rules.md)). Every command and fl
 * [The sync process](docs/sync.md)
 * [Device groups](docs/groups.md)
 * [Events table](docs/events-table.md) (executions and file access events), which the read-only web view, rudolph-web, lists events and top binaries from
+* [Fleet health and Lockdown readiness](docs/fleet-health.md): the daily lists of Macs that need attention, holiday mode, and which Macs are ready for Lockdown
 * [Costs](docs/costs.md) and [security risks](docs/security-risks.md)
 * [IAM for operators and deployers](docs/cli-iam.md): example policies for the CLI (read-only and rule administrator) and the deployer's `iam:PassRole`
 

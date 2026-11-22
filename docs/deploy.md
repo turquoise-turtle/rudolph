@@ -92,7 +92,7 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `log_retention_in_days` | `30` | Retention of the Lambda and Firehose CloudWatch log groups. |
 | `api_throttling_rate_limit` | `2000` | Requests per second API Gateway accepts **on each route** before answering HTTP 429: each of the 6 methods has its own limit, so all routes together can take 6 times this. A sync is 4-6 requests about every 10 minutes, one or two per route, so 100,000 Macs send each route about 170-330 requests per second on average. It is a ceiling against floods, not a way to shed load: Santa retries a 429 (see [upgrading](#0d-check-the-api-throttle)). It does not protect other APIs in the account (see there). |
 | `api_throttling_burst_limit` | `2000` | Requests accepted at once on each route before answering HTTP 429 (each method's token bucket size). Keep it at least the rate limit; the account's regional burst limit (5,000 by default) caps all routes together. |
-| `alarm_sns_topic_arn` | `""` | SNS topic notified when an alarm fires or recovers. Without it the alarms exist in CloudWatch but notify no one. |
+| `alarm_sns_topic_arn` | `""` | SNS topic notified when an alarm fires or recovers. Without it the alarms exist in CloudWatch but notify no one, except `fleet_job`, which is then not created. |
 | `api_4xx_alarm_min_requests` | `100` | The `api_4xx` alarm ignores 5-minute periods with fewer requests than this. A Mac sends about 2-3 requests every 5 minutes, so the default covers fleets from about 40 Macs; lower it for smaller fleets, at the cost of alarms on a few scanner requests. |
 | `monthly_budget_usd` | `0` | Monthly AWS Budgets limit in US dollars for the costs tagged `Name = Rudolph` (see [Cost budget](#cost-budget)). `0` creates no budget. |
 | `budget_alert_emails` | `[]` | Who the budget emails. Required when `monthly_budget_usd` is above 0. |
@@ -101,6 +101,9 @@ These `config.auto.tfvars.json` settings control authentication and logging:
 | `store_kms_key_user_arns` | `[]` | IAM role or user ARNs that may use the store tables' KMS key through DynamoDB besides Rudolph's own Lambdas (ArnLike patterns; a role's ARN includes its path). Empty lets every principal of the account, so table permissions alone decide who reads the tables. When set, list rudolph-web's role and every CLI operator, or they lose access (see [upgrading](#25-telemetry-retention-and-encryption)). |
 | `ranker_schedule_expression` | `"rate(1 hour)"` | When the ranker rebuilds the web view's top-blocked, top-allowed and top-unknown lists: an EventBridge Scheduler `rate()`, `cron()` or `at()` expression, in `ranker_schedule_timezone` (see [Ranker schedule](#ranker-schedule)). |
 | `ranker_schedule_timezone` | `"UTC"` | IANA time zone of `ranker_schedule_expression`, such as `America/New_York`. The schedule follows its daylight saving. |
+| `fleet_schedule_expression` | `"rate(1 day)"` | When the fleet job rebuilds the web view's fleet health lists and Lockdown readiness figures: an EventBridge Scheduler `rate()`, `cron()` or `at()` expression, in `fleet_schedule_timezone` (see [Fleet job schedule](#fleet-job-schedule)). |
+| `fleet_schedule_timezone` | `"UTC"` | IANA time zone of `fleet_schedule_expression`, such as `Australia/Sydney`. The schedule follows its daylight saving. |
+| `fleet_alarm_days` | `3` | The `fleet_job` alarm fires when the fleet job has not completed a run for this many UTC days in a row: a whole number from 1 to 7 (CloudWatch evaluates at most 7 days of daily periods). The alarm only exists when `alarm_sns_topic_arn` is set. |
 | `enable_api_access_logs` | `false` | Write one API Gateway access log line per request, including requests refused before any Lambda runs (rejected tokens, throttling, WAF blocks), to the log group `/aws/apigateway/PREFIX_rudolph_access`, kept for `log_retention_in_days`. Needs the account's API Gateway CloudWatch role first (see [API access log](#api-access-log)). |
 | `manage_api_gateway_account_role` | `false` | Create an IAM role with `AmazonAPIGatewayPushToCloudWatchLogs` and set it as the account's API Gateway CloudWatch role (`aws_api_gateway_account`). The setting is shared by every REST API in the account and region and replaces any role already there: only for accounts where `aws apigateway get-account` shows no `cloudwatchRoleArn` and no other stack manages it. |
 | `enable_waf` | `false` | Associate an AWS WAF web ACL with the stage: the AWS managed IP reputation list and a per-IP rate limit, with CloudWatch metrics (see [WAF](#waf)). |
@@ -120,6 +123,7 @@ Rudolph creates these CloudWatch alarms (names start with `PREFIX_rudolph_`):
 | `lambda_timeouts` | Any Rudolph Lambda function timed out (`Task timed out` in its log group). |
 | `dynamodb_store_read_throttles`, `dynamodb_store_write_throttles`, `dynamodb_events_read_throttles`, `dynamodb_events_write_throttles` | Reads or writes to the rule store or events table, or to any of its global secondary indexes, were throttled. One alarm per table and direction, each summing the table's metric with one per index (throttling on an index is reported under its own `GlobalSecondaryIndexName` dimension). |
 | `event_sink_failures` | eventupload could not forward events to Firehose, Kinesis or the output Lambda (only created when a sink is configured). |
+| `fleet_job` | The fleet job has not completed a run for `fleet_alarm_days` UTC days in a row (default 3): each day, the function's `Invocations` minus its `Errors` was below 1, or it was not invoked at all. Failures, timeouts and running out of memory all count. Only created when `alarm_sns_topic_arn` is set. The fleet job is in neither `lambda_errors` nor `lambda_timeouts`: one failed night leaves the lists a day older and notifies no one. There are no alarms on stale or incomplete Macs. See [Schedule and alarm](fleet-health.md#schedule-and-alarm). |
 
 The 413, timeout and event sink alarms use metric filters on the Lambda log groups, published in the
 `Rudolph/PREFIX` namespace. Request bodies above API Gateway's own 10 MB limit are refused before reaching Lambda and
@@ -155,6 +159,21 @@ The trade-off of fewer runs:
 - **Stale-list warning.** rudolph-web warns when a top list is older than its `top_list_stale_after` setting (whole hours, default `3h`, which suits the hourly default). With a working-hours schedule, raise it to fit, or the warning shows on every top-list page outside the scheduled hours (with the example above, every evening, overnight and all weekend) although the ranker is healthy. rudolph-web's `docs/deploy.md` gives the figures: with hourly runs from 7am to 5pm on weekdays a list is normally up to 14 hours old overnight and about 62 hours old over a weekend, so `15h` still warns every weekend and `63h` never warns on a healthy schedule.
 - **The 1-day list stops at the last run.** Each list covers events up to the run that built it, so outside the scheduled hours the 1-day list shows the day as it stood at the last run, and the longer windows lag by the same amount. The windows are UTC days whatever the schedule's time zone.
 - **Cost.** The ranker costs little either way (see [costs.md](costs.md)); fewer runs cost proportionally less, about a third with the example above (55 runs a week instead of 168).
+
+### Fleet job schedule
+The fleet job, `PREFIX_rudolph_fleet`, rebuilds the web view's fleet health lists and Lockdown readiness figures (see [Fleet health and Lockdown readiness](fleet-health.md)). An EventBridge Scheduler schedule, `PREFIX_rudolph_fleet`, runs it at `fleet_schedule_expression` in the time zone `fleet_schedule_timezone`: by default once a day, in UTC. The schedule invokes the function through its own role, `PREFIX_rudolph_fleet_scheduler_role`, which may invoke only the fleet job. A failed run is not retried; the next run rebuilds everything from scratch.
+
+`rate(1 day)` runs at the time of day the schedule was created. To pick the hour, for example 6am Sydney time, before staff arrive:
+
+```json
+"fleet_schedule_expression": "cron(0 6 * * ? *)",
+"fleet_schedule_timezone": "Australia/Sydney"
+```
+
+- **Once a day is enough.** The lists change slowly (a Mac goes stale over days, readiness looks back 30 days), and each run reads every Mac. Running it hourly costs 24 times as much for the job (see [costs.md](costs.md#fleet-health-and-lockdown-readiness)).
+- **Do not skip days** without raising `fleet_alarm_days`: the `fleet_job` alarm counts UTC days without a completed run, so with a schedule that skips days, such as weekdays only, set `fleet_alarm_days` to more than the longest run of days without a run.
+- **To refresh the lists now**, for example after setting a holiday, invoke the function by hand (see [Running it by hand](fleet-health.md#running-it-by-hand)).
+- **Optional settings on the function**, not Terraform variables: `FLEET_MIN_SANTA_VERSION` (default `2026.9`), the release below which a Mac is listed under `Version`, and `FLEET_MAX_MACS` (default 250,000). To change one, add it to the `environment` block of `aws_lambda_function.fleet` in `fleet.tf`.
 
 ### State locking
 The example `_backend.tf` sets `use_lockfile = true` (Terraform 1.10 or later): while a plan or apply runs, Terraform holds a lock object, `<key>.tflock`, next to the state object in the state bucket, so a second plan or apply at the same time (another person, or CI) fails at once with "Error acquiring the state lock" instead of overwriting the first one's state. To have it retry until the lock is free instead, give it `-lock-timeout`, for example `terraform -chdir=deployments/environments/$ENV plan -lock-timeout=10m`; the `make` targets do not pass one. If the state bucket's policy, or the deployer's IAM policy, limits access to the state key, it must also allow `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<key>.tflock` (for the example, `arn:aws:s3:::your-terraform-tfstate-bucket/rudolph-example-prefix.tfstate.tflock`); without `s3:DeleteObject` the first apply succeeds but leaves the lock behind, and every later plan fails. A lock left by an interrupted run is removed with `terraform -chdir=deployments/environments/$ENV force-unlock <lock ID>`, once you are sure that run has stopped.
@@ -514,10 +533,11 @@ This applies to every existing deployment. Preflight and `rudolph group add|remo
      -target=module.santa_api.module.rule_store.aws_iam_policy.lambda_policy \
      --var lambda_api_zip="$PWD/build/package/api_deployment.zip" \
      --var lambda_authorizer_zip="$PWD/build/package/api_authorizer_deployment.zip" \
-     --var lambda_ranker_zip="$PWD/build/package/ranker_deployment.zip"
+     --var lambda_ranker_zip="$PWD/build/package/ranker_deployment.zip" \
+     --var lambda_fleet_zip="$PWD/build/package/fleet_deployment.zip"
    ```
 
-   The plan updates `aws_iam_policy.lambda_policy` in place and nothing else.
+   The plan updates `aws_iam_policy.lambda_policy` in place and nothing else. (`lambda_fleet_zip` is needed from the release of step 28 on.)
 2. **Deploy.** `make deploy`. The rest of the plan is the new Lambda code.
 3. **Backfill the rows, once.** Macs whose groups have not changed since the deploy have no rows yet, so run `rudolph group members --rebuild` (with the new CLI). It scans the table once, shows how many rows it writes, and asks first; `--dry-run` shows the counts without writing. If the CLI's credentials are restricted by partition key, allow `dynamodb:Scan` on the table and `dynamodb:BatchWriteItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem` and `dynamodb:Query` on `GroupMembers#*` first (see [CLI permissions](#cli-permissions)).
 
@@ -601,3 +621,48 @@ This applies to every existing deployment; there is nothing to do but deploy. Ru
 - **Very large machine and group rule sets now sync.** When a Mac's machine-specific rules exceed what is left of the page they start on, they go on over further pages (log line `Ruledownload machine rules: more pages`), each of which reads all of the Mac's machine rule rows again. Below about 2 MiB of such rules for one Mac, some 15,000 small ones, nothing changes.
 - **Syncs in flight during the deploy.** A cursor issued by the previous version is served by the new one, which continues that sync in larger pages. A cursor issued by the new version and answered by the previous one (while both run, or after a rollback) is served too when it is on the global rules or the feed. One on the machine-specific rules (only issued for a Mac whose machine and group rules exceed a page) is either answered with all of them at once, as before, or refused with 400, which Santa does not retry: that sync ends and the Mac's next sync starts again from preflight.
 - **Cost estimates.** The tables in [costs.md](costs.md#estimates-by-fleet-size-rule-count-and-sync-interval) and `scripts/cost_grid.py` now count a clean sync as one rule download request up to about 14,500 rules.
+
+### 28. Fleet health and Lockdown readiness
+This applies to every existing deployment. A new scheduled Lambda, the fleet job (`PREFIX_rudolph_fleet`), builds the web view's fleet health lists and Lockdown readiness figures once a day; eventupload writes a marker per Mac and unknown binary for it; preflight records each Mac's first-seen date; and `rudolph fleet holiday` raises the stale threshold over a holiday. See [Fleet health and Lockdown readiness](fleet-health.md).
+
+1. **Apply eventupload's IAM change before the new Lambdas run.** The events write policy gains `UnknownSeen#*` in its `dynamodb:LeadingKeys`. eventupload running the new code under the old policy cannot write the markers: every upload holding an unknown execution is answered HTTP 500 (`AccessDeniedException` in its log; `api_5xx` fires), and Santa uploads the same events again at every sync until the policy is applied. In monitor mode that is nearly every upload. `make deploy` applies the policy and the Lambdas in one apply, in no guaranteed order, so apply the policy on its own first, from a fresh build:
+
+   ```sh
+   export ENV=YOURENV
+   make build tf-init
+   terraform -chdir=deployments/environments/$ENV apply \
+     -target=module.santa_api.module.rule_store.aws_iam_policy.events_write \
+     --var lambda_api_zip="$PWD/build/package/api_deployment.zip" \
+     --var lambda_authorizer_zip="$PWD/build/package/api_authorizer_deployment.zip" \
+     --var lambda_ranker_zip="$PWD/build/package/ranker_deployment.zip" \
+     --var lambda_fleet_zip="$PWD/build/package/fleet_deployment.zip"
+   ```
+
+   The plan updates `aws_iam_policy.events_write` in place and nothing else. The old eventupload code never writes `UnknownSeen#`, so the wider policy changes nothing until step 2.
+2. **Deploy.** `make deploy`. The plan updates the Lambda code and creates the fleet job: its source object, function (256 MB, 900 s), log group, role with two policies, schedule, scheduler role and policy, and invoke config, 10 resources, plus the alarm `PREFIX_rudolph_fleet_job` when `alarm_sns_topic_arn` is set. It also adds the fleet role to the store key's policy statements that name Rudolph's Lambdas, which matters only when `store_kms_key_user_arns` is set. Nothing is replaced or destroyed.
+3. **Run the fleet job once by hand**, rather than waiting up to a day for the schedule:
+
+   ```sh
+   aws lambda invoke --region "$REGION" --function-name "${PREFIX}_rudolph_fleet" /tmp/fleet-out.json
+   aws logs tail "/aws/lambda/${PREFIX}_rudolph_fleet" --since 15m --region "$REGION"
+   ```
+
+   Success: `"StatusCode": 200` without `FunctionError`, and one log line starting `fleet: macs=<n>` with about the number of Macs you have. An `AccessDeniedException` here means the apply of step 2 did not finish.
+
+When each figure becomes accurate (there is no backfill):
+
+| Figure | Accurate |
+|---|---|
+| Fleet health lists and counts, every category | after the first run (step 3) |
+| 7-day unknown and pending counts | 7 days after step 2 |
+| 30-day counts and the readiness buckets | 30 days after step 2. Until then every Mac that is not already locked is `Unmeasured` with `Why` `observed`, so no Mac is called ready early. |
+
+- **New variables.** If your environment directory was copied from `example` before this release, declare `lambda_fleet_zip`, `fleet_schedule_expression`, `fleet_schedule_timezone` and `fleet_alarm_days` in its `_variables.tf`, pass them in `main.tf` and add the last three to `config.auto.tfvars.json`, as `example` now does (`make plan` refuses the environment until you do, see step 17). The `Makefile` passes `lambda_fleet_zip`, which `make build` now produces as `build/package/fleet_deployment.zip`.
+- **Deployer permissions.** The role that runs Terraform needs `iam:PassRole` on `arn:aws:iam::ACCOUNT_ID:role/rudolph/PREFIX_rudolph_fleet_role` (to Lambda) and `.../PREFIX_rudolph_fleet_scheduler_role` (to EventBridge Scheduler), as for the ranker in step 11; a statement on `role/rudolph/PREFIX_rudolph_*` already covers them.
+- **The alarm.** `PREFIX_rudolph_fleet_job` fires after `fleet_alarm_days` UTC days (default 3) without a completed run, and only exists with `alarm_sns_topic_arn`. It can sit in `ALARM` or `INSUFFICIENT_DATA` until the first UTC day with a successful run has been counted. Nothing alarms on stale or incomplete Macs, and the job adds no custom metric or metric filter.
+- **Sync cost is unchanged.** `FirstSeenDay` adds about 25 bytes to the sync state, which stays under 1 KB, so a steady-state sync still costs what `TestCOST2_SteadyStateSyncCapacityBudget` allows. Each unknown binary in an upload costs one more write unit.
+- **Costs.** About US$0.75 a month for 1,000 Macs in monitor mode and about US$0.30 once most are in Lockdown, of which US$0.20 is the alarm; see [costs.md](costs.md#fleet-health-and-lockdown-readiness).
+- **Silent Macs.** Readiness cannot see a configuration profile that turns unknown event upload off on the Mac. Consider `rudolph config update --global --disable-unknown-event-upload=false`, which Santa takes over the profile.
+- **Holiday mode.** `rudolph fleet holiday --stale-days 60 --until 2027-02-01` (see [cli.md](cli.md#fleet-holiday)). CLI credentials restricted by partition key need `FleetHealth` added to their write statement (see [cli-iam.md](cli-iam.md#rule-administrator)).
+- **rudolph-web** shows "not computed yet" until the pointer exists. Bump its Rudolph pin to this release for the fleet pages, `testdata/webcontract/fleet-rows.json` and `pkg/model/fleethealth`, which it uses to set and end a holiday; its role needs `FleetHealth` among the partitions it may write when editing is on.
+- **Rolling back.** Disable or remove the schedule; the pages show the last snapshot's age, then "not computed" once its rows expire after 3 days. Markers expire on their own after 35 days.

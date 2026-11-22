@@ -38,6 +38,11 @@ variable "lambda_ranker_zip" {
   description = "Full path to zip with the ranker's go binary (build/package/ranker_deployment.zip) to be uploaded to S3"
 }
 
+variable "lambda_fleet_zip" {
+  type        = string
+  description = "Full path to zip with the fleet job's go binary (build/package/fleet_deployment.zip) to be uploaded to S3"
+}
+
 variable "use_existing_route53_zone" {
   type        = bool
   description = "Whether or not to import an existing Route 53 Hosted Zone"
@@ -272,6 +277,37 @@ variable "ranker_schedule_timezone" {
   type        = string
   description = "IANA time zone for ranker_schedule_expression, for example America/New_York. EventBridge Scheduler follows its daylight saving."
   default     = "UTC"
+}
+
+#
+# Fleet job
+#
+variable "fleet_schedule_expression" {
+  type        = string
+  description = "When the fleet job rebuilds the web view's fleet health lists and Lockdown readiness figures: an EventBridge Scheduler rate(), cron() or at() expression, in fleet_schedule_timezone. For example cron(0 6 * * ? *) runs it at 6am every day. The lists are as old as the last run; more than once a day multiplies the job's cost (docs/costs.md)."
+  default     = "rate(1 day)"
+
+  validation {
+    condition     = can(regex("^(rate|cron|at)\\(.+\\)$", var.fleet_schedule_expression))
+    error_message = "fleet_schedule_expression must be a rate(...), cron(...) or at(...) expression."
+  }
+}
+
+variable "fleet_schedule_timezone" {
+  type        = string
+  description = "IANA time zone for fleet_schedule_expression, for example Australia/Sydney. EventBridge Scheduler follows its daylight saving."
+  default     = "UTC"
+}
+
+variable "fleet_alarm_days" {
+  type        = number
+  description = "The fleet job's alarm fires when it has not completed a run for this many days in a row (1 to 7: CloudWatch evaluates at most 7 days of daily periods). It counts UTC days and assumes the job runs at least once a day. The alarm only exists when alarm_sns_topic_arn is set."
+  default     = 3
+
+  validation {
+    condition     = var.fleet_alarm_days >= 1 && var.fleet_alarm_days <= 7 && floor(var.fleet_alarm_days) == var.fleet_alarm_days
+    error_message = "fleet_alarm_days must be a whole number from 1 to 7."
+  }
 }
 
 #

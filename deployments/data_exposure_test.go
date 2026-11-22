@@ -519,6 +519,7 @@ var tableRoles = map[string]*regexp.Regexp{
 	"postflight":   regexp.MustCompile(`module\.postflight_function\.lambda_role_arn\b`),
 	"eventupload":  regexp.MustCompile(`module\.eventupload_function\.lambda_role_arn\b`),
 	"ranker":       regexp.MustCompile(`aws_iam_role\.ranker\.arn\b`),
+	"fleet":        regexp.MustCompile(`aws_iam_role\.fleet\.arn\b`),
 }
 
 var inlineLocalRef = regexp.MustCompile(`\blocal\.([A-Za-z0-9_]+)`)
@@ -560,7 +561,11 @@ func checkTableRolesComplete(t *testing.T, parent []tfFile) {
 			continue
 		}
 		role, ok := f.Body.Attributes["role"]
-		if !ok || !tableRoles["ranker"].MatchString(sourceOf(t, parent, role.Expr)) {
+		known := false
+		for _, re := range tableRoles {
+			known = known || (ok && re.MatchString(sourceOf(t, parent, role.Expr)))
+		}
+		if !known {
 			t.Errorf("aws_lambda_function.%s is given a table name but its role is not in tableRoles; the check is out of date", f.Labels[1])
 		}
 	}

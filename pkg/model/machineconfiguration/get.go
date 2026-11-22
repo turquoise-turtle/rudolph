@@ -99,14 +99,18 @@ func (f ConcreteConfigurationFetcher) getIntendedConfigAndItem(machineID string)
 		globalConfig = &universal
 	}
 
-	global := withoutTemporaryClientMode(withoutCleanSyncRequest(*globalConfig))
-	if len(machineItem) == 0 {
-		intendedConfig = global
-		return
-	}
-
-	intendedConfig, err = mergeMachineConfig(global, machineItem)
+	intendedConfig, err = intendedFrom(*globalConfig, machineItem)
 	return
+}
+
+// intendedFrom is the half of getIntendedConfigAndItem that reads nothing: the config intended for a machine, from the
+// global config in force and the machine's stored config row (nil without one).
+func intendedFrom(globalConfig MachineConfiguration, machineItem map[string]awstypes.AttributeValue) (MachineConfiguration, error) {
+	global := withoutTemporaryClientMode(withoutCleanSyncRequest(globalConfig))
+	if len(machineItem) == 0 {
+		return global, nil
+	}
+	return mergeMachineConfig(global, machineItem)
 }
 
 // withoutCleanSyncRequest returns a global config without its clean sync flag. The flag is refused for the global

@@ -7,6 +7,8 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 )
 
+const firstSeenDayLayout = "2006-01-02"
+
 func CreateNewSyncState(
 	timeProvider clock.TimeProvider,
 	machineID string,
@@ -45,6 +47,11 @@ func CreateNewSyncState(
 // may still be on the Mac.
 func (r *SyncStateRow) ContinueFrom(prev *SyncStateRow, emptyMachineRulesDigest string, now time.Time) {
 	r.SyncSeq = int(now.UnixMilli())
+	// There is no backfill: a Mac without a row, or with one written before the date was kept, is first seen now.
+	r.FirstSeenDay = now.UTC().Format(firstSeenDayLayout)
+	if prev != nil && prev.FirstSeenDay != "" {
+		r.FirstSeenDay = prev.FirstSeenDay
+	}
 	if prev == nil {
 		r.MachineRulesTracked = emptyMachineRulesDigest
 		return
