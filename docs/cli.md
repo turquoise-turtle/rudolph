@@ -51,10 +51,12 @@ rudolph rule <verb> (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine
 ### `rule update`
 
 ```sh
-rudolph rule update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--expires <when>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]
+rudolph rule update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global|--group <group>|--ungrouped) [-p <policy>] [--expires <when>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]
 ```
 
-Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is changes nothing and says so (exit 0, so a command copied twice is harmless). A machine rule that is being removed (after `rule remove`, until the Mac's sync deletes it) cannot be updated: create it again instead. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be. Group rules are changed by writing them again.
+Changes an existing rule; only what is given changes. Every flag is optional, but at least one change is needed, and an update that would leave the rule as it is changes nothing and says so (exit 0, so a command copied twice is harmless). A machine rule that is being removed (after `rule remove`, until the Mac's sync deletes it) cannot be updated: create it again instead. `-p remove` is refused (a `REMOVE` policy on a rule row never deletes it: use `rule remove`), and so is `-p cel` (create CEL rules with `rule cel`). An empty message or URL (`--custom-msg ""`) clears it. `--expires`/`--permanent` apply to machine rules only. The prompt shows the rule as stored, including its description, and as it will be.
+
+With `--group <group>` or `--ungrouped` the only change accepted is `--collect-allowed-events=true|false`, which switches the collection of the executions a group allow permits on its group's Macs on or off (see [Collecting what a group rule allows](groups.md#collecting-what-a-group-rule-allows)); `-p`, `--expires`, `--permanent` and the message and URL flags are refused, because every other change of a group rule is made by writing it again. It refuses a group that is not registered, a rule the group does not have and, when switching on, a rule that is not an allow (`ALLOWLIST` or `ALLOWLIST_COMPILER`). It is audited as `rule.update` on `group:<name>` or `ungrouped`, and warns when `EnableAllEventUpload` is off in the global configuration.
 
 ### `rule remove`
 
@@ -70,7 +72,7 @@ rudolph rule remove (-t <rule-type> -i <identifier>|<rule-name>) (-m <machine-id
 rudolph rule get (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global)
 ```
 
-Shows one global or machine rule as stored: policy, description, expiry, messages, whether its allowed executions are collected, and whether a machine rule is being removed. A group's rules are shown by `rudolph group get <group>`.
+Shows one global or machine rule as stored: policy, description, expiry, messages, whether its allowed executions are collected, and whether a machine rule is being removed. A group's rules are shown by `rudolph group get <group>`, which marks those whose allowed executions are collected.
 
 ### `rules`
 

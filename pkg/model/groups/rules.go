@@ -29,6 +29,9 @@ type RuleRow struct {
 	Description string `dynamodbav:"Description,omitempty"`
 	Group       string `dynamodbav:"Group"`
 	DataType    string `dynamodbav:"DataType"`
+	// CollectAllowedEvents stores the executions this rule allows on the group's Macs in the events table (see
+	// collect.go). Santa never sees it.
+	CollectAllowedEvents bool `dynamodbav:"CollectAllowedEvents,omitempty"`
 }
 
 func rulesPartition(group string) string {
@@ -116,10 +119,10 @@ func bumpRulesVersion(client dynamodb.TransactUpdateExpressionAPI, registry *Reg
 		values)
 }
 
-// changeRules runs a transaction holding item and the version bump of group, reading the registry again and retrying
+// changeRules runs a transaction holding items and the version bump of group, reading the registry again and retrying
 // when another writer issued a version meanwhile. It returns ErrGroupNotFound when the group is not registered, and
-// errItemCondition when the registry did not change but the transaction's condition still failed (item's own).
-func changeRules(client RegistryWriter, group string, item awstypes.TransactWriteItem, errItemCondition error) error {
+// errItemCondition when the registry did not change but the transaction's condition still failed (an item's own).
+func changeRules(client RegistryWriter, group string, items []awstypes.TransactWriteItem, errItemCondition error) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		registry, err := GetRegistry(client, true)
 		if err != nil {
@@ -132,7 +135,7 @@ func changeRules(client RegistryWriter, group string, item awstypes.TransactWrit
 		if err != nil {
 			return err
 		}
-		_, err = client.TransactWriteItems([]awstypes.TransactWriteItem{item, *bump}, nil)
+		_, err = client.TransactWriteItems(append(append([]awstypes.TransactWriteItem(nil), items...), *bump), nil)
 		if err == nil {
 			return nil
 		}
@@ -153,7 +156,9 @@ func changeRules(client RegistryWriter, group string, item awstypes.TransactWrit
 	return ErrRegistryChanged
 }
 
-// PutRule creates or replaces a rule of a registered group. A Mac receives the change at its next sync.
+// PutRule creates or replaces a rule of a registered group. A Mac receives the change at its next sync. A replaced
+// rule is written without CollectAllowedEvents and leaves the collection index in the same transaction: collection is
+// switched on again with SetCollectAllowedEvents.
 func PutRule(client RegistryWriter, group string, rule rules.SantaRule, description string) error {
 	if err := ValidateRule(rule); err != nil {
 		return err
@@ -192,7 +197,11 @@ func PutRule(client RegistryWriter, group string, rule rules.SantaRule, descript
 	if err != nil {
 		return err
 	}
-	if err := changeRules(client, group, *put, ErrRegistryChanged); err != nil {
+	items, err := withIndexRemoval(client, group, sortKey, *put)
+	if err != nil {
+		return err
+	}
+	if err := changeRules(client, group, items, ErrRegistryChanged); err != nil {
 		if errors.Is(err, ErrGroupNotFound) || errors.Is(err, ErrRegistryChanged) {
 			return err
 		}
@@ -202,14 +211,18 @@ func PutRule(client RegistryWriter, group string, rule rules.SantaRule, descript
 }
 
 // RemoveRule deletes a group's rule. Member Macs get the global rule for the same identifier and type back, or remove
-// the rule, at their next sync.
+// the rule, at their next sync. The rule leaves the collection index in the same transaction.
 func RemoveRule(client RegistryWriter, group string, sortKey string) error {
 	del, err := client.CreateTransactDeleteItem(dynamodb.PrimaryKey{PartitionKey: rulesPartition(group), SortKey: sortKey})
 	if err != nil {
 		return err
 	}
 	del.Delete.ConditionExpression = aws.String("attribute_exists(PK)")
-	if err := changeRules(client, group, *del, ErrRuleNotFound); err != nil {
+	items, err := withIndexRemoval(client, group, sortKey, *del)
+	if err != nil {
+		return err
+	}
+	if err := changeRules(client, group, items, ErrRuleNotFound); err != nil {
 		if errors.Is(err, ErrGroupNotFound) || errors.Is(err, ErrRuleNotFound) || errors.Is(err, ErrRegistryChanged) {
 			return err
 		}

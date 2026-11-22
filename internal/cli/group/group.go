@@ -259,7 +259,11 @@ func init() {
 			fmt.Printf("Rules (%d):\n", len(rows))
 			for _, row := range rows {
 				policy, _ := row.Policy.MarshalText()
-				fmt.Printf("  %-12s %s\n", policy, termsafe.String(row.SortKey))
+				collecting := ""
+				if row.CollectAllowedEvents {
+					collecting = "  (CollectAllowedEvents: allowed executions are collected in the events table)"
+				}
+				fmt.Printf("  %-12s %s%s\n", policy, termsafe.String(row.SortKey), collecting)
 			}
 			return nil
 		},

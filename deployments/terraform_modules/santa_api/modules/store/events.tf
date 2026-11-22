@@ -145,7 +145,10 @@ data "aws_iam_policy_document" "events_write" {
   }
 
   # Which rules have their allowed executions stored is read from one item of the store table (PK "EventCollection",
-  # see pkg/model/eventcollection), and confirmed on the rule rows it names before anything is stored.
+  # see pkg/model/eventcollection), and confirmed on the rule rows it names before anything is stored. A flagged group
+  # rule also needs the uploading Mac's groups: its Groups item (the Mac's own partition, "Machine#<id>"; IAM cannot
+  # narrow a grant to one sort key, so the Mac's other items are readable too) and the group registry, then the rule
+  # rows of the Mac's groups.
   statement {
     actions = [
       "dynamodb:GetItem",
@@ -158,7 +161,7 @@ data "aws_iam_policy_document" "events_write" {
     condition {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
-      values   = ["EventCollection", "GlobalRules", "MachineRules#*"]
+      values   = ["EventCollection", "GlobalRules", "GroupRegistry", "GroupRules#*", "Machine#*", "MachineRules#*"]
     }
 
     condition {
@@ -204,7 +207,7 @@ data "aws_iam_policy_document" "events_write" {
     condition {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
-      values   = ["GlobalRules", "MachineRules#*"]
+      values   = ["GlobalRules", "GroupRules#*", "MachineRules#*"]
     }
 
     condition {

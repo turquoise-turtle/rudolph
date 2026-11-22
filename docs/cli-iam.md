@@ -62,7 +62,7 @@ For every command, including those that write: rules, configurations, temporary 
 | `GroupRules#*`, `GroupRegistry` | group rules and the registry of groups (`rule --group\|--ungrouped`, `group create\|update\|delete`, `config update --group\|--ungrouped`) |
 | `GroupMembers#*` | a group's member rows (`group add\|remove`, `group members --rebuild`, `machine forget`) |
 | `FleetHealth` | the stale threshold's holiday (`fleet holiday`): `UpdateItem` |
-| `EventCollection` | the index of rules whose allowed executions are collected (`rule --collect-allowed-events`, `rule update`, `rule remove`, `machine forget`) |
+| `EventCollection` | the index of rules whose allowed executions are collected (`rule --collect-allowed-events`, `rule update`, `rule remove`, `machine forget`; writing again or removing a flagged group rule, and every `group delete`) |
 | `MachineInfo#*`, `MachineConfig#*` | legacy items deleted by `repair --delete`; leave them out if you never run it |
 | `Audit#*` | the audit entry every change records: `PutItem` only |
 

@@ -14,6 +14,7 @@ import (
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
+	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
 	"github.com/airbnb/rudolph/pkg/model/machinerules"
 	"github.com/airbnb/rudolph/pkg/model/rules"
@@ -36,18 +37,19 @@ func init() {
 	ruleHandler := ruleHandler{}
 
 	var ruleUpdateCmd = &cobra.Command{
-		Use:   "update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global) [-p <policy>] [--expires <duration-or-time>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]",
+		Use:   "update (-f <file-path>|-i <identifier>) -t <rule-type> (-m <machine-id>|--global|--group <group>|--ungrouped) [-p <policy>] [--expires <duration-or-time>|--permanent] [--custom-msg <text>] [--custom-url <url>] [--event-detail-button-label <text>] [--notification-app-name <name>] [--collect-allowed-events=true|false]",
 		Short: "Change an existing rule's policy, expiry, messages or event collection",
 		Long: `Change an existing rule. Only what is given changes; the rest of the rule is kept. An empty message or URL
 (e.g. --custom-msg "") clears it. A rule cannot be updated to the CEL policy or removed with -p: use "rule cel" and
-"rule remove". A group rule is changed by writing it again with "rule <policy> ... --group <group>".`,
+"rule remove". Of a group rule only --collect-allowed-events can be updated; anything else is changed by writing the
+rule again with "rule <policy> ... --group <group>", which also ends its collection.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := tf.RequireExplicitTarget(); err != nil {
 				return err
 			}
-			if tf.IsGroup() {
-				return errors.New(`a group rule is changed by writing it again (e.g. "rule deny ... --group <group>"), which replaces it`)
+			if tf.IsGroup() && (!ru.CollectAllowedEventsChanged() || ru.PolicyChanged() || ru.ExpiryChanged() || ru.OptionsChanged()) {
+				return errors.New(`only --collect-allowed-events can be updated on a group rule; anything else is changed by writing the rule again (e.g. "rule deny ... --group <group>"), which replaces it`)
 			}
 			if err := ru.RequireChange(); err != nil {
 				return err
@@ -85,6 +87,9 @@ func init() {
 
 			ruleHandler.dynamodbClient = client
 			ruleHandler.timeProvider = timeProvider
+			if tf.IsGroup() {
+				return ruleHandler.updateGroupRuleCollection(tf.Group, rf, *ru.CollectAllowedEvents, flags.ApprovalOf(cmd))
+			}
 			ruleHandler.globalRuleUpdater = globalrules.ConcreteGlobalRulesUpdater{
 				ClockProvider: timeProvider,
 				TransactWrite: client,
@@ -314,6 +319,83 @@ func (rh *ruleHandler) updateRule(tf flags.TargetFlags, rf flags.RuleInfoFlags, 
 		fmt.Printf("Updated rule %s of machine %s, expires %s\n", termsafe.String(current.key.SortKey), termsafe.String(machineID), clitime.Expiry(expires, rh.timeProvider.Now()))
 	}
 	return flags.Record(rh.dynamodbClient, "rule.update", target, summary)
+}
+
+// updateGroupRuleCollection switches the collection of the executions a group rule allows on or off, after a
+// confirmation (none with --yes, nothing written with --dry-run). It is the only update a group rule has: the flag is
+// not part of what Santa downloads, so the rule need not be written again for it.
+func (rh *ruleHandler) updateGroupRuleCollection(group string, rf flags.RuleInfoFlags, collect bool, approval flags.Approval) error {
+	ruleType := rf.RuleType.AsRuleType()
+	identifier, _, err := identifyRule(rf, ruleType)
+	if err != nil {
+		return err
+	}
+	writer, ok := rh.dynamodbClient.(groups.RegistryWriter)
+	if !ok {
+		return errors.New("this DynamoDB client cannot write group rules")
+	}
+	groupName := fmt.Sprintf("group %s", termsafe.String(group))
+	if group == groups.Ungrouped {
+		groupName = "the Macs in no group"
+	}
+	sortKey := rules.RuleSortKeyFromTypeIdentifier(identifier, ruleType)
+	registry, err := groups.GetRegistry(writer, true)
+	if err != nil {
+		return err
+	}
+	if _, ok := registry.Groups[group]; !ok && group != groups.Ungrouped {
+		return fmt.Errorf("no group %q; create it first with rudolph group create", group)
+	}
+	row, err := groups.GetRule(writer, group, sortKey)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return fmt.Errorf("%s has no rule %s", groupName, sortKey)
+	}
+	if collect == row.CollectAllowedEvents {
+		// Not an error: a command copied from rudolph-web may already have been applied
+		fmt.Printf("The rule %s already is as given; nothing was changed.\n", termsafe.String(sortKey))
+		return nil
+	}
+	if collect && !groups.IsAllow(row.Policy) {
+		return fmt.Errorf("the rule %s of %s: %w", sortKey, groupName, groups.ErrNotAnAllowRule)
+	}
+
+	label := termsafe.String(group)
+	if group == groups.Ungrouped {
+		label = "(Macs in no group)"
+	}
+	printGroupRule := func(heading string, collecting bool) {
+		policyDescription, _ := row.Policy.MarshalText()
+		ruleTypeDescription, _ := row.RuleType.MarshalText()
+		fmt.Println(heading)
+		fmt.Println("  Group:       ", label)
+		fmt.Println("  Identifier/SHA256:      ", termsafe.String(row.Identifier))
+		fmt.Println("  Policy:      ", row.Policy, "  (", string(policyDescription), ")")
+		fmt.Println("  RuleType:    ", row.RuleType, "  (", string(ruleTypeDescription), ")")
+		fmt.Println("  Description: ", termsafe.String(row.Description))
+		fmt.Println("  CollectAllowedEvents:", collecting)
+	}
+	printGroupRule("The current rule:", row.CollectAllowedEvents)
+	fmt.Println("")
+	printGroupRule("Updating the rule to:", collect)
+	if collect {
+		warnIfAllEventUploadOff(rh.dynamodbClient)
+	}
+	fmt.Println("")
+	if apply, err := approval.Confirm(); !apply {
+		return err
+	}
+	if err := groups.SetCollectAllowedEvents(writer, group, sortKey, collect); err != nil {
+		if errors.Is(err, groups.ErrRuleNotFound) || errors.Is(err, groups.ErrGroupNotFound) {
+			return errors.New("the rule or its group was removed while it was being updated")
+		}
+		return fmt.Errorf("could not update the rule in DynamoDB: %w", err)
+	}
+	fmt.Printf("Updated rule %s of %s\n", termsafe.String(sortKey), groupName)
+	return flags.Record(rh.dynamodbClient, "rule.update", flags.GroupTarget(group),
+		ruleSummary(row.RuleType, row.Identifier, row.Policy, fmt.Sprintf("collect allowed events %t", collect)))
 }
 
 // withPolicy returns rule with the given policy, as a policy update stores it (UpdateGlobalRule,

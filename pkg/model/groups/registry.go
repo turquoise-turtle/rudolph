@@ -8,6 +8,7 @@ import (
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
+	"github.com/airbnb/rudolph/pkg/model/eventcollection"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
@@ -243,7 +244,7 @@ func UpdateGroup(client RegistryWriter, name string, description *string, accept
 }
 
 // DeleteGroup removes a group from the registry. A group that still has rules is only deleted with force, which
-// deletes its rules first. Assigned membership is left on the Macs' items, where it has no effect while no group of
+// deletes its rules first, and takes the group's rules out of the collection index. Assigned membership is left on the Macs' items, where it has no effect while no group of
 // that name is registered.
 func DeleteGroup(client RegistryWriter, name string, force bool) error {
 	keys, err := groupRuleKeys(client, name)
@@ -265,6 +266,13 @@ func DeleteGroup(client RegistryWriter, name string, force bool) error {
 		}
 	}
 	rulesDeleted := len(keys) > 0
+	// Also for a group without rules: a run that failed after deleting the rules is finished by running it again
+	if err := eventcollection.ForgetGroup(client, name); err != nil {
+		if rulesDeleted {
+			return fmt.Errorf("%w (%w)", err, ErrDeletedPartly)
+		}
+		return err
+	}
 	_, err = client.UpdateItemExpression(registryKey(), "REMOVE #g.#n ADD #m :one", "attribute_exists(#g.#n)",
 		names("#g", "Groups", "#n", name, "#m", "MembershipVersion"),
 		map[string]types.AttributeValue{":one": number(1)})

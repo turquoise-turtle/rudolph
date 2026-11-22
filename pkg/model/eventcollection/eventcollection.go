@@ -6,7 +6,9 @@
 // the flagged rules' sort keys (e.g. "TeamID#EQHXZ8M8AV"):
 //
 //   - Global: a string set, the flagged global rules;
-//   - Machine#<machine ID>: a string set per Mac, its flagged machine rules.
+//   - Machine#<machine ID>: a string set per Mac, its flagged machine rules;
+//   - Group#<group name>: a string set per device group, its flagged group rules (the Macs in no group have
+//     Group#rudolph:ungrouped). pkg/model/groups writes these sets, with the group rule rows.
 //
 // The CLI changes a rule's flag and this item in one transaction, with ADD and DELETE on the sets, which DynamoDB
 // applies atomically: concurrent CLI runs flagging different rules never lose each other's changes. A set left empty
@@ -30,6 +32,7 @@ const (
 	indexSortKey           = "Rules"
 	globalAttribute        = "Global"
 	machineAttributePrefix = "Machine#"
+	groupAttributePrefix   = "Group#"
 
 	// RuleAttribute is the rule row attribute that says the rule's allowed executions are collected.
 	RuleAttribute = "CollectAllowedEvents"
@@ -45,15 +48,18 @@ func IndexKey() dynamodb.PrimaryKey {
 type Index struct {
 	Global   map[string]bool
 	Machines map[string]map[string]bool
+	// Groups holds the flagged group rules, by group name.
+	Groups map[string]map[string]bool
 
 	// By MatchKey, the stored sort keys that match it.
 	globalByMatch   map[string][]string
 	machinesByMatch map[string]map[string][]string
+	groupsByMatch   map[string]map[string][]string
 }
 
 // Empty reports whether no rule is flagged.
 func (ix Index) Empty() bool {
-	return len(ix.Global) == 0 && len(ix.Machines) == 0
+	return len(ix.Global) == 0 && len(ix.Machines) == 0 && len(ix.Groups) == 0
 }
 
 // hashRulePrefixes are the sort key prefixes of rules whose identifier is a hash. Rules stored by older versions may
@@ -81,14 +87,32 @@ func (ix Index) Candidates(machineID, ruleSortKey string) (global, machine []str
 	return ix.globalByMatch[key], ix.machinesByMatch[machineID][key]
 }
 
+// GroupCandidates returns, by group, the stored sort keys of the flagged group rules that match the rule sort key of
+// an event (see MatchKey). Which of the groups are the uploading Mac's is for the caller to find out.
+func (ix Index) GroupCandidates(ruleSortKey string) map[string][]string {
+	candidates := map[string][]string{}
+	if ruleSortKey == "" {
+		return candidates
+	}
+	key := MatchKey(ruleSortKey)
+	for group, byMatch := range ix.groupsByMatch {
+		if stored := byMatch[key]; len(stored) > 0 {
+			candidates[group] = append([]string(nil), stored...)
+		}
+	}
+	return candidates
+}
+
 // ParseIndex reads the index item; a nil item (no rule ever flagged) is an empty index. Attributes it does not know
 // are ignored.
 func ParseIndex(item map[string]awsdynamodbtypes.AttributeValue) Index {
 	ix := Index{
 		Global:          map[string]bool{},
 		Machines:        map[string]map[string]bool{},
+		Groups:          map[string]map[string]bool{},
 		globalByMatch:   map[string][]string{},
 		machinesByMatch: map[string]map[string][]string{},
+		groupsByMatch:   map[string]map[string][]string{},
 	}
 	for name, value := range item {
 		set, ok := value.(*awsdynamodbtypes.AttributeValueMemberSS)
@@ -103,17 +127,22 @@ func ParseIndex(item map[string]awsdynamodbtypes.AttributeValue) Index {
 			}
 		case strings.HasPrefix(name, machineAttributePrefix):
 			machineID := strings.TrimPrefix(name, machineAttributePrefix)
-			rules := map[string]bool{}
-			byMatch := map[string][]string{}
-			for _, sk := range set.Value {
-				rules[sk] = true
-				byMatch[MatchKey(sk)] = append(byMatch[MatchKey(sk)], sk)
-			}
-			ix.Machines[machineID] = rules
-			ix.machinesByMatch[machineID] = byMatch
+			ix.Machines[machineID], ix.machinesByMatch[machineID] = parseSet(set.Value)
+		case strings.HasPrefix(name, groupAttributePrefix):
+			group := strings.TrimPrefix(name, groupAttributePrefix)
+			ix.Groups[group], ix.groupsByMatch[group] = parseSet(set.Value)
 		}
 	}
 	return ix
+}
+
+func parseSet(sortKeys []string) (rules map[string]bool, byMatch map[string][]string) {
+	rules, byMatch = map[string]bool{}, map[string][]string{}
+	for _, sk := range sortKeys {
+		rules[sk] = true
+		byMatch[MatchKey(sk)] = append(byMatch[MatchKey(sk)], sk)
+	}
+	return rules, byMatch
 }
 
 // ReadIndex reads the index item from the store table.
@@ -143,6 +172,12 @@ func IndexAttribute(machineID string) string {
 		return globalAttribute
 	}
 	return machineAttributePrefix + machineID
+}
+
+// GroupIndexAttribute is the index attribute holding the flagged rules of a device group (groups.Ungrouped for the
+// Macs in no group). Group rule rows and these sets are written by pkg/model/groups.
+func GroupIndexAttribute(group string) string {
+	return groupAttributePrefix + group
 }
 
 // SetCollectAllowedEvents sets or clears CollectAllowedEvents on an existing rule row (ruleKey: a global rule when
@@ -219,6 +254,17 @@ func Forget(client Writer, machineID string, ruleSortKey string) error {
 func ForgetMachine(client dynamodb.UpdateExpressionAPI, machineID string) error {
 	_, err := client.UpdateItemExpression(IndexKey(), "REMOVE #rules", "attribute_exists(PK)",
 		map[string]string{"#rules": IndexAttribute(machineID)}, nil)
+	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
+		return fmt.Errorf("failed to update the rules whose allowed events are collected: %w", err)
+	}
+	return nil
+}
+
+// ForgetGroup takes all of a device group's rules out of the index, when the group is deleted. It writes nothing when
+// there is no index item.
+func ForgetGroup(client dynamodb.UpdateExpressionAPI, group string) error {
+	_, err := client.UpdateItemExpression(IndexKey(), "REMOVE #rules", "attribute_exists(PK)",
+		map[string]string{"#rules": GroupIndexAttribute(group)}, nil)
 	if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
 		return fmt.Errorf("failed to update the rules whose allowed events are collected: %w", err)
 	}

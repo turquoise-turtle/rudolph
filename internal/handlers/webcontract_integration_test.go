@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/airbnb/rudolph/internal/cli/rule"
+	"github.com/airbnb/rudolph/internal/testutil/clitest"
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
@@ -141,6 +143,18 @@ func generateWebContractRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	addMachine(shaN(13), types.RulePolicyAllowlist, time.Now().Add(-time.Hour)) // expired, not yet deleted by TTL
+
+	// A group rule flagged for collection of the executions it allows (2026-11-23): rudolph-web shows and toggles
+	// CollectAllowedEvents on group rule rows as on global and machine rules. Written after the syncs, so the Mac's
+	// sync rows do not depend on it. Through the CLI because the model setter does not exist yet when this was
+	// written; a failure is reported without stopping the generator, so the rest of the contract is still checked.
+	if err := groups.PutRule(gw, "eng", rules.SantaRule{RuleType: types.RuleTypeTeamID, Policy: types.RulePolicyAllowlist, Identifier: otherTeam}, "web contract"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := clitest.Run(t, clitest.Env{Table: ddblocal.TableName, Region: ddblocal.Region}, rule.RuleCmd, "yes\n",
+		"update", "-t", "teamid", "-i", otherTeam, "--group", "eng", "--collect-allowed-events=true"); err != nil {
+		t.Errorf("flagging the group rule for collection: %v\n%s", err, out)
+	}
 }
 
 var (

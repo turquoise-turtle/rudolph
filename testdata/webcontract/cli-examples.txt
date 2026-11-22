@@ -13,6 +13,9 @@ ENV=prod rudolph rule deny -t certificate -i '0000000000000000000000000000000000
 ENV=prod rudolph rule deny -t cdhash -i 'ffeeddccbbaa99887766554433221100ffeeddcc' --global --yes
 ENV=prod rudolph rule update -t teamid -i 'EQHXZ8M8AV' --global --collect-allowed-events=true --yes
 ENV=prod rudolph rule update -t teamid -i 'EQHXZ8M8AV' --global --collect-allowed-events=false --yes
+ENV=prod rudolph rule update -t teamid -i 'ABCDE12345' --group 'eng' --collect-allowed-events=true --yes
+ENV=prod rudolph rule update -t teamid -i 'ABCDE12345' --group 'eng' --collect-allowed-events=false --yes
+ENV=prod rudolph rule update -t teamid -i 'ABCDE12345' --ungrouped --collect-allowed-events=true --yes
 ENV=prod rudolph rule remove -t binary -i '0000000000000000000000000000000000000000000000000000000000000001' --global --yes
 ENV=prod rudolph rule remove -t binary -i '000000000000000000000000000000000000000000000000000000000000000b' --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA' --yes
 ENV=prod rudolph rules --machine 'AAAAAAAA-1111-4111-8111-AAAAAAAAAAAA'
