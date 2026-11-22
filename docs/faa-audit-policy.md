@@ -47,6 +47,8 @@ Only once a rule has run in audit for long enough that its events are all explai
 2. Raise the policy's `Version` (for example `pilot-2`), so events show which version decided them.
 3. Deploy to the test Mac, then the pilot Macs, then the fleet, watching for `DENIED` events from processes that should have been allowed.
 
+If an enforced rule breaks something, back out with Rudolph rather than waiting for a new profile to reach the Macs: `rudolph config update --group <group> --override-file-access-action audit_only` makes every Mac in that device group audit instead of deny from its next sync (`disable` turns FAA off for them), and `--ungrouped` does the same for the Macs in no group. Between a Mac's groups the most relaxed override wins, so a Mac also in a group that still enforces is backed out too; a Mac's own override still beats its groups'. Once the rule is fixed, remove the switch with `rudolph config update --group <group> --inherit override-file-access-action`. See [file access override per group](groups.md#file-access-override-per-group).
+
 From Santa 2026.9, `ParentDirectoryProtection` also covers renaming or replacing a protected path's parent directories to get round a rule. It defaults to `audit`, so expect some extra events from it while auditing; set it to `enforce` on a rule when you enforce that rule.
 
 `ProtectJamf` and `SystemLaunchItems` are the rules most worth enforcing on student Macs. `ChromeCookies` and `SSHKeys` matter most on staff Macs. Keep `InMemoryCodeLoading` in audit at first: it catches a technique rather than a known path, and what it catches is worth reading before deciding.

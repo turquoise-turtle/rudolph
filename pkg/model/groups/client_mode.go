@@ -1,8 +1,10 @@
 package groups
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	santatypes "github.com/airbnb/rudolph/pkg/types"
@@ -110,42 +112,100 @@ func MachineClientMode(registry *Registry, membership *MachineGroups) (mode sant
 	return StrictestClientMode(registry, Effective(registry, membership))
 }
 
-// ReportedMachineClientMode is MachineClientMode for a Mac that has just reported its groups: its assigned groups,
-// read from its groups item, with the reported list judged against the registry rather than the Reported attribute,
-// so that joining or leaving a group by reporting it takes effect in the same sync. The groups item is only read when
-// some registered group has a client mode, so a fleet without group modes pays nothing for them.
+// ReportedMachineClientMode is MachineClientMode for a Mac that has just reported its groups (see ReportedMachineGroups).
+// The groups item is only read when some registered group has a client mode, so a fleet without group modes pays
+// nothing for them.
 func ReportedMachineClientMode(client dynamodb.GetItemAPI, registry *Registry, machineID string, reported []string) (mode santatypes.ClientMode, group string, ok bool, err error) {
 	if !registry.HasClientModes() {
 		return 0, "", false, nil
 	}
-	stored, err := GetMachineGroups(client, machineID, false)
+	effective, err := ReportedMachineGroups(client, registry, machineID, reported)
 	if err != nil {
 		return 0, "", false, err
 	}
-	membership := &MachineGroups{Assigned: stored.Assigned, Reported: ReportedMembership(registry, reported)}
-	mode, group, ok = MachineClientMode(registry, membership)
+	mode, group, ok = StrictestClientMode(registry, effective)
 	return mode, group, ok, nil
+}
+
+// ReportedMachineGroups returns the effective groups (see Effective) of a Mac that has just reported its groups: its
+// assigned groups, read from its groups item, with the reported list judged against the registry rather than the
+// Reported attribute, so that joining or leaving a group by reporting it takes effect in the same sync. It reads the
+// groups item every time; callers resolving several group settings call it once and only when some group sets one.
+func ReportedMachineGroups(client dynamodb.GetItemAPI, registry *Registry, machineID string, reported []string) ([]string, error) {
+	stored, err := GetMachineGroups(client, machineID, false)
+	if err != nil {
+		return nil, err
+	}
+	return Effective(registry, &MachineGroups{Assigned: stored.Assigned, Reported: ReportedMembership(registry, reported)}), nil
 }
 
 // SetClientMode stores a group's client mode (or removes it, when mode is nil) and bumps MembershipVersion, in one
 // update that requires the group to be registered. The rest of the group's entry is left as it is.
 func SetClientMode(client dynamodb.UpdateExpressionAPI, name string, mode *santatypes.ClientMode) error {
-	attrs := names("#g", "Groups", "#n", name, "#c", "ClientMode", "#m", "MembershipVersion")
+	return ChangeSettings(client, name, SettingsChange{ClientMode: mode, RemoveClientMode: mode == nil})
+}
+
+// SettingsChange is a change to a group's settings. A setting neither given nor removed is left as it is.
+type SettingsChange struct {
+	ClientMode             *santatypes.ClientMode
+	RemoveClientMode       bool
+	FileAccessAction       *santatypes.FileAccessAction
+	RemoveFileAccessAction bool
+}
+
+// ChangeSettings applies a change to a group's client mode and file access override and bumps MembershipVersion, in
+// one update that requires the group to be registered, so that a change to both is never half applied. The rest of
+// the group's entry is left as it is. A file access action is stored as its enum name.
+func ChangeSettings(client dynamodb.UpdateExpressionAPI, name string, change SettingsChange) error {
+	attrs := names("#g", "Groups", "#n", name, "#m", "MembershipVersion")
 	values := map[string]types.AttributeValue{":one": number(1)}
-	update := "REMOVE #g.#n.#c ADD #m :one"
-	if mode != nil {
-		if _, known := clientModeStrictness[*mode]; !known {
-			return fmt.Errorf("unknown client mode %d; must be MONITOR (1), LOCKDOWN (2) or STANDALONE (3)", *mode)
+	var set, remove []string
+	switch {
+	case change.ClientMode != nil && change.RemoveClientMode:
+		return errors.New("the client mode cannot be both set and removed")
+	case change.ClientMode != nil:
+		if _, known := clientModeStrictness[*change.ClientMode]; !known {
+			return fmt.Errorf("unknown client mode %d; must be MONITOR (1), LOCKDOWN (2) or STANDALONE (3)", *change.ClientMode)
 		}
-		update = "SET #g.#n.#c = :mode ADD #m :one"
-		values[":mode"] = number(int(*mode))
+		attrs["#c"] = "ClientMode"
+		values[":mode"] = number(int(*change.ClientMode))
+		set = append(set, "#g.#n.#c = :mode")
+	case change.RemoveClientMode:
+		attrs["#c"] = "ClientMode"
+		remove = append(remove, "#g.#n.#c")
 	}
+	switch {
+	case change.FileAccessAction != nil && change.RemoveFileAccessAction:
+		return errors.New("the file access override cannot be both set and removed")
+	case change.FileAccessAction != nil:
+		action, err := santatypes.ParseFileAccessAction(string(*change.FileAccessAction))
+		if err != nil {
+			return err
+		}
+		attrs["#f"] = "OverrideFileAccessAction"
+		values[":action"] = &types.AttributeValueMemberS{Value: string(action)}
+		set = append(set, "#g.#n.#f = :action")
+	case change.RemoveFileAccessAction:
+		attrs["#f"] = "OverrideFileAccessAction"
+		remove = append(remove, "#g.#n.#f")
+	}
+	if len(set) == 0 && len(remove) == 0 {
+		return errors.New("no group setting to change")
+	}
+	var update string
+	if len(set) > 0 {
+		update += "SET " + strings.Join(set, ", ") + " "
+	}
+	if len(remove) > 0 {
+		update += "REMOVE " + strings.Join(remove, ", ") + " "
+	}
+	update += "ADD #m :one"
 	_, err := client.UpdateItemExpression(registryKey(), update, "attribute_exists(#g.#n)", attrs, values)
 	if dynamodb.IsConditionalCheckFailed(err) {
 		return ErrGroupNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("failed to change the group's client mode: %w", err)
+		return fmt.Errorf("failed to change the group's settings: %w", err)
 	}
 	return nil
 }

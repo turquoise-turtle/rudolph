@@ -32,6 +32,9 @@ type Entry struct {
 	// ClientMode is the client mode the group's Macs get, unless they have their own (see client_mode.go); nil when
 	// the group has none
 	ClientMode *StoredClientMode `dynamodbav:"ClientMode,omitempty"`
+	// OverrideFileAccessAction is the file access override the group's Macs get, unless they have their own (see
+	// file_access_override.go); nil when the group has none
+	OverrideFileAccessAction *StoredFileAccessAction `dynamodbav:"OverrideFileAccessAction,omitempty"`
 }
 
 // Registry is the one item that lists every registered group

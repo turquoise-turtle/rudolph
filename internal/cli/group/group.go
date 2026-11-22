@@ -211,14 +211,14 @@ func init() {
 				fmt.Println("No groups. Create one with rudolph group create <group>.")
 				return nil
 			}
-			fmt.Printf("%-32s %-10s %-11s %-8s %s\n", "GROUP", "REPORTED", "CLIENTMODE", "VERSION", "DESCRIPTION")
+			fmt.Printf("%-32s %-10s %-11s %-11s %-8s %s\n", "GROUP", "REPORTED", "CLIENTMODE", "FILEACCESS", "VERSION", "DESCRIPTION")
 			for _, name := range registry.Names() {
 				entry := registry.Groups[name]
 				reported := "counts"
 				if !entry.AcceptReported {
 					reported = "ignored"
 				}
-				fmt.Printf("%-32s %-10s %-11s %-8d %s\n", termsafe.String(name), reported, clientModeText(entry), entry.RulesVersion, termsafe.String(entry.Description))
+				fmt.Printf("%-32s %-10s %-11s %-11s %-8d %s\n", termsafe.String(name), reported, clientModeText(entry), fileAccessText(entry), entry.RulesVersion, termsafe.String(entry.Description))
 			}
 			return nil
 		},
@@ -249,12 +249,13 @@ func init() {
 			if err != nil {
 				return err
 			}
-			fmt.Println("Group:          ", termsafe.String(name))
-			fmt.Println("Description:    ", termsafe.String(entry.Description))
-			fmt.Println("AcceptReported: ", entry.AcceptReported)
-			fmt.Println("ClientMode:     ", clientModeText(entry))
-			fmt.Println("RulesVersion:   ", entry.RulesVersion)
-			fmt.Println("CreatedAt:      ", termsafe.String(entry.CreatedAt))
+			fmt.Println("Group:                   ", termsafe.String(name))
+			fmt.Println("Description:             ", termsafe.String(entry.Description))
+			fmt.Println("AcceptReported:          ", entry.AcceptReported)
+			fmt.Println("ClientMode:              ", clientModeText(entry))
+			fmt.Println("OverrideFileAccessAction:", fileAccessText(entry))
+			fmt.Println("RulesVersion:            ", entry.RulesVersion)
+			fmt.Println("CreatedAt:               ", termsafe.String(entry.CreatedAt))
 			fmt.Printf("Rules (%d):\n", len(rows))
 			for _, row := range rows {
 				policy, _ := row.Policy.MarshalText()
@@ -572,6 +573,18 @@ func clientModeText(entry groups.Entry) string {
 		text, _ := mode.MarshalText()
 		return string(text)
 	case entry.ClientMode.Stored():
+		return "unreadable"
+	}
+	return "-"
+}
+
+// fileAccessText shows a group's file access override (set with rudolph config update --group)
+func fileAccessText(entry groups.Entry) string {
+	action, ok := entry.FileAccessOverrideOf()
+	switch {
+	case ok:
+		return string(action)
+	case entry.OverrideFileAccessAction.Stored():
 		return "unreadable"
 	}
 	return "-"

@@ -26,8 +26,8 @@ func StoredGlobalConfig(item map[string]awstypes.AttributeValue) *MachineConfigu
 	return &decoded
 }
 
-// IntendedFromStored returns what GetIntendedConfigWithOrigin returns, from the stored global config (nil without one,
-// see StoredGlobalConfig) and the machine's stored config row (nil without one).
+// IntendedFromStored returns what GetIntendedConfigWithOrigin returns, with the origin of the client mode only, from the
+// stored global config (nil without one, see StoredGlobalConfig) and the machine's stored config row (nil without one).
 func IntendedFromStored(global *MachineConfiguration, machineItem map[string]awstypes.AttributeValue) (config MachineConfiguration, ownClientMode bool, err error) {
 	base := GetUniversalDefaultConfig()
 	if global != nil {

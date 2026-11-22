@@ -111,6 +111,10 @@ func generateWebContractRows(t *testing.T) {
 	if err := groups.CreateGroup(tp, gw, "eng", "Engineering", true); err != nil {
 		t.Fatal(err)
 	}
+	auditOnly := types.FileAccessActionAuditOnly
+	if err := groups.SetFileAccessOverride(gw, "eng", &auditOnly); err != nil {
+		t.Fatal(err)
+	}
 	if err := groups.PutRule(gw, "eng", rules.SantaRule{RuleType: types.RuleTypeSigningID, Policy: types.RulePolicyBlocklist,
 		Identifier: "EQHXZ8M8AV:com.google.GeminiMacOS", CustomMessage: "Not for Eng"}, "web contract"); err != nil {
 		t.Fatal(err)

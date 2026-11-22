@@ -159,7 +159,7 @@ rudolph config get --group pilot
 rudolph config get --ungrouped
 ```
 
-- Only the client mode can be set for a group; other settings, `--clean-sync` and temporary modes (`--for`, `--until`, `--end-temporary-mode`) are refused with `--group` and `--ungrouped`, and `config set` takes no group.
+- A group holds only a client mode and a [file access override](#file-access-override-per-group); other settings, `--clean-sync` and temporary modes (`--for`, `--until`, `--end-temporary-mode`) are refused with `--group` and `--ungrouped`, and `config set` takes no group.
 - `lockdown` and `standalone` need `--confirm-group-lockdown`, as a group may hold many Macs.
 - The group must be registered. `--ungrouped` registers the reserved group `rudolph:ungrouped` when it is not, as its first rule does.
 - `group list` and `group get` show each group's client mode. `config get --machine <uuid>` marks a client mode that comes from a group with `(group <name>)`, the group whose mode wins, using the Mac's assigned groups and the reported groups recorded at its last preflight.
@@ -180,9 +180,44 @@ The mode is stored as `ClientMode` (a number, as on configuration rows: 1 `MONIT
 
 **Security.** A local administrator can edit a plist, so a Mac whose groups come from `MachineOwnerPlist` could drop out of a `LOCKDOWN` group (and get a looser mode) by removing the group from it. For lockdown groups, report membership through `MachineOwnerGroups` in a configuration profile, which cannot be changed on the Mac, or assign the Macs with `rudolph group add` and create the group with `--no-reported`.
 
+## File access override per group
+
+A registered group can hold a file access override, the `override_file_access_action` its Macs get instead of the global one. It is the safety valve for moving File Access Authorization (FAA) rules from audit to enforcement: if an enforced rule breaks something, put the affected group back to audit-only, or turn FAA off for it, without touching the rule or the rest of the fleet.
+
+```
+rudolph config update --group pilot --override-file-access-action audit_only
+rudolph config update --group lab --override-file-access-action disable
+rudolph config update --ungrouped --override-file-access-action none
+rudolph config update --group pilot -c monitor --override-file-access-action audit_only   # both settings in one update
+rudolph config update --group pilot --inherit override-file-access-action                 # removes the group's override
+rudolph config get --group pilot
+```
+
+- Values are `none` (apply FAA policies as written), `audit_only` (log what would be denied, but allow it) and `disable` (take no FAA action), case-insensitive, as for `--override-file-access-action` on a machine or the global configuration; the legacy spelling `AuditOnly` is accepted too. No confirmation flag is needed: the override only relaxes enforcement or restores it.
+- The group must be registered; `--ungrouped` registers `rudolph:ungrouped` when it is not. Removing the override of the Macs in no group before they have one is refused.
+- `config get --group`, `group get` and `group list` show the override (`unreadable` for a stored value that cannot be decoded). `config get --machine <uuid>` marks an override that comes from a group with `(group <name>)`.
+- The change reaches each Mac at its next sync (up to a minute later), and is audited as `config.update` on `group:<name>` (or `ungrouped`), e.g. `OverrideFileAccessAction=AUDIT_ONLY` or `OverrideFileAccessAction inherited`.
+
+### Precedence of file access overrides
+
+The `override_file_access_action` preflight sends a Mac is the first of:
+
+1. the override stored on its own configuration (`config update --machine <uuid> --override-file-access-action <action>`); a machine configuration without one does not stop a group's;
+2. the **most relaxed** override among its effective groups that have one: `DISABLE`, then `AUDIT_ONLY`, then `NONE`. A Mac in no group is in `rudolph:ungrouped`, which can hold one like any group;
+3. the global configuration's;
+4. none: the field is left out and Santa keeps its current setting.
+
+Between groups the most relaxed override wins, the opposite of client modes, where the strictest wins. The switch exists to back enforcement off quickly, so putting a group back to `AUDIT_ONLY` must reach every Mac in it, including one that is also in a group still enforcing. A group's override beats the global one either way: a group can be loosened while the fleet enforces, or held at `NONE` (enforcing) while the fleet audits. A single Mac is exempted from its groups' override by giving it one of its own.
+
+The override is independent of the client mode: a Mac's own or temporary client mode does not stop its groups' override, and its own override does not stop its groups' client mode. A Mac's groups are worked out as for client modes. A stored value that is not a file access action is ignored, as if the group had none, and preflight logs a line naming the group and `OverrideFileAccessAction`.
+
+To clear the switch once the problem is fixed, remove the group's override with `--inherit override-file-access-action`; its Macs then follow their own or the global override again at their next sync.
+
+The override is stored as `OverrideFileAccessAction` (a string holding the enum name, `NONE`, `AUDIT_ONLY` or `DISABLE`, as on configuration rows) in the group's entry of the registry's `Groups` map, next to `ClientMode`. Tools writing it must bump `MembershipVersion` in the same update; `pkg/model/groups` (`SetFileAccessOverride`, or `ChangeSettings` for both settings at once, and `MachineFileAccessOverride`, `MostRelaxedFileAccessAction`) does both.
+
 ## Costs
 
-Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes, then also reads it first and writes the member row of each group joined or left (see [costs.md](costs.md#group-members)). Group client modes cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) unless the Mac has a temporary or its own client mode.
+Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes, then also reads it first and writes the member row of each group joined or left (see [costs.md](costs.md#group-members)). Group client modes and file access overrides cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) once for both, unless the Mac sets every such setting itself (a temporary or its own client mode, and its own override).
 
 ## Not built yet
 
