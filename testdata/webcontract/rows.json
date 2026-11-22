@@ -325,6 +325,9 @@
             "Description": {
               "S": "Engineering"
             },
+            "OverrideFileAccessAction": {
+              "S": "AUDIT_ONLY"
+            },
             "RulesVersion": {
               "N": "2"
             }
@@ -333,7 +336,7 @@
       }
     },
     "MembershipVersion": {
-      "N": "2"
+      "N": "3"
     },
     "PK": {
       "S": "GroupRegistry"
