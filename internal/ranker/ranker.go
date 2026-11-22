@@ -8,7 +8,6 @@ package ranker
 import (
 	"container/heap"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	"github.com/airbnb/rudolph/internal/snapshot"
 	"github.com/airbnb/rudolph/pkg/counterfields"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	rudolphtypes "github.com/airbnb/rudolph/pkg/types"
@@ -57,15 +57,6 @@ const (
 	// parallelism bounds the DynamoDB calls in flight. Up to ~4,000 marker queries one at a time would take most of
 	// a minute.
 	parallelism = 16
-
-	// maxRuleSortKeyBytes is DynamoDB's limit on a sort key: no rule can have a longer key, and a GetItem on one would
-	// be refused and fail the whole run. The signing and team IDs the fold keeps (counterfields) are far shorter, so
-	// this only guards against those limits being raised past it.
-	maxRuleSortKeyBytes = 1024
-
-	// writeAttempts bounds the BatchWriteItem calls for one batch whose items DynamoDB keeps returning unprocessed
-	// (throttling); the run then fails and the pointer stays on the previous snapshot.
-	writeAttempts = 8
 )
 
 // Windows are the lengths of the lists, in days ending today (UTC). Arrays, here and in Kinds, so that a binary's
@@ -306,14 +297,14 @@ func Run(ctx context.Context, opts Options) error {
 		})
 	}
 
-	snapshot, err := snapshotID(now)
+	snapshotID, err := snapshot.ID(now)
 	if err != nil {
 		return err
 	}
 	expires := strconv.FormatInt(now.Add(snapshotTTL).Unix(), 10)
 	var requests []types.WriteRequest
 	for _, l := range lists {
-		pk := fmt.Sprintf("%s%s#%d#%s", snapshotPKPrefix, l.kind, l.window, snapshot)
+		pk := fmt.Sprintf("%s%s#%d#%s", snapshotPKPrefix, l.kind, l.window, snapshotID)
 		for i, r := range l.rows {
 			item := map[string]types.AttributeValue{
 				"PK":           str(pk),
@@ -338,7 +329,10 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	batches := (len(requests) + 24) / 25
 	err = parallel(ctx, batches, func(ctx context.Context, b int) error {
-		return writeBatch(ctx, opts, requests[b*25:min((b+1)*25, len(requests))])
+		if err := snapshot.WriteBatch(ctx, opts.Client, opts.Table, requests[b*25:min((b+1)*25, len(requests))]); err != nil {
+			return fmt.Errorf("ranker: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -346,22 +340,13 @@ func Run(ctx context.Context, opts Options) error {
 
 	generatedAt := now.Format(time.RFC3339)
 	for _, l := range lists {
-		_, err := opts.Client.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(opts.Table),
-			Item: map[string]types.AttributeValue{
-				"PK":          str(fmt.Sprintf("%s%s#%d", pointerPKPrefix, l.kind, l.window)),
-				"SK":          str(pointerSK),
-				"Snapshot":    str(snapshot),
-				"GeneratedAt": str(generatedAt),
-			},
-			// Runs can overlap (EventBridge Scheduler may invoke twice, an operator may invoke the Lambda by hand); one
-			// that started earlier must not move the pointer back to its older snapshot. IDs sort by time.
-			ConditionExpression:       aws.String("attribute_not_exists(PK) OR #snapshot < :snapshot"),
-			ExpressionAttributeNames:  map[string]string{"#snapshot": "Snapshot"},
-			ExpressionAttributeValues: map[string]types.AttributeValue{":snapshot": str(snapshot)},
-		})
-		var failed *types.ConditionalCheckFailedException
-		if errors.As(err, &failed) {
+		moved, err := snapshot.MovePointer(ctx, opts.Client, opts.Table, map[string]types.AttributeValue{
+			"PK":          str(fmt.Sprintf("%s%s#%d", pointerPKPrefix, l.kind, l.window)),
+			"SK":          str(pointerSK),
+			"Snapshot":    str(snapshotID),
+			"GeneratedAt": str(generatedAt),
+		}, snapshotID)
+		if err == nil && !moved {
 			log.Printf("ranker: pointer %s %d already names a newer snapshot; left as it is", l.kind, l.window)
 			continue
 		}
@@ -467,21 +452,7 @@ func findGlobalRules(ctx context.Context, opts Options, lists []list) (map[strin
 
 // globalRule tries the most specific rule first, as Santa does, and stops at the first that exists.
 func globalRule(ctx context.Context, opts Options, r entry) (string, error) {
-	for _, candidate := range []struct {
-		identifier string
-		ruleType   rudolphtypes.RuleType
-	}{
-		{r.sha, rudolphtypes.RuleTypeBinary},
-		{r.signingID, rudolphtypes.RuleTypeSigningID},
-		{r.teamID, rudolphtypes.RuleTypeTeamID},
-	} {
-		if candidate.identifier == "" {
-			continue
-		}
-		sk := rules.RuleSortKeyFromTypeIdentifier(candidate.identifier, candidate.ruleType)
-		if len(sk) > maxRuleSortKeyBytes {
-			continue
-		}
+	for _, sk := range rules.CoveringSortKeys(r.sha, r.signingID, r.teamID) {
 		out, err := opts.Client.GetItem(ctx, &dynamodb.GetItemInput{
 			TableName:            aws.String(opts.StoreTable),
 			Key:                  map[string]types.AttributeValue{"PK": str(globalRulesPK), "SK": str(sk)},
@@ -543,74 +514,9 @@ func query(ctx context.Context, opts Options, pk, projection string, each func(m
 	}
 }
 
-func writeBatch(ctx context.Context, opts Options, requests []types.WriteRequest) error {
-	pending := map[string][]types.WriteRequest{opts.Table: requests}
-	for attempt := 1; ; attempt++ {
-		out, err := opts.Client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{RequestItems: pending})
-		if err != nil {
-			return fmt.Errorf("ranker: snapshot rows: %w", err)
-		}
-		if len(out.UnprocessedItems[opts.Table]) == 0 {
-			return nil
-		}
-		if attempt >= writeAttempts {
-			return fmt.Errorf("ranker: %d snapshot rows still unprocessed after %d attempts", len(out.UnprocessedItems[opts.Table]), attempt)
-		}
-		pending = out.UnprocessedItems
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(50<<min(attempt, 6)) * time.Millisecond):
-		}
-	}
-}
-
-// snapshotID sorts by time and is unique even for runs in the same instant.
-func snapshotID(now time.Time) (string, error) {
-	suffix := make([]byte, 4)
-	if _, err := rand.Read(suffix); err != nil {
-		return "", err
-	}
-	return now.Format("20060102T150405.000000000Z") + "-" + hex.EncodeToString(suffix), nil
-}
-
-// parallel runs fn for 0..n-1 with at most parallelism calls at once and returns every error. After the first error
-// no new calls start.
+// parallel runs fn for 0..n-1 with at most parallelism calls at once (see snapshot.Parallel).
 func parallel(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
-	var (
-		mu   sync.Mutex
-		errs []error
-		wg   sync.WaitGroup
-	)
-	work := make(chan int)
-	for w := 0; w < min(parallelism, n); w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range work {
-				if err := fn(ctx, i); err != nil {
-					mu.Lock()
-					errs = append(errs, err)
-					mu.Unlock()
-				}
-			}
-		}()
-	}
-	for i := 0; i < n; i++ {
-		mu.Lock()
-		failed := len(errs) > 0
-		mu.Unlock()
-		if failed || ctx.Err() != nil {
-			break
-		}
-		work <- i
-	}
-	close(work)
-	wg.Wait()
-	if len(errs) == 0 && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return errors.Join(errs...)
+	return snapshot.Parallel(ctx, parallelism, n, fn)
 }
 
 func str(v string) types.AttributeValue { return &types.AttributeValueMemberS{Value: v} }

@@ -50,3 +50,31 @@ func RuleTypeIdentifierFromSortKey(sortKey string) (ruleType types.RuleType, ide
 	}
 	return 0, "", false
 }
+
+// maxSortKeyBytes is DynamoDB's limit on a sort key: no rule can have a longer key, and a GetItem on one would be
+// refused.
+const maxSortKeyBytes = 1024
+
+// CoveringSortKeys returns the sort keys of the rules that would decide a binary known only by its SHA-256, signing ID
+// and team ID (what the events table's day counters and unknown markers hold), most specific first, as Santa tries
+// them. Certificate and CDHash rules cannot be matched from those fields. An empty identifier is left out, and so is a
+// key no rule can have.
+func CoveringSortKeys(sha256, signingID, teamID string) []string {
+	var keys []string
+	for _, candidate := range []struct {
+		identifier string
+		ruleType   types.RuleType
+	}{
+		{sha256, types.RuleTypeBinary},
+		{signingID, types.RuleTypeSigningID},
+		{teamID, types.RuleTypeTeamID},
+	} {
+		if candidate.identifier == "" {
+			continue
+		}
+		if sk := RuleSortKeyFromTypeIdentifier(candidate.identifier, candidate.ruleType); len(sk) <= maxSortKeyBytes {
+			keys = append(keys, sk)
+		}
+	}
+	return keys
+}

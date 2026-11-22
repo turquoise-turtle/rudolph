@@ -76,9 +76,15 @@ func GetRegistry(client dynamodb.GetItemAPI, consistent bool) (*Registry, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the group registry: %w", err)
 	}
+	return RegistryFromItem(out.Item)
+}
+
+// RegistryFromItem decodes the registry item, for readers that fetch it with their own client (the fleet job). A
+// missing item is an empty registry.
+func RegistryFromItem(item map[string]types.AttributeValue) (*Registry, error) {
 	registry := &Registry{}
-	if len(out.Item) > 0 {
-		if err := attributevalue.UnmarshalMap(out.Item, registry); err != nil {
+	if len(item) > 0 {
+		if err := attributevalue.UnmarshalMap(item, registry); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal the group registry: %w", err)
 		}
 	}
@@ -86,6 +92,11 @@ func GetRegistry(client dynamodb.GetItemAPI, consistent bool) (*Registry, error)
 		registry.Groups = map[string]Entry{}
 	}
 	return registry, nil
+}
+
+// RegistryKey is the key of the registry item
+func RegistryKey() dynamodb.PrimaryKey {
+	return registryKey()
 }
 
 // Names returns the registered group names, sorted
