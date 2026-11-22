@@ -64,7 +64,7 @@ func put(t *testing.T, item map[string]any) {
 func counter(t *testing.T, daysAgo, i, blocked, allowed int, name string) {
 	t.Helper()
 	put(t, map[string]any{"PK": "BinaryDay#" + day(daysAgo), "SK": sha(i), "Blocked": blocked, "Allowed": allowed,
-		"FileName": name, "TeamID": "TEAM" + strconv.Itoa(i), "SigningID": "TEAM" + strconv.Itoa(i) + ":" + name})
+		"FileName": name, "TeamID": teamN(i), "SigningID": teamN(i) + ":" + name})
 }
 
 func marker(t *testing.T, i int, machine string, daysAgo int) {
@@ -190,7 +190,7 @@ func TestRanker_WindowsCountsAndMachines(t *testing.T) {
 		}
 	}
 	top := list(t, "Blocked", 7)
-	if len(top) > 0 && (top[0].FileName != "two" || top[0].TeamID != "TEAM2" || top[0].SigningID != "TEAM2:two") {
+	if len(top) > 0 && (top[0].FileName != "two" || top[0].TeamID != teamN(2) || top[0].SigningID != teamN(2)+":two") {
 		t.Errorf("display fields %+v", top[0])
 	}
 }
@@ -288,3 +288,6 @@ func TestRanker_AnOlderRunDoesNotMoveThePointerBack(t *testing.T) {
 		t.Errorf("after an older run finished last: %s, want the newer run's 1:1/0", got)
 	}
 }
+
+// teamN is a 10-character team ID for fixture i, the only shape the ranker keeps.
+func teamN(i int) string { return fmt.Sprintf("TEAM%06d", i) }
