@@ -119,8 +119,28 @@ rudolph rule remove SigningID#EQHXZ8M8AV:com.google.GeminiMacOS --group eng
 
 - The group must be registered. `--ungrouped` needs no `group create`.
 - Group rules never expire: `--expires` and `--permanent` are refused.
-- To change a group rule, write it again (it replaces the old one); `rudolph rule update` does not take group targets.
+- To change a group rule, write it again (it replaces the old one). `rudolph rule update` takes a group target only for `--collect-allowed-events` (see [Collecting what a group rule allows](#collecting-what-a-group-rule-allows)).
 - Member Macs receive group rules with their machine rules on every sync, so an added, changed or removed rule reaches them at their next sync, without a clean sync. When a Mac leaves a group, or a group rule is removed, the Mac gets the global rule for the same identifier and type back (with its own fields), or drops the rule when there is none; a rule that another of its groups, or a machine rule, still provides stays.
+
+### Collecting what a group rule allows
+
+A group allow (`ALLOWLIST` or `ALLOWLIST_COMPILER`) can be flagged to have the executions it allows stored in the [execution events table](events-table.md#collecting-allowed-executions-per-rule), like a global or machine rule, but for the group's Macs only:
+
+```
+rudolph rule update -t teamid -i ABCDE12345 --group eng --collect-allowed-events=true
+rudolph rule update -t teamid -i ABCDE12345 --ungrouped --collect-allowed-events=true
+# later
+rudolph rule update -t teamid -i ABCDE12345 --group eng --collect-allowed-events=false
+```
+
+- Only an allow can be flagged; a block is refused. Clearing the flag always works, and a command that changes nothing says so and exits 0.
+- An execution is stored when the flagged rule is the one that decided it on the uploading Mac, following the [precedence](#precedence) below: the Mac is in the group (assigned, or reported while the group accepts reported membership; in no group for `--ungrouped`), it has no machine rule in force for the same type and identifier, and no other of its groups blocks it (or has a `CEL` rule for it). A Mac in `eng` and `lab`, where `lab` blocks the team ID, has nothing stored through `eng`'s flag.
+- The flag (`CollectAllowedEvents` on the group rule row) is never sent to Santa and does not move the group's `RulesVersion`: no Mac downloads anything because of it.
+- Santa uploads allowed executions only with `EnableAllEventUpload`; the CLI warns when it is off in the global configuration. Turn it on for the group's Macs with `rudolph config update --machine <id> --enable-all-event-upload`.
+- Writing the rule again (`rudolph rule allow ... --group eng`), removing it, or deleting the group with `rudolph group delete --force` switches collection off. `rudolph group get <group>` marks flagged rules.
+- A change takes up to a minute to apply, as for other rules. The reads this adds to event uploads are described in [events-table.md](events-table.md#group-rules).
+
+Tools writing group rules must keep the collection index in step: `pkg/model/groups` does (`SetCollectAllowedEvents` for the flag; `PutRule`, `RemoveRule` and `DeleteGroup` take a rule out of the index themselves).
 
 ### Ungrouped
 
@@ -217,7 +237,7 @@ The override is stored as `OverrideFileAccessAction` (a string holding the enum 
 
 ## Costs
 
-Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes, then also reads it first and writes the member row of each group joined or left (see [costs.md](costs.md#group-members)). Group client modes and file access overrides cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) once for both, unless the Mac sets every such setting itself (a temporary or its own client mode, and its own override).
+Without registered groups nothing changes. With groups, each sync reads the Mac's groups item (one small read); the group list and group rules are cached by each server instance. A Mac's first sync after joining a group records each of the group's rules once (about one write unit per rule), and leaving a group about two per rule (the removal is recorded, then forgotten once delivered); a steady-state sync costs nothing more. Preflight writes the Mac's groups item only when its reported membership changes, then also reads it first and writes the member row of each group joined or left (see [costs.md](costs.md#group-members)). Group client modes and file access overrides cost nothing while no group has one; once any group has one, preflight reads the Mac's groups item (one small read, half a read unit) once for both, unless the Mac sets every such setting itself (a temporary or its own client mode, and its own override). Flagging a group rule for collection costs nothing at sync time; an event upload holding an execution of a flagged group rule reads the Mac's groups item, the registry and a few rule rows (see [events-table.md](events-table.md#group-rules)).
 
 ## Not built yet
 
