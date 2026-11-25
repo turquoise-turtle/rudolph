@@ -537,7 +537,7 @@ This applies to every existing deployment. Preflight and `rudolph group add|remo
      --var lambda_fleet_zip="$PWD/build/package/fleet_deployment.zip"
    ```
 
-   The plan updates `aws_iam_policy.lambda_policy` in place and nothing else. (`lambda_fleet_zip` is needed from the release of step 28 on.)
+   The plan updates `aws_iam_policy.lambda_policy` in place and nothing else. (`lambda_fleet_zip` is needed from the release of step 28 on.) If step 21 is not applied yet, this targeted apply fails: see [Targeted applies while step 21 is pending](#targeted-applies-while-step-21-is-pending).
 2. **Deploy.** `make deploy`. The rest of the plan is the new Lambda code.
 3. **Backfill the rows, once.** Macs whose groups have not changed since the deploy have no rows yet, so run `rudolph group members --rebuild` (with the new CLI). It scans the table once, shows how many rows it writes, and asks first; `--dry-run` shows the counts without writing. If the CLI's credentials are restricted by partition key, allow `dynamodb:Scan` on the table and `dynamodb:BatchWriteItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem` and `dynamodb:Query` on `GroupMembers#*` first (see [CLI permissions](#cli-permissions)).
 
@@ -567,6 +567,25 @@ This applies to every existing deployment. An IAM review tightened every role, b
 - **API resource policy** (only with `allowed_inbound_ips`). The statement allowing calls through AWS services, which the unconditional allow already covered, is removed. The REST API's policy changes in place, and the API deployment is replaced once (step 15); access does not change.
 
 Afterwards, check with [smoke-test.md](smoke-test.md): `GET /health` answers 200, a sync succeeds, each function's log group gets new lines (`aws logs tail "/aws/lambda/${PREFIX}_rudolph_preflight" --since 10m`), the next ranker run succeeds (no `lambda_errors` alarm) and events keep arriving in the events table. For operators' and deployers' own policies, see [cli-iam.md](cli-iam.md).
+
+#### Targeted applies while step 21 is pending
+Steps 19, 28 and 30 apply an IAM policy on its own with `-target` before the new code. When you catch up from a release before step 21 and step 21's full apply has not run yet, that targeted apply stops with `Error: Moved resource instances excluded by targeting`, and nothing is applied. Terraform does not apply a targeted plan while moves are pending, and step 21 holds two kinds: its `moved` blocks for the store policy's attachments (`module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy[1]`, `[2]` and `[3]` to `["ruledownload"]`, `["preflight"]` and `["postflight"]`), and each function's `aws_lambda_permission.api_handler_permissions` moving to `[0]`.
+
+**Do not add the `-target` flags the error suggests.** A function's permission depends on the function, so targeting it brings the new Lambda code into the same apply, which is what the targeted apply exists to avoid. Targeting the attachments also destroys the health function's `lambda_policy[0]` before its replacement, `aws_iam_role_policy.health`, exists, so `/health` answers 500 until the full apply.
+
+Choose one:
+
+- **Record step 21's moves in the state first, then run the targeted apply as written.** `terraform state mv` changes only the state, not anything in AWS. Take the addresses from the error message, or from `terraform -chdir=deployments/environments/$ENV state list | grep -E 'lambda_policy|api_handler_permissions'`. Before moving the attachments, check with `terraform state show` that the `role` of each index is the function its new key names, as step 21 says. Then, for example:
+
+  ```sh
+  TF="terraform -chdir=deployments/environments/$ENV"
+  $TF state mv 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy[1]' 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy["ruledownload"]'
+  $TF state mv 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy[2]' 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy["preflight"]'
+  $TF state mv 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy[3]' 'module.santa_api.module.rule_store.aws_iam_role_policy_attachment.lambda_policy["postflight"]'
+  ```
+
+  and, for each `api_handler_permissions` address the error lists (each handler's and the authoriser's), `$TF state mv '<address>' '<address>[0]'`. Run the targeted apply again: its plan should now update the one policy and nothing else. Step 21's full apply later finds the moves already done, and still destroys `lambda_policy[0]` and the authoriser's permission as it describes.
+- **Or skip the targeted applies and run one full `make deploy`.** The policies and the new code then go out in one apply, in no guaranteed order, and for the few seconds between them the new code may run under the old policy. Each step above says what that does, and none of it outlasts the apply: from step 19, preflights that change a Mac's reported groups fail and the next preflight writes them; from step 28, uploads holding unknown executions are answered 500 and Santa sends them again at the next sync; from step 30, nothing, as long as no group rule is flagged until the deploy has finished. Step 21's own effects (a few seconds of lost log lines, `/health` briefly 500) are the same either way. This suits a small fleet, or a deploy at a quiet time.
 
 ### 22. Group names without invisible format characters
 This applies to deployments with device groups. Group names now refuse invisible format characters (bidi overrides and isolates, zero-width spaces, soft hyphens and the like; the zero-width joiner and non-joiner stay allowed), and the CLI prints such characters as visible escapes. Preflight drops reported group names that contain them, so a group registered earlier with such a name no longer matches any Mac's reported groups (assigned membership still works).
@@ -638,7 +657,7 @@ This applies to every existing deployment. A new scheduled Lambda, the fleet job
      --var lambda_fleet_zip="$PWD/build/package/fleet_deployment.zip"
    ```
 
-   The plan updates `aws_iam_policy.events_write` in place and nothing else. The old eventupload code never writes `UnknownSeen#`, so the wider policy changes nothing until step 2.
+   The plan updates `aws_iam_policy.events_write` in place and nothing else. The old eventupload code never writes `UnknownSeen#`, so the wider policy changes nothing until step 2. If step 21 is not applied yet, this targeted apply fails: see [Targeted applies while step 21 is pending](#targeted-applies-while-step-21-is-pending).
 2. **Deploy.** `make deploy`. The plan updates the Lambda code and creates the fleet job: its source object, function (256 MB, 900 s), log group, role with two policies, schedule, scheduler role and policy, and invoke config, 10 resources, plus the alarm `PREFIX_rudolph_fleet_job` when `alarm_sns_topic_arn` is set. It also adds the fleet role to the store key's policy statements that name Rudolph's Lambdas, which matters only when `store_kms_key_user_arns` is set. Nothing is replaced or destroyed.
 3. **Run the fleet job once by hand**, rather than waiting up to a day for the schedule:
 
@@ -691,7 +710,7 @@ This applies to every existing deployment. A group allow can now be flagged to h
      --var lambda_fleet_zip="$PWD/build/package/fleet_deployment.zip"
    ```
 
-   The plan updates `aws_iam_policy.events_write` in place and nothing else. The old eventupload code reads none of the new partitions, so the wider policy changes nothing until step 2.
+   The plan updates `aws_iam_policy.events_write` in place and nothing else. The old eventupload code reads none of the new partitions, so the wider policy changes nothing until step 2. If step 21 is not applied yet, this targeted apply fails: see [Targeted applies while step 21 is pending](#targeted-applies-while-step-21-is-pending).
 
    **If the new code runs under the old policy**, nothing fails and nothing is lost that was stored before: no upload is answered with an error, and blocked and unknown executions, file access events, and the executions collected by flagged global and machine rules are stored as usual. While no group rule is flagged, eventupload does not even make the new reads. Once one is flagged, every upload holding an execution of its key gets `AccessDeniedException` on the Mac's groups item or the registry: eventupload logs `could not read the groups of machine <id>` and does not store the group rule's executions, so the flagged group rule collects nothing, without any error on the command line. Santa does not send those executions again, so they are not recovered by applying the policy later; collection starts with the uploads after it (within a minute for warm Lambdas).
 2. **Deploy.** `make deploy`. The rest of the plan is the new Lambda code. Use the new CLI from then on: an older CLI that writes a flagged group rule again, removes it or deletes its group leaves its entry in the collection index, which costs eventupload one read and one clean-up transaction the next time a member Mac uploads an execution of that key, and stores nothing.
