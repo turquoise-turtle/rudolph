@@ -257,8 +257,10 @@ resource "aws_iam_role" "fleet_scheduler" {
   assume_role_policy = data.aws_iam_policy_document.fleet_scheduler_assume_role.json
 }
 
-# Only the fleet job's schedule may use the role (confused-deputy guard). The schedule has no group_name, so it is in
-# the default group. Its ARN is built rather than read from aws_scheduler_schedule.fleet, which needs this role first.
+# Only EventBridge Scheduler acting for this account's default schedule group may use the role (confused-deputy
+# guard). AWS checks aws:SourceArn against the schedule group's ARN, never the schedule's: a schedule ARN here makes
+# Scheduler refuse to create or run the schedule ("must allow AWS EventBridge Scheduler to assume the role"). The
+# schedule has no group_name, so it is in the default group.
 data "aws_iam_policy_document" "fleet_scheduler_assume_role" {
   statement {
     effect  = "Allow"
@@ -278,7 +280,7 @@ data "aws_iam_policy_document" "fleet_scheduler_assume_role" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = ["arn:aws:scheduler:${var.region}:${var.aws_account_id}:schedule/default/${var.prefix}_rudolph_fleet"]
+      values   = ["arn:aws:scheduler:${var.region}:${var.aws_account_id}:schedule-group/default"]
     }
   }
 }

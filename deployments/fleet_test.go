@@ -18,7 +18,7 @@ package deployments
 //     so a narrowed store key keeps allowing it (data_exposure_test.go's tableRoles).
 //   - Schedule: an EventBridge Scheduler schedule on var.fleet_schedule_expression (default once a day, "rate(1 day)",
 //     validated like the ranker's) in var.fleet_schedule_timezone (default "UTC"), no retries, through a scheduler
-//     role that only this schedule may assume (aws:SourceArn) and that may only invoke the fleet function.
+//     role that only Scheduler for the default schedule group may assume (aws:SourceArn) and that may only invoke the fleet function.
 //   - One alarm, aws_cloudwatch_metric_alarm.fleet_job: "no successful run for N days", N = var.fleet_alarm_days
 //     (default 3, validated 1 to 7: CloudWatch evaluates at most 7 days of daily periods). Metric math on the function's
 //     own AWS/Lambda Invocations minus Errors, Sum over 86,400 s, below 1 for N periods in a row, missing data treated
@@ -331,7 +331,7 @@ func TestFleetSchedule_DailyVariableAndNoRetries(t *testing.T) {
 		t.Fatal("no fleet_scheduler_assume_role policy document")
 	}
 	trustText := blockText(t, files, trust)
-	for _, want := range []string{"scheduler.amazonaws.com", "aws:SourceArn", "aws:SourceAccount", "_rudolph_fleet"} {
+	for _, want := range []string{"scheduler.amazonaws.com", "aws:SourceArn", "aws:SourceAccount", ":schedule-group/default"} {
 		if !strings.Contains(trustText, want) {
 			t.Errorf("the fleet scheduler role's trust policy lacks %s", want)
 		}
