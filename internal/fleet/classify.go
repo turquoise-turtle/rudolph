@@ -76,6 +76,8 @@ type settings struct {
 	today      time.Time
 	staleAfter time.Duration
 	minVersion rudolphtypes.SantaVersion
+	// versionOff is the minimum Santa version "off": no Mac is listed under Version.
+	versionOff bool
 	registry   *groups.Registry
 	global     *machineconfiguration.MachineConfiguration
 }
@@ -142,10 +144,11 @@ func classify(m *machine, s settings) report {
 	// SIPStatus holds the CSR flags: absent or 0 is SIP fully on.
 	r.sip = m.sensor.SIPStatus != nil && *m.sensor.SIPStatus != 0
 
-	// ParseSantaVersion reads an empty or unparseable version as "current"; here that is unknown, never old.
+	// ParseSantaVersion reads an empty or unparseable version as "current"; here that is unknown, never old. It is
+	// counted with the check off too: it says the Mac's data is poor, not that its release is below the minimum.
 	if v := rudolphtypes.ParseSantaVersion(m.sensor.SantaVersion); v.IsCurrent() {
 		r.versionUnknown = true
-	} else if v.Before(s.minVersion) {
+	} else if !s.versionOff && v.Before(s.minVersion) {
 		r.version = true
 		r.versionOrder = fmt.Sprintf("%04d.%02d", v.Year, v.Month)
 	}

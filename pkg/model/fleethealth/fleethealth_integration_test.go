@@ -195,7 +195,7 @@ func TestSetMinSantaVersion_NormalisesAndReplaces(t *testing.T) {
 }
 
 func TestSetMinSantaVersion_RefusesAnUnusableValue(t *testing.T) {
-	for _, in := range []string{"", "  ", "garbage", "2026", "v2026.9", "latest", "2026.10." + strings.Repeat("1", 25)} {
+	for _, in := range []string{"", "  ", "garbage", "2026", "v2026.9", "latest", "2026.10." + strings.Repeat("0", 24) + "1"} {
 		ddblocal.Reset(t)
 		attrs := holidayAttrs()
 		attrs["MinSantaVersion"] = &types.AttributeValueMemberS{Value: "2026.10"}

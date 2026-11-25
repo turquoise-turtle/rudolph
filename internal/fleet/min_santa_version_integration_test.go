@@ -186,7 +186,7 @@ func TestFleet_UnusableStoredMinSantaVersionFallsBackToTheDefault(t *testing.T) 
 		"not a release": "garbage",
 		"a year alone":  "2026",
 		"empty":         "",
-		"too long":      "2026.10." + strings.Repeat("1", 25),
+		"too long":      "2026.10." + strings.Repeat("0", 24) + "1",
 		"a number":      2026.10,
 		"a BOOL":        false,
 	} {

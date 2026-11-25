@@ -48,7 +48,7 @@ func TestValidateMinSantaVersion_Accepted(t *testing.T) {
 		// ParseSantaVersion reads build metadata and pre-release suffixes as the release they belong to.
 		"2026.9.1-beta": "2026.9.1-beta",
 		// 32 bytes, the most that may be stored
-		"2026.10." + strings.Repeat("1", 24): "2026.10." + strings.Repeat("1", 24),
+		"2026.10." + strings.Repeat("0", 23) + "1": "2026.10." + strings.Repeat("0", 23) + "1",
 	} {
 		got, err := fleethealth.ValidateMinSantaVersion(in)
 		if err != nil {
@@ -78,7 +78,7 @@ func TestValidateMinSantaVersion_Refused(t *testing.T) {
 		"o ff",
 		"2026.9.x",
 		// 33 bytes
-		"2026.10." + strings.Repeat("1", 25),
+		"2026.10." + strings.Repeat("0", 24) + "1",
 	} {
 		got, err := fleethealth.ValidateMinSantaVersion(in)
 		if err == nil {
@@ -112,7 +112,7 @@ func TestFromItem_MinSantaVersion(t *testing.T) {
 		"empty":                  {&types.AttributeValueMemberS{Value: ""}, ""},
 		"not a release":          {&types.AttributeValueMemberS{Value: "garbage"}, ""},
 		"a year alone":           {&types.AttributeValueMemberS{Value: "2026"}, ""},
-		"too long":               {&types.AttributeValueMemberS{Value: "2026.10." + strings.Repeat("1", 25)}, ""},
+		"too long":               {&types.AttributeValueMemberS{Value: "2026.10." + strings.Repeat("0", 24) + "1"}, ""},
 		"a number":               {&types.AttributeValueMemberN{Value: "2026.9"}, ""},
 		"a BOOL":                 {&types.AttributeValueMemberBOOL{Value: false}, ""},
 		"a NULL":                 {&types.AttributeValueMemberNULL{Value: true}, ""},

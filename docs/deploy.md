@@ -173,7 +173,8 @@ The fleet job, `PREFIX_rudolph_fleet`, rebuilds the web view's fleet health list
 - **Once a day is enough.** The lists change slowly (a Mac goes stale over days, readiness looks back 30 days), and each run reads every Mac. Running it hourly costs 24 times as much for the job (see [costs.md](costs.md#fleet-health-and-lockdown-readiness)).
 - **Do not skip days** without raising `fleet_alarm_days`: the `fleet_job` alarm counts UTC days without a completed run, so with a schedule that skips days, such as weekdays only, set `fleet_alarm_days` to more than the longest run of days without a run.
 - **To refresh the lists now**, for example after setting a holiday, invoke the function by hand (see [Running it by hand](fleet-health.md#running-it-by-hand)).
-- **Optional settings on the function**, not Terraform variables: `FLEET_MIN_SANTA_VERSION` (default `2026.9`), the release below which a Mac is listed under `Version`, and `FLEET_MAX_MACS` (default 250,000). To change one, add it to the `environment` block of `aws_lambda_function.fleet` in `fleet.tf`.
+- **Optional setting on the function**, not a Terraform variable: `FLEET_MAX_MACS` (default 250,000). To change it, add it to the `environment` block of `aws_lambda_function.fleet` in `fleet.tf`.
+- **The minimum Santa version**, the release below which a Mac is listed under `Version`, is not a function setting: change it with `rudolph fleet min-santa-version` (see [The minimum Santa version](fleet-health.md#the-minimum-santa-version)).
 
 ### State locking
 The example `_backend.tf` sets `use_lockfile = true` (Terraform 1.10 or later): while a plan or apply runs, Terraform holds a lock object, `<key>.tflock`, next to the state object in the state bucket, so a second plan or apply at the same time (another person, or CI) fails at once with "Error acquiring the state lock" instead of overwriting the first one's state. To have it retry until the lock is free instead, give it `-lock-timeout`, for example `terraform -chdir=deployments/environments/$ENV plan -lock-timeout=10m`; the `make` targets do not pass one. If the state bucket's policy, or the deployer's IAM policy, limits access to the state key, it must also allow `s3:GetObject`, `s3:PutObject` and `s3:DeleteObject` on `<key>.tflock` (for the example, `arn:aws:s3:::your-terraform-tfstate-bucket/rudolph-example-prefix.tfstate.tflock`); without `s3:DeleteObject` the first apply succeeds but leaves the lock behind, and every later plan fails. A lock left by an interrupted run is removed with `terraform -chdir=deployments/environments/$ENV force-unlock <lock ID>`, once you are sure that run has stopped.
@@ -735,3 +736,18 @@ Both roles now trust `scheduler.amazonaws.com` only with `aws:SourceAccount` set
 3. **Run the fleet job once by hand** as step 28 describes, if you have not yet.
 
 The schedule group condition admits any schedule in the account's default group, which only the account's own principals with `scheduler:CreateSchedule` and `iam:PassRole` on these roles can create; that is the boundary AWS offers.
+
+### 32. Editable minimum Santa version
+This applies to every existing deployment. The minimum Santa version, the release below which the fleet job lists a Mac under `Version`, is now part of the fleet health setting (`FleetHealth` / `Config`, attribute `MinSantaVersion`) and is changed with `rudolph fleet min-santa-version`, with no deploy. With nothing stored it is `2026.9`, as before. `off` turns the `Version` list off. See [The minimum Santa version](fleet-health.md#the-minimum-santa-version).
+
+The fleet job no longer reads `FLEET_MIN_SANTA_VERSION`. **If you never set that variable on the function, there is nothing to do but deploy.** If you added it to the `environment` block of `aws_lambda_function.fleet` in `fleet.tf`:
+
+1. **Deploy.** `make deploy`. From then on the variable is ignored, and until step 2 the job uses `2026.9` at its next run.
+2. **Store the value once**, with the new CLI: `./rudolph fleet min-santa-version <value>`, for example `./rudolph fleet min-santa-version 2026.10`. `./rudolph fleet show` prints what is in force.
+3. **Remove the variable** from the `environment` block in `fleet.tf` and deploy again. Until it is removed nothing breaks: the function logs one line each time it starts, saying that `FLEET_MIN_SANTA_VERSION` is ignored.
+
+- **Code only, no IAM change.** The fleet job's role already has `GetItem` on `FleetHealth`, which it reads on every run for the stale threshold, and CLI credentials that may set a holiday already have `GetItem` and `UpdateItem` on that item (see [cli-iam.md](cli-iam.md)). No Terraform or variable change either.
+- **Cost is unchanged.** The job reads the item once a run, as before.
+- **The new commands.** `rudolph fleet min-santa-version (<version> | off | --default)` is recorded in the audit trail as `fleet.min-santa-version`; `rudolph fleet show` is read-only. See [cli.md](cli.md#fleet-min-santa-version).
+- **rudolph-web** reads and edits the value in its next release, once its Rudolph pin includes this one: `fleethealth.Config.MinSantaVersionInForce`, `fleethealth.SetMinSantaVersion`, `fleethealth.ClearMinSantaVersion` and `fleethealth.ValidateMinSantaVersion`, with the default from `fleethealth.DefaultMinSantaVersion`. Until then it shows the pointer's `MinSantaVersion`, which now may be `off`. The web contract (`testdata/webcontract`) now holds the setting item.
+- **Rolling back.** The previous fleet job ignores the stored attribute and uses `FLEET_MIN_SANTA_VERSION` or `2026.9` again, and has no `off`. The attribute can stay in the item.

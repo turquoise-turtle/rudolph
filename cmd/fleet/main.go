@@ -29,7 +29,7 @@ func main() {
 	if storeTable == "" {
 		log.Fatal("fleet: DYNAMODB_NAME is not set")
 	}
-	// Both optional; the defaults are internal/fleet's.
+	// Optional; the default is internal/fleet's.
 	maxMacs := 0
 	if v := os.Getenv("FLEET_MAX_MACS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -38,7 +38,10 @@ func main() {
 		}
 		maxMacs = n
 	}
-	minSantaVersion := os.Getenv("FLEET_MIN_SANTA_VERSION")
+	// An environment deployed before a setting moved may still set it on the function; the job says so and carries on.
+	for _, line := range ignoredEnvironment(os.Getenv) {
+		log.Print(line)
+	}
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(os.Getenv("REGION")))
 	if err != nil {
@@ -46,6 +49,6 @@ func main() {
 	}
 	client := dynamodb.NewFromConfig(cfg)
 	lambda.Start(func(ctx context.Context) error {
-		return fleet.Run(ctx, fleet.Options{Client: client, Table: table, StoreTable: storeTable, MinSantaVersion: minSantaVersion, MaxMacs: maxMacs})
+		return fleet.Run(ctx, fleet.Options{Client: client, Table: table, StoreTable: storeTable, MaxMacs: maxMacs})
 	})
 }

@@ -253,7 +253,7 @@ func TestFleetMinSantaVersion_DefaultWithNothingStored(t *testing.T) {
 }
 
 func TestFleetMinSantaVersion_RefusedArguments(t *testing.T) {
-	long := "2026.10." + strings.Repeat("1", 25) // 33 bytes
+	long := "2026.10." + strings.Repeat("0", 24) + "1" // 33 bytes
 	for name, c := range map[string]struct {
 		args    []string
 		mention []string // what the error must name

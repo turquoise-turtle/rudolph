@@ -190,7 +190,7 @@ Pointer, `FleetPointer` / `Current`:
 | `Attention` | Macs in at least one health category |
 | `Health` | map of `Stale`, `Incomplete`, `Mode`, `Rules`, `SIP` and `Version` to the number of Macs listed |
 | `VersionUnknown` | Macs whose Santa version is empty or cannot be parsed |
-| `MinSantaVersion` | the release below which the run listed a Mac under `Version` |
+| `MinSantaVersion` | the minimum the run used: the release below which it listed a Mac under `Version`, or `off` when that list was off |
 | `StaleDays`, `Holiday`, `HolidayUntil` | the stale threshold the run used, whether it was a holiday's, and the holiday's last day (only while one is on) |
 | `Readiness` | map of `All`, every registered group and `rudolph:ungrouped` to `Macs`, `Ready`, `Few`, `Many`, `Unmeasured` and `Locked` |
 | `Capped` | Macs with more than 1,000 unknown markers |

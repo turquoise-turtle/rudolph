@@ -111,8 +111,8 @@ data "aws_iam_policy_document" "fleet" {
     }
   }
 
-  # The three items every Mac is judged against: group registry, global config, and the stale threshold with its
-  # holiday (rudolph fleet holiday).
+  # The three items every Mac is judged against: group registry, global config, and the fleet health setting: the
+  # stale threshold with its holiday and the minimum Santa version (rudolph fleet holiday, fleet min-santa-version).
   statement {
     actions = [
       "dynamodb:GetItem",
