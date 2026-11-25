@@ -16,7 +16,7 @@ package deployments
 //   - Every ForAllValues condition on dynamodb:LeadingKeys has a Null check beside it, as ForAllValues is true when
 //     the request carries no key at all (a Scan added to the statement later would otherwise be allowed).
 //   - Logs: no Lambda gets AWSLambdaBasicExecutionRole (logs on every group of the account); each writes its own.
-//   - The scheduler role trusts scheduler.amazonaws.com only for the ranker's schedule (aws:SourceArn).
+//   - The scheduler role trusts scheduler.amazonaws.com only for the default schedule group (aws:SourceArn).
 //   - S3: every bucket has a public access block.
 //   - The API Gateway resource policy has no statement that changes nothing (the aws:ViaAWSService Allow is a subset
 //     of the unconditional Allow), and no comment calls /health public (it needs the token).
@@ -140,7 +140,7 @@ func TestIAMReview_ServiceRoleTrustIsPinned(t *testing.T) {
 	top, tfiles := policyDocs(t, santaAPI)
 	doc = top["ranker_scheduler_assume_role"]
 	if doc == nil || !strings.Contains(blockText(t, tfiles, doc), "aws:SourceArn") {
-		t.Error("the scheduler role trusts scheduler.amazonaws.com without aws:SourceArn (the ranker's schedule)")
+		t.Error("the scheduler role trusts scheduler.amazonaws.com without aws:SourceArn (the default schedule group)")
 	}
 }
 
