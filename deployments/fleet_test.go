@@ -89,9 +89,9 @@ func TestFleetFunction_BuiltDeployedAndConfigured(t *testing.T) {
 			t.Errorf("fleet environment does not set %s:\n%s", want, vars)
 		}
 	}
-	for _, unwanted := range []string{"FLEET_FIRST_SEEN_FLOOR", "FLEET_STALE_AFTER"} {
+	for _, unwanted := range []string{"FLEET_FIRST_SEEN_FLOOR", "FLEET_STALE_AFTER", "FLEET_MIN_SANTA_VERSION"} {
 		if strings.Contains(vars, unwanted) {
-			t.Errorf("fleet environment sets %s: there is no backfill floor, and the stale threshold is FleetHealth / Config", unwanted)
+			t.Errorf("fleet environment sets %s: there is no backfill floor, and the stale threshold and minimum Santa version are FleetHealth / Config", unwanted)
 		}
 	}
 	if !strings.Contains(attrSource(t, module, fn, "depends_on"), "aws_cloudwatch_log_group.fleet") {

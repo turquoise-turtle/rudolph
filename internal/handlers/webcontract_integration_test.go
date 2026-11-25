@@ -32,6 +32,7 @@ import (
 	"github.com/airbnb/rudolph/internal/testutil/clitest"
 	"github.com/airbnb/rudolph/internal/testutil/ddblocal"
 	"github.com/airbnb/rudolph/pkg/clock"
+	"github.com/airbnb/rudolph/pkg/model/fleethealth"
 	"github.com/airbnb/rudolph/pkg/model/globalrules"
 	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
@@ -154,6 +155,15 @@ func generateWebContractRows(t *testing.T) {
 	if out, err := clitest.Run(t, clitest.Env{Table: ddblocal.TableName, Region: ddblocal.Region}, rule.RuleCmd, "yes\n",
 		"update", "-t", "teamid", "-i", otherTeam, "--group", "eng", "--collect-allowed-events=true"); err != nil {
 		t.Errorf("flagging the group rule for collection: %v\n%s", err, out)
+	}
+
+	// The fleet health setting's minimum Santa version (2026-11-25): rudolph-web shows and edits it through
+	// pkg/model/fleethealth, and reads the default from fleethealth.DefaultMinSantaVersion. A failure is reported
+	// without stopping the generator, so the rest of the contract is still checked.
+	if fw, ok := client.(fleethealth.Writer); !ok {
+		t.Error("the DynamoDB client cannot write the fleet health setting")
+	} else if _, err := fleethealth.SetMinSantaVersion(fw, "2026.10"); err != nil {
+		t.Errorf("storing the minimum Santa version: %v", err)
 	}
 }
 

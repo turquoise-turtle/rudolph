@@ -4,16 +4,18 @@ package fleet_test
 
 // Shared fixtures for the fleet job's tests (internal/fleet, run by cmd/fleet once a day). The job is called as
 //
-//	fleet.Run(ctx, fleet.Options{Client, Table, StoreTable, Now, MinSantaVersion, MaxMacs})
+//	fleet.Run(ctx, fleet.Options{Client, Table, StoreTable, Now, MaxMacs})
 //
 // where Client is the part of *dynamodb.Client it uses (GetItem, Query, BatchWriteItem, PutItem: fleet.Client), Table
-// is the events table (EVENTS_DYNAMODB_NAME), StoreTable the store table (DYNAMODB_NAME), Now defaults to time.Now,
-// MinSantaVersion to fleet.DefaultMinSantaVersion ("2026.9") and MaxMacs to fleet.DefaultMaxMacs (250,000).
+// is the events table (EVENTS_DYNAMODB_NAME), StoreTable the store table (DYNAMODB_NAME), Now defaults to time.Now and
+// MaxMacs to fleet.DefaultMaxMacs (250,000). The minimum Santa version is not an option: it is FleetHealth / Config's
+// MinSantaVersion, else fleethealth.DefaultMinSantaVersion ("2026.9").
 //
 // Macs are seeded as the sync Lambdas store them: sensor data (`Machine#<id>` / `Current`, in the DataType_MachineID
 // index), sync state (`SyncState`), an optional machine config (`Config`) and groups item (`Groups`); the registry
-// (`GroupRegistry` / `Current`), the global config, global and group rules, the holiday setting (`FleetHealth` /
-// `Config`) and unknown markers (`UnknownSeen#<id>` / `<sha>` in the events table) likewise.
+// (`GroupRegistry` / `Current`), the global config, global and group rules, the fleet health setting (`FleetHealth` /
+// `Config`: stale threshold, holiday, minimum Santa version) and unknown markers (`UnknownSeen#<id>` / `<sha>` in the
+// events table) likewise.
 
 import (
 	"context"

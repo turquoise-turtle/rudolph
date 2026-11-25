@@ -54,6 +54,9 @@ type Config struct {
 	StaleDays        int
 	HolidayStaleDays int
 	HolidayUntil     string
+	// MinSantaVersion is a release ("2026.10") or "off"; "" when absent or unusable. STUB: added for the tests to
+	// compile; FromItem does not decode it yet.
+	MinSantaVersion string
 }
 
 // Reader and Writer are what reading and changing the setting need: Rudolph's DynamoDB client (pkg/dynamodb).
@@ -218,4 +221,36 @@ func EndHoliday(client Writer) (Config, error) {
 		return Config{}, fmt.Errorf("failed to end the holiday: %w", err)
 	}
 	return before, nil
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Minimum Santa version. STUBS for the implementer to replace: the names and signatures are the API the tests in
+// fleethealth_test.go and fleethealth_integration_test.go specify; the bodies are placeholders. Config also gains
+// MinSantaVersion (see those tests): it is added here only so the tests compile, and FromItem does not decode it yet.
+// ---------------------------------------------------------------------------------------------------------------
+
+// DefaultMinSantaVersion is the minimum Santa version when none is stored. STUB: the tests require "2026.9".
+const DefaultMinSantaVersion = ""
+
+// ErrNoMinSantaVersion is returned by ClearMinSantaVersion when no minimum Santa version is stored.
+var ErrNoMinSantaVersion = errors.New("no minimum Santa version is stored")
+
+// ValidateMinSantaVersion is a STUB.
+func ValidateMinSantaVersion(version string) (string, error) {
+	return "", errors.New("not implemented")
+}
+
+// MinSantaVersionInForce is a STUB.
+func (c Config) MinSantaVersionInForce() (version string, off bool, stored bool) {
+	return "", false, false
+}
+
+// SetMinSantaVersion is a STUB.
+func SetMinSantaVersion(client Writer, version string) (Config, error) {
+	return Config{}, errors.New("not implemented")
+}
+
+// ClearMinSantaVersion is a STUB.
+func ClearMinSantaVersion(client Writer) (Config, error) {
+	return Config{}, errors.New("not implemented")
 }

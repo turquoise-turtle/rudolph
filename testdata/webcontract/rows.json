@@ -1,5 +1,16 @@
 [
   {
+    "MinSantaVersion": {
+      "S": "2026.10"
+    },
+    "PK": {
+      "S": "FleetHealth"
+    },
+    "SK": {
+      "S": "Config"
+    }
+  },
+  {
     "AllowedPathRegex": {
       "S": ""
     },

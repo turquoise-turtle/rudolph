@@ -16,8 +16,10 @@ package fleet_test
 //   - Rules: RulesProcessed < RulesReceived on a sync with a postflight (Reason NotApplied), or its RulesHashAfterSync
 //     differs from the majority of Macs with the same MachineRulesTracked digest (Reason Outlier).
 //   - SIP: SIPStatus present and not 0; Flags is the value in hex ("0x7f").
-//   - Version: the Santa release is below MinSantaVersion (default "2026.9", compared numerically); an empty or
-//     unparseable version counts in VersionUnknown and is not listed.
+//   - Version: the Santa release is below the minimum Santa version (FleetHealth / Config's MinSantaVersion, else
+//     fleethealth.DefaultMinSantaVersion "2026.9"; compared numerically; none when it is "off", see
+//     min_santa_version_integration_test.go); an empty or unparseable version counts in VersionUnknown and is not
+//     listed.
 //
 // Health row: PK `FleetSnapshot#<snapshot>#Health#<category>`, SK `<order>#<machine ID>` where the order is the last
 // completed sync as 20060102T150405Z (zeros when none) for Stale, the PreflightAt for Incomplete, the release as
@@ -29,7 +31,8 @@ package fleet_test
 // Version SantaVersion.
 //
 // Pointer: Snapshot, GeneratedAt (RFC 3339), Macs, Attention (Macs in at least one category), Health (map of the six
-// categories to counts), VersionUnknown, MinSantaVersion, StaleDays, Holiday, Readiness, Capped. It never expires.
+// categories to counts), VersionUnknown, MinSantaVersion (the minimum the run used, or "off"), StaleDays, Holiday,
+// Readiness, Capped. It never expires.
 
 import (
 	"strings"
@@ -414,23 +417,6 @@ func TestFleet_Version(t *testing.T) {
 	}
 	if p.VersionUnknown != 2 {
 		t.Errorf("VersionUnknown %d, want 2 (empty and garbage)", p.VersionUnknown)
-	}
-}
-
-// MinSantaVersion is the job's option (FLEET_MIN_SANTA_VERSION in cmd/fleet), recorded on the pointer so the web view
-// can warn when its own differs.
-func TestFleet_MinSantaVersionOption(t *testing.T) {
-	reset(t)
-	seed(t, mac{id: machineID(1), hostname: "v2026-9", santaVersion: "2026.9.0"})
-	r := newRecorder(t)
-	opts := options(r, now)
-	opts.MinSantaVersion = "2026.10"
-	if err := fleetRun(opts); err != nil {
-		t.Fatal(err)
-	}
-	p := mustPointer(t)
-	if p.MinSantaVersion != "2026.10" || p.Health["Version"] != 1 {
-		t.Errorf("with MinSantaVersion 2026.10: pointer says %q and Version %d, want 2026.10 and 1", p.MinSantaVersion, p.Health["Version"])
 	}
 }
 
