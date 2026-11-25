@@ -33,8 +33,9 @@ import (
 )
 
 const (
-	// DefaultMinSantaVersion is the release below which a Mac is listed under Version.
-	DefaultMinSantaVersion = "2026.9"
+	// DefaultMinSantaVersion is the release below which a Mac is listed under Version when the fleet health setting
+	// stores none. An alias: the one default is fleethealth's.
+	DefaultMinSantaVersion = fleethealth.DefaultMinSantaVersion
 
 	// DefaultMaxMacs bounds a run. About two reads and one write call a Mac, 32 Macs at a time, fit 250,000 Macs in
 	// the Lambda's 900 seconds; past that the walk would have to be split across invocations. A run that finds more
@@ -89,9 +90,6 @@ type Options struct {
 	StoreTable string
 	// Now defaults to time.Now.
 	Now func() time.Time
-	// MinSantaVersion defaults to DefaultMinSantaVersion. It is recorded on the pointer, so the web view can warn
-	// when its own differs.
-	MinSantaVersion string
 	// MaxMacs defaults to DefaultMaxMacs.
 	MaxMacs int
 }
@@ -138,13 +136,6 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	now := nowFn().UTC()
 	started := time.Now()
-	if opts.MinSantaVersion == "" {
-		opts.MinSantaVersion = DefaultMinSantaVersion
-	}
-	minVersion := rudolphtypes.ParseSantaVersion(opts.MinSantaVersion)
-	if minVersion.IsCurrent() {
-		return fmt.Errorf("fleet: the minimum Santa version %q is not a release such as %s", opts.MinSantaVersion, DefaultMinSantaVersion)
-	}
 	if opts.MaxMacs <= 0 {
 		opts.MaxMacs = DefaultMaxMacs
 	}
@@ -170,12 +161,17 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	staleDays, holiday := fleethealth.FromItem(healthItem).InForce(now)
+	health := fleethealth.FromItem(healthItem)
+	staleDays, holiday := health.InForce(now)
+	// The minimum has no option or environment variable: a run must not disagree with what the CLI and the web view
+	// show as in force. The pointer records it, so a reader knows which minimum the lists on show were built with.
+	minSantaVersion, versionOff, _ := health.MinSantaVersionInForce()
 	r.settings = settings{
 		now:        now,
 		today:      time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC),
 		staleAfter: time.Duration(staleDays) * 24 * time.Hour,
-		minVersion: minVersion,
+		minVersion: rudolphtypes.ParseSantaVersion(minSantaVersion),
+		versionOff: versionOff,
 		registry:   registry,
 		global:     machineconfiguration.StoredGlobalConfig(globalItem),
 	}
@@ -229,19 +225,19 @@ func Run(ctx context.Context, opts Options) error {
 		"Macs":            num(r.totals.macs),
 		"Attention":       num(r.totals.attention),
 		"VersionUnknown":  num(r.totals.versionUnknown),
-		"MinSantaVersion": str(opts.MinSantaVersion),
+		"MinSantaVersion": str(minSantaVersion),
 		"StaleDays":       num(staleDays),
 		"Holiday":         &types.AttributeValueMemberBOOL{Value: holiday},
 		"Capped":          num(r.totals.capped),
 	}
 	if holiday {
-		pointer["HolidayUntil"] = str(fleethealth.FromItem(healthItem).HolidayUntil)
+		pointer["HolidayUntil"] = str(health.HolidayUntil)
 	}
-	health := map[string]types.AttributeValue{}
+	counts := map[string]types.AttributeValue{}
 	for category, n := range r.totals.health {
-		health[category] = num(n)
+		counts[category] = num(n)
 	}
-	pointer["Health"] = &types.AttributeValueMemberM{Value: health}
+	pointer["Health"] = &types.AttributeValueMemberM{Value: counts}
 	readiness := map[string]types.AttributeValue{}
 	for scope, c := range r.totals.readiness {
 		av, err := attributevalue.MarshalMap(c)
@@ -261,9 +257,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	// The figures to watch against the Lambda's memory and timeout: docs/fleet-health.md, "Limits".
 	all := r.totals.readiness[scopeAll]
-	log.Printf("fleet: macs=%d rules=%d attention=%d stale=%d incomplete=%d ready=%d locked=%d stale_days=%d holiday=%t seconds=%.1f",
+	log.Printf("fleet: macs=%d rules=%d attention=%d stale=%d incomplete=%d ready=%d locked=%d stale_days=%d holiday=%t min_santa_version=%s seconds=%.1f",
 		r.totals.macs, len(r.rules), r.totals.attention, r.totals.health[categoryStale], r.totals.health[categoryIncomplete],
-		all.Ready, all.Locked, staleDays, holiday, time.Since(started).Seconds())
+		all.Ready, all.Locked, staleDays, holiday, minSantaVersion, time.Since(started).Seconds())
 	return nil
 }
 

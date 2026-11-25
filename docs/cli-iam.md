@@ -50,7 +50,7 @@ With `store_kms_key_user_arns` set (see [Telemetry and Retention](security-risks
 
 ## Rule administrator
 
-For every command, including those that write: rules, configurations, temporary client modes, device groups, the fleet health holiday, `machine forget`, `group members --rebuild`, `rules import`, `rules backfill-policy-index` and `repair --delete`. It reads like the read-only operator (on the store table only), and writes only the partitions the CLI writes, found from the code (`pkg/model` and `internal/cli`):
+For every command, including those that write: rules, configurations, temporary client modes, device groups, the fleet health setting (holiday, minimum Santa version), `machine forget`, `group members --rebuild`, `rules import`, `rules backfill-policy-index` and `repair --delete`. It reads like the read-only operator (on the store table only), and writes only the partitions the CLI writes, found from the code (`pkg/model` and `internal/cli`):
 
 | Partition key | Written by |
 |---|---|
@@ -61,7 +61,7 @@ For every command, including those that write: rules, configurations, temporary 
 | `MachineRuleDelivery#*` | delivery tracking of machine rules, deleted by `machine forget` |
 | `GroupRules#*`, `GroupRegistry` | group rules and the registry of groups (`rule --group\|--ungrouped`, `group create\|update\|delete`, `config update --group\|--ungrouped`) |
 | `GroupMembers#*` | a group's member rows (`group add\|remove`, `group members --rebuild`, `machine forget`) |
-| `FleetHealth` | the stale threshold's holiday (`fleet holiday`): `UpdateItem` |
+| `FleetHealth` | the fleet health setting: the stale threshold's holiday (`fleet holiday`) and the minimum Santa version (`fleet min-santa-version`): `UpdateItem` |
 | `EventCollection` | the index of rules whose allowed executions are collected (`rule --collect-allowed-events`, `rule update`, `rule remove`, `machine forget`; writing again or removing a flagged group rule, and every `group delete`) |
 | `MachineInfo#*`, `MachineConfig#*` | legacy items deleted by `repair --delete`; leave them out if you never run it |
 | `Audit#*` | the audit entry every change records: `PutItem` only |

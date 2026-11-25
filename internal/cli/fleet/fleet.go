@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
+	"github.com/airbnb/rudolph/internal/cli/termsafe"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -14,8 +15,9 @@ import (
 )
 
 const (
-	auditAction = "fleet.holiday"
-	auditTarget = "fleet"
+	auditAction           = "fleet.holiday"
+	minVersionAuditAction = "fleet.min-santa-version"
+	auditTarget           = "fleet"
 )
 
 // FleetCmd is the `fleet` command; it only holds the subcommands
@@ -23,7 +25,8 @@ var FleetCmd = &cobra.Command{
 	Use:   "fleet",
 	Short: "Settings of the fleet health lists the daily fleet job builds",
 	Long: `The fleet job lists, once a day, the Macs that need attention (docs/fleet-health.md). A Mac is stale when its last
-completed sync is older than the stale threshold, 10 days unless changed.`,
+completed sync is older than the stale threshold, 10 days unless changed, and listed under Version when its Santa
+release is below the minimum Santa version, ` + fleethealth.DefaultMinSantaVersion + ` unless changed.`,
 }
 
 func init() {
@@ -106,6 +109,141 @@ one set. --end removes the holiday now. The fleet job uses the setting from its 
 	holidayCmd.Flags().StringVar(&until, "until", "", "The holiday's last day as YYYY-MM-DD (a UTC date, inclusive; today or later, at most 366 days ahead)")
 	holidayCmd.Flags().BoolVar(&end, "end", false, "End the holiday now")
 	FleetCmd.AddCommand(holidayCmd)
+
+	var useDefault bool
+	minVersionCmd := &cobra.Command{
+		Use:   "min-santa-version (<version> | off | --default)",
+		Short: "Set the Santa release below which a Mac is listed under Version, or turn that list off",
+		Long: `A Mac whose Santa release is below the minimum Santa version is listed under Version. Pass a release such as
+2026.10 to set the minimum, off to list no Mac under Version, or --default to clear the stored value, so that the
+default, ` + fleethealth.DefaultMinSantaVersion + `, applies again. The stale threshold and any holiday are left as they are. The fleet job uses the
+setting from its next run.`,
+		// Arguments are checked in RunE, so each refusal says what the command takes
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch {
+			case len(args) > 1:
+				return fmt.Errorf("pass one release or off, not %d values", len(args))
+			case useDefault && len(args) == 1:
+				return errors.New("pass either a release or off, or --default, not both")
+			case !useDefault && len(args) == 0:
+				return errors.New("nothing to change: pass a release such as 2026.10, off, or --default to return to the default")
+			}
+			version := ""
+			if !useDefault {
+				// Checked here as well as in SetMinSantaVersion, so a refused value is refused before anyone is asked to
+				// confirm
+				var err error
+				if version, err = fleethealth.ValidateMinSantaVersion(args[0]); err != nil {
+					return err
+				}
+			}
+			client, err := writer(cmd)
+			if err != nil {
+				return err
+			}
+			// The raw item, not fleethealth.Get: a stored value that cannot be used decodes as none, and --default has
+			// to tell it from nothing stored
+			out, err := client.GetItem(fleethealth.Key(), true)
+			if err != nil {
+				return fmt.Errorf("failed to read the fleet health setting: %w", err)
+			}
+			current := fleethealth.FromItem(out.Item)
+			_, attributeStored := out.Item["MinSantaVersion"]
+			inForce, _, usable := current.MinSantaVersionInForce()
+			was := termsafe.String(inForce)
+			switch {
+			case !usable && attributeStored:
+				was = "the default " + inForce
+				fmt.Printf("Minimum Santa version in force: %s (the stored value cannot be used and is ignored)\n", was)
+			case !usable:
+				was = "the default " + inForce
+				fmt.Printf("Minimum Santa version in force: %s\n", was)
+			default:
+				fmt.Printf("Minimum Santa version in force: %s (stored)\n", was)
+			}
+
+			if useDefault {
+				if !attributeStored {
+					fmt.Println("No minimum Santa version is stored; nothing changed.")
+					return nil
+				}
+				fmt.Printf("Clearing the stored minimum Santa version; the default %s will apply\n", fleethealth.DefaultMinSantaVersion)
+				if apply, err := flags.ApprovalOf(cmd).Confirm(); !apply {
+					return err
+				}
+				before, err := fleethealth.ClearMinSantaVersion(client)
+				if errors.Is(err, fleethealth.ErrNoMinSantaVersion) {
+					fmt.Println("No minimum Santa version was stored; nothing changed.")
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Stored minimum Santa version cleared. Minimum Santa version: %s (default), from the next fleet run\n", fleethealth.DefaultMinSantaVersion)
+				// What ClearMinSantaVersion read, not what was shown above: the entry names the value that was removed.
+				// The fleet job ignored a value that cannot be used, and the entry says so rather than repeat it.
+				cleared := "an unusable value"
+				if version, _, stored := before.MinSantaVersionInForce(); stored {
+					cleared = version
+				}
+				return flags.Record(client, minVersionAuditAction, auditTarget, fmt.Sprintf("cleared the stored minimum Santa version (was %s); the default %s applies",
+					cleared, fleethealth.DefaultMinSantaVersion))
+			}
+
+			off := version == fleethealth.MinSantaVersionOff
+			if off {
+				fmt.Println("Turning the minimum Santa version check off: no Mac will be listed under Version")
+			} else {
+				fmt.Printf("Setting the minimum Santa version to %s: a Mac with an older Santa release will be listed under Version\n", termsafe.String(version))
+			}
+			if apply, err := flags.ApprovalOf(cmd).Confirm(); !apply {
+				return err
+			}
+			stored, err := fleethealth.SetMinSantaVersion(client, version)
+			if err != nil {
+				return err
+			}
+			if off {
+				fmt.Println("Minimum Santa version: off (stored), from the next fleet run")
+				return flags.Record(client, minVersionAuditAction, auditTarget, fmt.Sprintf("turned the minimum Santa version check off (was %s)", was))
+			}
+			fmt.Printf("Minimum Santa version: %s (stored), from the next fleet run\n", termsafe.String(stored.MinSantaVersion))
+			return flags.Record(client, minVersionAuditAction, auditTarget, fmt.Sprintf("set the minimum Santa version to %s (was %s)", stored.MinSantaVersion, was))
+		},
+	}
+	minVersionCmd.Flags().BoolVar(&useDefault, "default", false, "Clear the stored value, so the default ("+fleethealth.DefaultMinSantaVersion+") applies")
+	FleetCmd.AddCommand(minVersionCmd)
+
+	FleetCmd.AddCommand(&cobra.Command{
+		Use:   "show",
+		Short: "Show the fleet health setting in force: the stale threshold, any holiday and the minimum Santa version",
+		Long: `Prints what the fleet job's next run will use: the stale threshold, with the holiday while one is on, and the minimum
+Santa version, with whether it is stored or the default. Nothing is written.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := writer(cmd)
+			if err != nil {
+				return err
+			}
+			current, err := fleethealth.Get(client, true)
+			if err != nil {
+				return err
+			}
+			if current.HolidayOn(clock.ConcreteTimeProvider{}.Now()) {
+				fmt.Printf("Stale threshold: %d days, holiday: %d days until %s\n", current.NormalStaleDays(), current.HolidayStaleDays, current.HolidayUntil)
+			} else {
+				fmt.Printf("Stale threshold: %d days\n", current.NormalStaleDays())
+			}
+			version, _, stored := current.MinSantaVersionInForce()
+			source := "default"
+			if stored {
+				source = "stored"
+			}
+			fmt.Printf("Minimum Santa version: %s (%s)\n", termsafe.String(version), source)
+			return nil
+		},
+	})
 }
 
 // client is what the fleet commands need from DynamoDB

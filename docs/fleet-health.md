@@ -20,7 +20,7 @@ A Mac can be in several categories. The pointer's `Attention` counts the Macs in
 | `Mode` | the client mode the Mac last reported differs from the one Rudolph intends for it now, and the Mac is not `Stale`. | machine ID |
 | `Rules` | its last sync completed but applied fewer rules than it received (`Reason` `NotApplied`), or its rules hash differs from what most Macs with the same rules report (`Reason` `Outlier`). | machine ID |
 | `SIP` | it reports System Integrity Protection flags other than 0. `Flags` is the value in hex, for example `0x7f`. A Mac that reports none, or 0, has SIP fully on. | machine ID |
-| `Version` | its Santa release is older than the minimum, `2026.9` unless `FLEET_MIN_SANTA_VERSION` is set on the function. Releases compare as numbers, so 2026.10 is newer than 2026.9. | release, oldest first |
+| `Version` | its Santa release is below the minimum Santa version: `2026.9` unless changed with `rudolph fleet min-santa-version`, which can also turn the list `off` (see [The minimum Santa version](#the-minimum-santa-version)). Releases compare as numbers, so 2026.10 is newer than 2026.9. | release, oldest first |
 
 Details that matter when reading a list:
 
@@ -30,7 +30,7 @@ Details that matter when reading a list:
 - **Intended mode** is resolved the way preflight resolves it: a temporary client mode while it lasts, the Mac's own, the strictest of its groups' (`LOCKDOWN` over `STANDALONE` over `MONITOR`), the global configuration's, and `MONITOR` when there is no global configuration. `Source` says which one decided: `temporary`, `own`, `group:<name>`, `global` or `default`.
 - **A mode change takes one sync to arrive**, so for one sync interval after you change a mode the `Mode` list shows the Macs that have not synced since. It is a list of a rollout in progress as much as of faults.
 - **A stored mode that is not a client mode** (a value edited by hand) is skipped, and the next setting in the order decides. Preflight sends no mode at all for such a value, so the Mac keeps the mode it has; the list then shows it against the mode the rest of its configuration asks for, which is how you find the broken setting.
-- **Version unknown.** A Mac with an empty or unparseable Santa version is counted in `VersionUnknown` and not listed.
+- **Version unknown.** A Mac with an empty or unparseable Santa version is counted in `VersionUnknown` and not listed. It is counted while the minimum Santa version is `off` too: it says the Mac's data is poor, not that its release is old.
 - **Macs without a serial number or hostname** are walked and listed like any other; their rows leave those fields out.
 
 ### Rules hash outliers
@@ -49,13 +49,14 @@ Limits of this check, which make `Outlier` a prompt to look, not proof:
 
 ## The stale threshold and holiday mode
 
-One item of the store table holds the threshold: PK `FleetHealth`, SK `Config`.
+One item of the store table holds the threshold, and the [minimum Santa version](#the-minimum-santa-version): PK `FleetHealth`, SK `Config`.
 
 | Attribute | Meaning |
 |---|---|
 | `StaleDays` | the normal threshold in days; 10 when absent |
 | `HolidayStaleDays` | the threshold while a holiday lasts |
 | `HolidayUntil` | the holiday's last day, a UTC date (`YYYY-MM-DD`), inclusive |
+| `MinSantaVersion` | the release below which a Mac is listed under `Version`, such as `2026.10`, or `off`; `2026.9` when absent |
 
 Over school holidays Macs are simply off, and a 10-day threshold would list most of the fleet. Holiday mode raises the threshold until a date:
 
@@ -70,6 +71,25 @@ Over school holidays Macs are simply off, and a 10-day threshold would list most
 - A change takes effect at the job's next run. To see it sooner, invoke the function by hand (see [Running it by hand](#running-it-by-hand)).
 - The CLI does not set `StaleDays`. rudolph-web writes the item through the same package, `pkg/model/fleethealth`, which holds the validation and the "threshold in force" rule for both.
 - A value in the item that cannot be used (edited by hand to a string, or out of range) is ignored and the default applies, so a bad edit never stops the job.
+
+## The minimum Santa version
+
+A Mac is listed under `Version` when its Santa release is below the minimum Santa version, the `MinSantaVersion` attribute of the same item. With none stored the minimum is `2026.9`.
+
+```sh
+./rudolph fleet show
+./rudolph fleet min-santa-version 2026.10
+./rudolph fleet min-santa-version off
+./rudolph fleet min-santa-version --default
+```
+
+- **A release** such as `2026.10` or `2026.10.1`, at most 32 characters. Only the year and month are compared, so `2026.10.1` lists the same Macs as `2026.10`. A minimum below `2026.9` is allowed.
+- **`off`** turns the list off: no Mac is listed under `Version`, its count is 0, and no Mac counts towards `Attention` for its release. The other five lists and `VersionUnknown` are unchanged.
+- **`--default`** removes the stored value, so `2026.9` applies again.
+- The job reads the item on every run, so a change takes effect at the next run with no deploy. To see it sooner, invoke the function by hand (see [Running it by hand](#running-it-by-hand)). The pointer's `MinSantaVersion` records the minimum the run used, or `off`, so a reader knows which minimum the lists on show were built with.
+- A stored value that cannot be used (edited by hand to something that is neither a release nor `off`) is ignored and `2026.9` applies. `rudolph fleet show` then reports the default, and `rudolph fleet min-santa-version --default` removes the value.
+- The environment variable `FLEET_MIN_SANTA_VERSION`, which set the minimum before, is ignored: a function that still has it logs one line at start saying so (see [upgrade step 32](deploy.md#32-editable-minimum-santa-version)).
+- The CLI and rudolph-web validate and write the value through the same package, `pkg/model/fleethealth`, whose `DefaultMinSantaVersion` is the one default. See [`rudolph fleet min-santa-version`](cli.md#fleet-min-santa-version).
 
 ## Lockdown readiness
 
@@ -185,7 +205,7 @@ aws logs tail "/aws/lambda/${PREFIX}_rudolph_fleet" --since 15m --region "$REGIO
 A successful run logs one line, for example:
 
 ```
-fleet: macs=1000 rules=1200 attention=41 stale=30 incomplete=2 ready=310 locked=120 stale_days=10 holiday=false seconds=4.2
+fleet: macs=1000 rules=1200 attention=41 stale=30 incomplete=2 ready=310 locked=120 stale_days=10 holiday=false min_santa_version=2026.9 seconds=4.2
 ```
 
 ## Limits

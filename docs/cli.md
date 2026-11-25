@@ -183,9 +183,11 @@ It first prints what it will delete, with the Mac's hostname and serial number a
 ```sh
 rudolph fleet holiday --stale-days <days> --until <YYYY-MM-DD> [--yes|--dry-run]
 rudolph fleet holiday --end [--yes|--dry-run]
+rudolph fleet min-santa-version (<version> | off | --default) [--yes|--dry-run]
+rudolph fleet show
 ```
 
-The fleet job lists a Mac as stale when its last completed sync is older than the stale threshold, 10 days unless changed (see [fleet-health.md](fleet-health.md#the-stale-threshold-and-holiday-mode)). Over a holiday, when Macs are simply off, `fleet holiday` raises the threshold until a date.
+The fleet job lists a Mac as stale when its last completed sync is older than the stale threshold, 10 days unless changed (see [fleet-health.md](fleet-health.md#the-stale-threshold-and-holiday-mode)). Over a holiday, when Macs are simply off, `fleet holiday` raises the threshold until a date. It lists a Mac under `Version` when its Santa release is below the minimum Santa version, which `fleet min-santa-version` changes. `fleet show` prints both settings.
 
 ### `fleet holiday`
 
@@ -201,6 +203,32 @@ The fleet job lists a Mac as stale when its last completed sync is older than th
 ```sh
 ./rudolph fleet holiday --stale-days 60 --until 2027-02-01
 ./rudolph fleet holiday --end
+```
+
+### `fleet min-santa-version`
+
+- `<version>` is a Santa release such as `2026.10` or `2026.10.1`, at most 32 characters: a Mac whose release is below it is listed under `Version`. Only the year and month are compared. A minimum below the default is allowed.
+- `off` turns the check off: no Mac is listed under `Version`.
+- `--default` clears the stored value, so the default, `2026.9`, applies again. With nothing stored it changes nothing and says so. It also removes a stored value that cannot be used (one edited by hand), which the fleet job ignores.
+- Refused, with nothing stored or recorded: a value that is neither a release nor `off`, a value together with `--default`, neither, or more than one value.
+- The command prints the minimum in force and what it will store, and asks `Apply changes?` (`--yes` skips the question; `--dry-run` writes nothing).
+- The stale threshold and any holiday are never changed by this command.
+- The fleet job uses the setting from its next run, once a day by default; no deploy is needed.
+- Each change is recorded in the audit trail with the action `fleet.min-santa-version` and the target `fleet`.
+
+```sh
+./rudolph fleet min-santa-version 2026.10
+./rudolph fleet min-santa-version off
+./rudolph fleet min-santa-version --default
+```
+
+### `fleet show`
+
+Prints the fleet health setting in force and changes nothing: the stale threshold, with the holiday while one is on, and the minimum Santa version, with `(stored)` or `(default)`.
+
+```
+Stale threshold: 14 days, holiday: 60 days until 2027-02-01
+Minimum Santa version: 2026.10 (stored)
 ```
 
 The setting is one item of the store table, `FleetHealth` / `Config`; credentials restricted by partition key need `dynamodb:GetItem` and `dynamodb:UpdateItem` on it (see [cli-iam.md](cli-iam.md#rule-administrator)).
