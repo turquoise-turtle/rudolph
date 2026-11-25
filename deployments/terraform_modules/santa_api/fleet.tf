@@ -308,9 +308,11 @@ resource "aws_lambda_function_event_invoke_config" "fleet" {
 #
 # The job's only alarm: no successful run for fleet_alarm_days days. Successful runs are Invocations minus Errors
 # (failures, timeouts and out-of-memory all count in Errors), summed per UTC day; a day on which the job was not
-# invoked at all has no data, which FILL and treat_missing_data both read as no successful run. One failed day does
-# not fire it: the lists are a day older, and the web view shows their age. The job is left out of lambda_errors and
-# of the lambda_timeouts filters, so its failure has this one name.
+# invoked at all has no data, which FILL and treat_missing_data both read as no successful run. That includes the days
+# before the job existed, so a new alarm fires once until the first run is counted. That is deliberate: reading missing
+# data as fine would also hide a schedule that never invokes the job, as the scheduler trust bug of upgrade step 31
+# did. One failed day does not fire it: the lists are a day older, and the web view shows their age. The job is left
+# out of lambda_errors and of the lambda_timeouts filters, so its failure has this one name.
 #
 # Unlike the other alarms it exists only with an SNS topic to notify.
 #
