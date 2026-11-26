@@ -87,8 +87,9 @@ data "aws_iam_policy_document" "fleet" {
     }
   }
 
-  # Each Mac's own rows (config, sensor data, groups, sync state), and the sort keys of the global rules, to tell
-  # which unknown binaries a rule now covers.
+  # Each Mac's own rows (config, sensor data, groups, sync state); the sort keys of the global rules, to tell which
+  # unknown binaries a rule now covers; and the newest row of the rules feed, the time of the last global rule change,
+  # so Macs that have not synced since are not judged as rules hash outliers.
   statement {
     actions = [
       "dynamodb:Query",
@@ -101,7 +102,7 @@ data "aws_iam_policy_document" "fleet" {
     condition {
       test     = "ForAllValues:StringLike"
       variable = "dynamodb:LeadingKeys"
-      values   = ["Machine#*", "GlobalRules"]
+      values   = ["Machine#*", "GlobalRules", "RulesFeed"]
     }
 
     condition {

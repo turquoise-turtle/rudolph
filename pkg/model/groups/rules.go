@@ -3,7 +3,9 @@ package groups
 import (
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/rules"
 	"github.com/airbnb/rudolph/pkg/types"
@@ -110,18 +112,25 @@ func groupRuleKeys(client dynamodb.QueryAPI, group string) ([]dynamodb.PrimaryKe
 
 // bumpRulesVersion is the registry update that goes into the same transaction as every change to a group's rules. It
 // gives the group the next version from the registry-wide counter (see Registry.nextRulesVersion), conditional on
-// the counter not having moved since registry was read, so that no version is ever issued twice.
-func bumpRulesVersion(client dynamodb.TransactUpdateExpressionAPI, registry *Registry, group string) (*awstypes.TransactWriteItem, error) {
-	values := map[string]awstypes.AttributeValue{":next": number(registry.nextRulesVersion())}
+// the counter not having moved since registry was read, so that no version is ever issued twice. It also stamps the
+// group's RulesChangedAt with changedAt.
+func bumpRulesVersion(client dynamodb.TransactUpdateExpressionAPI, registry *Registry, group string, changedAt time.Time) (*awstypes.TransactWriteItem, error) {
+	values := map[string]awstypes.AttributeValue{
+		":next": number(registry.nextRulesVersion()),
+		":at":   &awstypes.AttributeValueMemberS{Value: clock.RFC3339(changedAt)},
+	}
 	return client.CreateTransactUpdateExpression(registryKey(),
-		"SET #g.#n.#v = :next, #c = :next", "attribute_exists(#g.#n) AND "+registry.counterUnchanged(values),
-		names("#g", "Groups", "#n", group, "#v", "RulesVersion", "#c", "RulesVersionCounter"),
+		"SET #g.#n.#v = :next, #g.#n.#t = :at, #c = :next", "attribute_exists(#g.#n) AND "+registry.counterUnchanged(values),
+		names("#g", "Groups", "#n", group, "#v", "RulesVersion", "#t", "RulesChangedAt", "#c", "RulesVersionCounter"),
 		values)
 }
 
 // changeRules runs a transaction holding items and the version bump of group, reading the registry again and retrying
 // when another writer issued a version meanwhile. It returns ErrGroupNotFound when the group is not registered, and
 // errItemCondition when the registry did not change but the transaction's condition still failed (an item's own).
+//
+// The time stamped as RulesChangedAt is this process's wall clock, read for each attempt: PutRule and RemoveRule take
+// no clock, because rudolph-web calls them as they are.
 func changeRules(client RegistryWriter, group string, items []awstypes.TransactWriteItem, errItemCondition error) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		registry, err := GetRegistry(client, true)
@@ -131,7 +140,7 @@ func changeRules(client RegistryWriter, group string, items []awstypes.TransactW
 		if _, ok := registry.Groups[group]; !ok {
 			return ErrGroupNotFound
 		}
-		bump, err := bumpRulesVersion(client, registry, group)
+		bump, err := bumpRulesVersion(client, registry, group, clock.ConcreteTimeProvider{}.Now())
 		if err != nil {
 			return err
 		}

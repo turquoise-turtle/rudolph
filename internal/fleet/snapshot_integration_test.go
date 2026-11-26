@@ -6,9 +6,10 @@ package fleet_test
 //
 //   - Macs are listed by paging the store table's DataType_MachineID index with DataType = SensorData: never a Scan.
 //   - The job only touches what its IAM role allows (deployments/fleet_test.go holds the role to the same list):
-//     store index DataType_MachineID Query (SensorData); store table Query of `Machine#*` and `GlobalRules`; store table
-//     GetItem of `GroupRegistry`, `GlobalConfig` and `FleetHealth`; events table Query of `UnknownSeen#*`; events table
-//     PutItem and BatchWriteItem of `FleetSnapshot#*` and `FleetPointer`. Nothing else, no other operation.
+//     store index DataType_MachineID Query (SensorData); store table Query of `Machine#*`, `GlobalRules` and
+//     `RulesFeed`; store table GetItem of `GroupRegistry`, `GlobalConfig` and `FleetHealth`; events table Query of
+//     `UnknownSeen#*`; events table PutItem and BatchWriteItem of `FleetSnapshot#*` and `FleetPointer`. Nothing else,
+//     no other operation.
 //   - Rows are written before the pointer, and the pointer only once every row write has finished, so a reader never
 //     sees a half-written snapshot. The pointer is a conditional PutItem: an overlapping run that started earlier
 //     cannot move it back. A run that fails leaves the previous snapshot in place.
@@ -72,7 +73,7 @@ func TestFleet_ReadsOnlyItsPartitions(t *testing.T) {
 			case c.table == ddblocal.TableName && c.op == "Query" && c.index == "DataType_MachineID":
 				ok = k == "SensorData"
 			case c.table == ddblocal.TableName && c.op == "Query" && c.index == "":
-				ok = strings.HasPrefix(k, "Machine#") || k == "GlobalRules"
+				ok = strings.HasPrefix(k, "Machine#") || k == "GlobalRules" || k == "RulesFeed"
 			case c.table == ddblocal.TableName && c.op == "GetItem":
 				ok = k == "GroupRegistry" || k == "GlobalConfig" || k == "FleetHealth"
 			case c.table == ddblocal.EventsTableName && c.op == "Query" && c.index == "":

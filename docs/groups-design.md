@@ -21,8 +21,8 @@ Rejected alternative: a feed per group with a cursor per group per Mac. It only 
 
 | Row | Keys | Attributes | Written by |
 |---|---|---|---|
-| Group registry | `GroupRegistry` / `Current` | `Groups`: name → {`Description`, `AcceptReported`, `RulesVersion`, `CreatedAt`}; `MembershipVersion`; `DataType=GroupRegistry` | CLI |
-| Group rule | `GroupRules#<group>` / `<RuleType>#<identifier>` | rule fields as on global rules, `Description`, `Group`, `DataType=GroupRule`; no feed row, no `GlobalRulePolicy` | CLI, in a transaction that bumps the group's `RulesVersion` |
+| Group registry | `GroupRegistry` / `Current` | `Groups`: name → {`Description`, `AcceptReported`, `RulesVersion`, `CreatedAt`, `RulesChangedAt` (when the group's rules last changed, RFC 3339 UTC; absent until the first change after the release that added it; read by the fleet job, see [fleet-health.md](fleet-health.md#rules-hash-outliers))}; `MembershipVersion`; `DataType=GroupRegistry` | CLI |
+| Group rule | `GroupRules#<group>` / `<RuleType>#<identifier>` | rule fields as on global rules, `Description`, `Group`, `DataType=GroupRule`; no feed row, no `GlobalRulePolicy` | CLI, in a transaction that bumps the group's `RulesVersion` and stamps its `RulesChangedAt` |
 | Machine groups | `Machine#<id>` / `Groups` | `Assigned` (string set, CLI), `Reported` (normalised, registered groups that accept reported membership), `UpdatedAt` | CLI and preflight, separate attributes |
 | Reported groups | `Machine#<id>` / `ReportedGroups` | `PrimaryUserGroups` as reported, `Time`, `ExpiresAfter` (90 days) | preflight, only when the list changes |
 | Group members | `GroupMembers#<group>` / `<machine id>` | `Assigned` (BOOL true, absent otherwise), `Reported` (BOOL true, absent otherwise), `UpdatedAt`, `DataType=GroupMember`; a mirror of the Mac's Groups item, deleted when neither flag is set | CLI and preflight, in the same transaction as the Groups item (for listing members) |

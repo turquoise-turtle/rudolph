@@ -10,7 +10,7 @@ package deployments
 //   - Role aws_iam_role.fleet (path /rudolph/), least privilege, every dynamodb:LeadingKeys condition paired with its
 //     Null check, no Scan, no KMS, CloudWatch or SNS statement, no managed policy:
 //       store index DataType_MachineID  Query                      SensorData
-//       store table                     Query                      Machine#*, GlobalRules
+//       store table                     Query                      Machine#*, GlobalRules, RulesFeed
 //       store table                     GetItem                    GroupRegistry, GlobalConfig, FleetHealth
 //       events table                    Query                      UnknownSeen#*
 //       events table                    PutItem, BatchWriteItem    FleetSnapshot#*, FleetPointer
@@ -260,7 +260,9 @@ func TestFleetIAM_LeastPrivilege(t *testing.T) {
 		fleetStatement{"events table", "dynamodb:Query", "UnknownSeen#*"}.String(),
 		fleetStatement{"store index DataType_MachineID", "dynamodb:Query", "SensorData"}.String(),
 		fleetStatement{"store table", "dynamodb:GetItem", "FleetHealth,GlobalConfig,GroupRegistry"}.String(),
-		fleetStatement{"store table", "dynamodb:Query", "GlobalRules,Machine#*"}.String(),
+		// RulesFeed: the newest feed row, so Macs that have not synced since the last global rule change are not
+		// judged as rules hash outliers.
+		fleetStatement{"store table", "dynamodb:Query", "GlobalRules,Machine#*,RulesFeed"}.String(),
 	}
 	sort.Strings(got)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

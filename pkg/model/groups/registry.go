@@ -30,6 +30,12 @@ type Entry struct {
 	// can cache a group's rules by version
 	RulesVersion int    `dynamodbav:"RulesVersion"`
 	CreatedAt    string `dynamodbav:"CreatedAt"`
+	// RulesChangedAt is when the group's rules last changed (a rule added, replaced or removed), RFC 3339 in UTC,
+	// written with RulesVersion in the same transaction. Empty for a group whose rules have not changed since it was
+	// created, or since the release that introduced the stamp. The fleet job needs it because a group rule replaced
+	// in place writes no rules feed row and leaves the digest a Mac reports as it was (see internal/fleet,
+	// settleOutliers). It is the wall clock of whoever wrote the rule, like a feed row's stamp.
+	RulesChangedAt string `dynamodbav:"RulesChangedAt,omitempty"`
 	// ClientMode is the client mode the group's Macs get, unless they have their own (see client_mode.go); nil when
 	// the group has none
 	ClientMode *StoredClientMode `dynamodbav:"ClientMode,omitempty"`

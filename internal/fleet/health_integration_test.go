@@ -330,8 +330,8 @@ func TestFleet_RulesNotAppliedNeedsAPostflight(t *testing.T) {
 
 // Macs with the same MachineRulesTracked digest are sent the same rules, so they should report the same hash after
 // a completed sync. The majority is the hash more than half of at least three such Macs report (postflight in the
-// last 24 hours); a Mac is an outlier when its hash differs and its postflight is more than 10 minutes after the
-// earliest postflight that produced the majority hash.
+// last 24 hours); a Mac is an outlier when its hash differs. With a rules feed row, only Macs that completed a sync
+// more than 10 minutes after it take part (outlier_after_rule_change_integration_test.go); this fleet has none.
 func TestFleet_RulesHashOutliers(t *testing.T) {
 	reset(t)
 	base := now.Add(-2 * time.Hour)
@@ -342,16 +342,11 @@ func TestFleet_RulesHashOutliers(t *testing.T) {
 		macs = append(macs, m)
 		return m
 	}
-	// Digest d1: three agree on h1; the fourth reports h2 11 minutes after the first h1: outlier.
+	// Digest d1: three agree on h1; the fourth reports h2: outlier.
 	add(1, "d1", "h1", base)
 	add(2, "d1", "h1", base.Add(time.Minute))
 	add(3, "d1", "h1", base.Add(2*time.Minute))
 	outlier := add(4, "d1", "h2", base.Add(11*time.Minute))
-	// Digest d2: the same, but only 9 minutes after: it may not have synced since the rules changed.
-	add(5, "d2", "g1", base)
-	add(6, "d2", "g1", base.Add(time.Minute))
-	add(7, "d2", "g1", base.Add(2*time.Minute))
-	add(8, "d2", "g2", base.Add(9*time.Minute))
 	// Digest d3: a 2-2 split has no majority.
 	add(9, "d3", "k1", base)
 	add(10, "d3", "k1", base)

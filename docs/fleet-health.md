@@ -35,16 +35,29 @@ Details that matter when reading a list:
 
 ### Rules hash outliers
 
-Rudolph does not compute the hash Santa should report, so the job compares Macs with each other. Macs whose sync state has the same digest of machine and group rules (`MachineRulesTracked`) are sent the same rules, so after a completed sync they should report the same hash.
+Rudolph does not compute the hash Santa should report, so the job compares Macs with each other. Macs that are sent the same rules should report the same hash after a completed sync. The job takes two Macs to have the same rules when their sync state has the same digest of machine and group rules (`MachineRulesTracked`) and they are in the same groups.
 
 - Only Macs whose current sync completed in the last 24 hours and reported a hash are compared. Macs whose digest is empty or marked dirty are left out.
-- In each set of at least three such Macs, the majority hash is the one more than half of them report. A two-all split has no majority.
-- A Mac is an outlier when its hash differs and its postflight is more than 10 minutes after the earliest postflight that produced the majority hash. `ExpectedHash` is the majority's.
+- **A Mac is only compared with Macs in the same groups.** The digest covers which rules a Mac is sent (their type and identifier), not their policies. Two groups can each have a rule for the same identifier, one allowing it and one blocking it: their Macs have the same digest and, rightly, different hashes. So a set is the Macs with the same digest and the same effective groups, the groups the job also uses for the readiness lists (`rudolph:ungrouped` for a Mac in none).
+- Only Macs that have synced since the last rule change of their set are compared. That is the latest of:
+  - the last global rule change. Every global rule that is added, changed or removed writes a row to the rules feed (the store table's `RulesFeed` partition), and the job reads the newest one, once a run;
+  - the last change to the rules of each of the set's groups. Every group rule that is added, replaced or removed stamps the time on the group's registry entry as `RulesChangedAt`, in the same transaction as the rule. The feed does not record group rules, and editing a group rule in place (a new policy) does not change the digest either, so this stamp is the only sign of it.
+- A Mac takes part when its sync completed more than 10 minutes after that time. A Mac that last synced before it has not had the change yet, and one that synced within the 10 minutes may or may not have been sent it (the stamps are the clock of whoever made the change), so neither is counted or listed.
+- When the rules feed has no row (a fresh install, or no global rule change in the 90 days a feed row lives) and none of the set's groups has a `RulesChangedAt`, every Mac of the first bullet in the set takes part.
+- In each set of at least three Macs that take part, the majority hash is the one more than half of them report. A two-all split has no majority.
+- A Mac that takes part is an outlier when its hash differs from the majority's. `ExpectedHash` is the majority's.
+- A Mac already listed as `NotApplied` is not listed a second time.
 
 Limits of this check, which make `Outlier` a prompt to look, not proof:
 
 - A Mac with rules nobody shares cannot be judged. `NotApplied` still covers it.
-- **A Mac that is ahead looks like one that is wrong.** If you change a global rule while most Macs with the same rules are asleep, the awake Macs that picked up the change report a new hash, the sleeping majority's last hash is the old one, and the awake Macs are listed until the others sync. Check `ExpectedHash` against a Mac you know is current before acting.
+- **Sets are smaller than they could be.** Groups split the sets whether or not they have rules: Macs with identical rules in two groups that have no rules at all are still two sets. That only means fewer checks, as each set needs three Macs; it never lists a Mac wrongly.
+- **After a rule change the check starts again.** Until at least three Macs of a set have completed a sync more than 10 minutes after the change, none of them is judged, so on a fleet whose global rules change every day, the Macs that sync rarely are seldom compared. A change to a group's rules only restarts the sets that include the group. A Mac that is ahead is no longer listed as one that is wrong: Macs that have not synced since the change are not counted towards the majority.
+- **Groups without `RulesChangedAt`.** A group registered before the release that added the stamp (upgrade step 33) has none until its rules next change, and a group that has never had a rule has none either. The job reads that as "no group rule change on record". If a group rule was edited in place shortly before the upgrade, the group's Macs that have synced since can be listed against those that have not, or the other way round, until they have all synced or dropped out of the 24 hours: for up to a day.
+- **Machine rules with different policies.** Two Macs in the same groups, each with a machine rule for the same identifier but with different policies, still share a digest and are compared. Machine rule changes are not stamped either: a machine rule replaced in place is not seen as a change. Both only matter when at least three Macs in the same groups have machine rules for exactly the same identifiers.
+- **A Mac that changed groups** is compared with the Macs of its new groups straight away, with the hash of its last sync. When the old and new groups have rules for the same identifiers with different policies, it can be listed until it next syncs.
+- **A feed row edited by hand.** If the newest `RulesFeed` row's sort key does not start with a time, the job cannot tell when the rules last changed. It skips the outlier check for that run and logs `rules hash outliers not checked in this run`, rather than comparing every Mac and listing the ones that are up to date. `NotApplied` is unaffected.
+- **A registry entry edited by hand.** If a group's `RulesChangedAt` is not a time, the job skips the sets that include that group for that run, for the same reason, and logs `rules hash outliers not checked in this run for Macs in group "<name>"`. Other sets are judged as usual. Changing one of the group's rules writes a good stamp again.
 - Transitive rules, which Santa creates locally, may change a Mac's hash. This has not been tested on a real Mac.
 
 ## The stale threshold and holiday mode
@@ -157,7 +170,7 @@ The sync token is shared by the fleet, and whoever holds it can already write se
 2. It lists every Mac by paging the store table's `DataType_MachineID` index for sensor data rows. It never scans. Above `FLEET_MAX_MACS` it fails before writing anything.
 3. For each Mac, 32 at a time, it reads the Mac's configuration, sensor data, groups and sync state with one `Query` of the Mac's partition and, unless the Mac is Locked, its unknown markers with one `Query` limited to 1,001 rows. It then writes the Mac's rows with `BatchWriteItem`.
 4. The global rules' sort keys are read once, when the first Mac has an unknown binary to check. A fleet that is all in Lockdown never reads them.
-5. After the walk it settles the rules hash outliers and writes their rows.
+5. After the walk it reads the newest row of the rules feed (one `Query` of `RulesFeed`, newest first, limited to one row) and the group registry again (one `GetItem`, for each group's `RulesChangedAt`), settles the rules hash outliers among the Macs that synced since, and writes their rows.
 6. It writes the pointer, on the condition that the stored pointer is absent or names an older snapshot. Snapshot IDs sort by time.
 
 - **A reader never sees half a snapshot**: every row is written before the pointer.
@@ -176,7 +189,7 @@ The job has its own role, `PREFIX_rudolph_fleet_role`, with every statement limi
 | Resource | Actions | Partitions |
 |---|---|---|
 | store table index `DataType_MachineID` | `Query` | `SensorData` |
-| store table | `Query` | `Machine#*`, `GlobalRules` |
+| store table | `Query` | `Machine#*`, `GlobalRules`, `RulesFeed` |
 | store table | `GetItem` | `GroupRegistry`, `GlobalConfig`, `FleetHealth` |
 | events table | `Query` | `UnknownSeen#*` |
 | events table | `PutItem`, `BatchWriteItem` | `FleetSnapshot#*`, `FleetPointer` |
