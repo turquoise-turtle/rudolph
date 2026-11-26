@@ -53,8 +53,8 @@ const (
 	// web view's machine page uses the same 30 minutes.
 	postflightGrace = 30 * time.Minute
 	// hashWindow limits the outlier check to Macs that completed a sync recently: an older hash says little about the
-	// Mac now. It does not by itself mean the Mac has the current rules; the newest rules feed row decides that
-	// (settleOutliers).
+	// Mac now. It does not by itself mean the Mac has the current rules; the newest rule change of the Mac's set
+	// decides that (ruleChanges.of, settleOutliers).
 	hashWindow = 24 * time.Hour
 
 	orderLayout = "20060102T150405Z"
@@ -355,51 +355,106 @@ func (r report) hashSample(m *machine, now time.Time) (hashSample, bool) {
 	}, true
 }
 
-// outlier is a Mac whose rules hash differs from the one most Macs with the same rules report.
+// outlier is a Mac whose rules hash differs from the one most Macs in its ruleSet report.
 type outlier struct {
 	hashSample
 	expected string
 }
 
-// settleOutliers finds the hash outliers. Macs with the same MachineRulesTracked digest are sent the same rules, so
-// after a completed sync they should report the same hash. Only Macs whose postflight is more than
-// syncstate.FeedSyncCursorOverlap after ruleChange, the newest global rule change, take part, in the count and as
-// outliers alike: a Mac that has not synced since then reports the hash of the rules before the change, and when
-// such Macs are the majority (a rule changed late in the day, most laptops shut) counting them would make the stale
-// hash the expected one and list every Mac that is up to date. Within the overlap a sync may or may not have been
-// sent the change. A zero ruleChange means the feed holds no change, and every sample takes part.
+// ruleSet names the Macs whose hashes can be compared: those sent the same rules. The digest alone does not say that.
+// MachineRulesTracked covers the sort keys of the machine and group rules a Mac is sent, not their policies, so two
+// groups with a rule for the same identifier and different policies give their Macs one digest and two hashes; the
+// larger group's hash would then be "expected" of the smaller group's Macs. The effective groups, as worked out for
+// the readiness scopes, tell those apart.
+type ruleSet struct {
+	digest string
+	// groups is the Mac's effective groups, sorted and joined with groupSeparator.
+	groups string
+}
+
+// groupSeparator cannot occur in a group name.
+const groupSeparator = "\x00"
+
+func groupsKey(effective []string) string { return strings.Join(effective, groupSeparator) }
+
+// ruleChanges is when the rules Macs are sent last changed, as far as the store records it.
+type ruleChanges struct {
+	// feed is the stamp of the newest rules feed row, the newest global rule change; zero when the feed has no row.
+	feed time.Time
+	// groups holds each group's RulesChangedAt. A group without one is not in the map and counts as never changed:
+	// it was registered before the stamp existed and its rules have not changed since, or it has never had a rule.
+	groups map[string]time.Time
+	// unreadable holds the groups whose RulesChangedAt is there but is not a time.
+	unreadable map[string]bool
+}
+
+// of returns the newest change to the rules of the Macs in set: the latest of the newest global rule change and the
+// last rule change of each of the set's groups. Zero means no change on record.
 //
-// In each group of at least three Macs that take part, the majority hash is the one more than half report, and a Mac
+// judge is false when one of the set's groups has a RulesChangedAt that cannot be read, which only an entry edited by
+// hand has. The set is then left out of this run, for the reason lastRuleChange skips the whole check on an
+// unreadable feed row: reading it as "no change" would compare Macs that synced before a real change with those that
+// synced after it, and list the ones that are up to date. Other sets are not affected.
+func (c ruleChanges) of(set ruleSet) (at time.Time, judge bool) {
+	at = c.feed
+	for _, group := range strings.Split(set.groups, groupSeparator) {
+		if c.unreadable[group] {
+			return time.Time{}, false
+		}
+		if changed := c.groups[group]; changed.After(at) {
+			at = changed
+		}
+	}
+	return at, true
+}
+
+// settleOutliers finds the hash outliers. Macs in the same ruleSet (the same MachineRulesTracked digest and the same
+// effective groups) are sent the same rules, so after a completed sync they should report the same hash. Only Macs
+// whose postflight is more than syncstate.FeedSyncCursorOverlap after the set's newest rule change (ruleChanges.of)
+// take part, in the count and as outliers alike: a Mac that has not synced since then reports the hash of the rules
+// before the change, and when such Macs are the majority (a rule changed late in the day, most laptops shut) counting
+// them would make the stale hash the expected one and list every Mac that is up to date. Within the overlap a sync
+// may or may not have been sent a global change, and a group's stamp is the clock of whoever wrote the rule, which
+// may be a few minutes off. When no change is on record for a set, every sample in it takes part.
+//
+// In each set of at least three Macs that take part, the majority hash is the one more than half report, and a Mac
 // reporting another is an outlier. A Mac already listed under Rules is not listed twice.
-func settleOutliers(samples map[string][]hashSample, ruleChange time.Time) []outlier {
+//
+// What this still cannot tell apart: two Macs in the same groups with machine rules for the same identifier and
+// different policies share a ruleSet, and a machine rule replaced in place leaves no stamp.
+func settleOutliers(samples map[ruleSet][]hashSample, changes ruleChanges) []outlier {
 	var found []outlier
-	for _, all := range samples {
-		group := all
+	for set, all := range samples {
+		ruleChange, judge := changes.of(set)
+		if !judge {
+			continue
+		}
+		taking := all
 		if !ruleChange.IsZero() {
-			group = nil
+			taking = nil
 			for _, s := range all {
 				if s.postflight.Sub(ruleChange) > syncstate.FeedSyncCursorOverlap {
-					group = append(group, s)
+					taking = append(taking, s)
 				}
 			}
 		}
-		if len(group) < 3 {
+		if len(taking) < 3 {
 			continue
 		}
 		counts := map[string]int{}
-		for _, s := range group {
+		for _, s := range taking {
 			counts[s.hash]++
 		}
 		majority := ""
 		for hash, n := range counts {
-			if 2*n > len(group) {
+			if 2*n > len(taking) {
 				majority = hash
 			}
 		}
 		if majority == "" {
 			continue
 		}
-		for _, s := range group {
+		for _, s := range taking {
 			if s.hash != majority && !s.listed {
 				found = append(found, outlier{hashSample: s, expected: majority})
 			}

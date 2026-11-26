@@ -256,6 +256,12 @@ func init() {
 			fmt.Println("OverrideFileAccessAction:", fileAccessText(entry))
 			fmt.Println("RulesVersion:            ", entry.RulesVersion)
 			fmt.Println("CreatedAt:               ", termsafe.String(entry.CreatedAt))
+			// Empty for a group whose rules have not changed since the stamp was introduced, or since it was created
+			changed := "not recorded"
+			if entry.RulesChangedAt != "" {
+				changed = termsafe.String(entry.RulesChangedAt)
+			}
+			fmt.Println("RulesChangedAt:          ", changed)
 			fmt.Printf("Rules (%d):\n", len(rows))
 			for _, row := range rows {
 				policy, _ := row.Policy.MarshalText()

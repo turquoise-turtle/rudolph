@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/airbnb/rudolph/internal/snapshot"
+	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/counterfields"
 	"github.com/airbnb/rudolph/pkg/model/feedrules"
 	"github.com/airbnb/rudolph/pkg/model/fleethealth"
@@ -111,8 +112,8 @@ type run struct {
 
 	mu      sync.Mutex
 	totals  totals
-	samples map[string][]hashSample
-	// interned keeps one copy of each rules hash and digest: Macs sent the same rules report the same ones.
+	samples map[ruleSet][]hashSample
+	// interned keeps one copy of each rules hash, digest and set of groups: Macs sent the same rules share them.
 	interned map[string]string
 }
 
@@ -141,7 +142,7 @@ func Run(ctx context.Context, opts Options) error {
 		opts.MaxMacs = DefaultMaxMacs
 	}
 
-	r := &run{opts: opts, samples: map[string][]hashSample{}, interned: map[string]string{}}
+	r := &run{opts: opts, samples: map[ruleSet][]hashSample{}, interned: map[string]string{}}
 	r.pacer.perRow = time.Second / writeRowsPerSecond
 	r.expires = &types.AttributeValueMemberN{Value: strconv.FormatInt(now.Add(snapshotTTL).Unix(), 10)}
 
@@ -206,7 +207,7 @@ func Run(ctx context.Context, opts Options) error {
 	ids = nil
 
 	// Whether a Mac's rules hash is an outlier is only known once every Mac with the same rules has been seen. The
-	// rule change is read after the walk, not before: a change made during the walk is then seen, and the Macs that
+	// rule changes are read after the walk, not before: a change made during the walk is then seen, and the Macs that
 	// synced before it are left out rather than judged against it.
 	ruleChange, judge, err := r.lastRuleChange(ctx)
 	if err != nil {
@@ -214,7 +215,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	var settled []outlier
 	if judge {
-		settled = settleOutliers(r.samples, ruleChange)
+		groupChanges, unreadable, err := r.groupRuleChanges(ctx)
+		if err != nil {
+			return err
+		}
+		settled = settleOutliers(r.samples, ruleChanges{feed: ruleChange, groups: groupChanges, unreadable: unreadable})
 	}
 	var outliers []types.WriteRequest
 	for _, o := range settled {
@@ -286,7 +291,7 @@ func (r *run) getStoreItem(ctx context.Context, pk, sk string) (map[string]types
 }
 
 // lastRuleChange returns when a global rule was last added, changed or removed: the stamp of the newest row of the
-// rules feed, which every such write adds to. One Query for one row, never the whole feed. The time is zero when the
+// rules feed, which every such write adds to. Group rule changes are not in the feed: groupRuleChanges reads those. One Query for one row, never the whole feed. The time is zero when the
 // feed has no row (a fresh install, or no change in the 90 days a row lives).
 //
 // judge is false when the newest row's sort key holds no readable time, which only a row edited by hand does. The
@@ -316,6 +321,47 @@ func (r *run) lastRuleChange(ctx context.Context) (at time.Time, judge bool, err
 	}
 	log.Printf("fleet: rules hash outliers not checked in this run: the newest %s row's sort key holds no time", feedrules.Partition)
 	return time.Time{}, false, nil
+}
+
+// groupRuleChanges returns when each group's rules last changed: the RulesChangedAt of its registry entry, which
+// every group rule that is added, replaced or removed stamps. The rules feed does not record group rules, and a
+// group rule replaced in place (a new policy) does not change the digest a Mac reports either, so this stamp is the
+// only sign of it. The registry is read again rather than taken from the start of the run, for the reason the feed
+// is read after the walk.
+//
+// A group without the stamp is left out of changed: it was registered before the stamp existed and its rules have
+// not changed since, or it has never had a rule. That is "no change on record", not "changed now": a group rule
+// changed shortly before the upgrade that introduced the stamp can therefore be misjudged until the group's Macs
+// have synced, a day at most (hashWindow).
+//
+// unreadable holds the groups whose stamp is not a time, which only an entry edited by hand has. Their sets are not
+// judged in this run (ruleChanges.of), and the log says so.
+func (r *run) groupRuleChanges(ctx context.Context) (changed map[string]time.Time, unreadable map[string]bool, err error) {
+	key := groups.RegistryKey()
+	item, err := r.getStoreItem(ctx, key.PartitionKey, key.SortKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	registry, err := groups.RegistryFromItem(item)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fleet: %w", err)
+	}
+	changed, unreadable = map[string]time.Time{}, map[string]bool{}
+	for _, name := range registry.Names() {
+		stamp := registry.Groups[name].RulesChangedAt
+		if stamp == "" {
+			continue
+		}
+		at, err := clock.ParseRFC3339(stamp)
+		if err != nil {
+			unreadable[name] = true
+			// %q: the name was written by hand as well, and the log must not carry raw control characters
+			log.Printf("fleet: rules hash outliers not checked in this run for Macs in group %q: its RulesChangedAt holds no time", name)
+			continue
+		}
+		changed[name] = at
+	}
+	return changed, unreadable, nil
 }
 
 // machineIDs lists every Mac that has sensor data, Macs without a serial number or hostname included. It stops as
@@ -444,8 +490,8 @@ func (r *run) machine(ctx context.Context, id string) error {
 	if s, ok := rep.hashSample(m, r.settings.now); ok {
 		s.attention = len(listed) > 0
 		s.hash = r.intern(s.hash)
-		digest := r.intern(m.state.MachineRulesTracked)
-		r.samples[digest] = append(r.samples[digest], s)
+		set := ruleSet{digest: r.intern(m.state.MachineRulesTracked), groups: r.intern(groupsKey(rep.groups))}
+		r.samples[set] = append(r.samples[set], s)
 	}
 	return nil
 }
