@@ -61,3 +61,34 @@ func TestDocs_OutliersOnlyCompareMacsSyncedSinceTheLastRuleChange(t *testing.T) 
 		}
 	}
 }
+
+// The rules feed only records global rule changes, and the digest Macs report covers rule sort keys, not policies: the
+// outlier check compares a Mac only with Macs in the same groups, and counts each group's RulesChangedAt (the last
+// change to its rules) as a rule change for those Macs.
+func TestDocs_OutliersCompareMacsInTheSameGroupsAndCountGroupRuleChanges(t *testing.T) {
+	section := markdownSection(readDoc(t, "docs/fleet-health.md"), "Rules hash outliers")
+	if section == "" {
+		t.Fatal("docs/fleet-health.md has no section \"### Rules hash outliers\"")
+	}
+	if !regexp.MustCompile(`(?i)same (effective )?groups`).MatchString(section) {
+		t.Error("docs/fleet-health.md's Rules hash outliers section does not say that Macs are only compared with Macs in the same groups")
+	}
+	if !strings.Contains(section, "RulesChangedAt") {
+		t.Error("docs/fleet-health.md's Rules hash outliers section does not mention RulesChangedAt (a group rule change counts like a feed row)")
+	}
+	if !regexp.MustCompile(`(?i)group rules?(['\x{2019}]s)? (change|edit)|chang\w* (to )?(a |the )?group(['\x{2019}]s)? rules?|edit\w* (a |the )?group rules?`).MatchString(section) {
+		t.Error("docs/fleet-health.md's Rules hash outliers section does not say that group rule changes count")
+	}
+}
+
+func TestDocs_OutlierUpgradeStepMentionsGroupRuleChanges(t *testing.T) {
+	doc := readDoc(t, "docs/deploy.md")
+	heading := regexp.MustCompile(`\n### (33\. [^\n]+)\n`).FindStringSubmatch(doc)
+	if heading == nil {
+		t.Fatal("docs/deploy.md has no upgrade step \"### 33. ...\"")
+	}
+	step := markdownSection(doc, heading[1])
+	if !strings.Contains(step, "RulesChangedAt") && !regexp.MustCompile(`(?i)group rules?(['\x{2019}]s)? (change|edit)|chang\w* (to )?(a |the )?group(['\x{2019}]s)? rules?`).MatchString(step) {
+		t.Error("upgrade step 33 does not mention group rule changes (RulesChangedAt)")
+	}
+}
