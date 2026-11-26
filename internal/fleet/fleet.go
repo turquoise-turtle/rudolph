@@ -23,6 +23,7 @@ import (
 
 	"github.com/airbnb/rudolph/internal/snapshot"
 	"github.com/airbnb/rudolph/pkg/counterfields"
+	"github.com/airbnb/rudolph/pkg/model/feedrules"
 	"github.com/airbnb/rudolph/pkg/model/fleethealth"
 	"github.com/airbnb/rudolph/pkg/model/groups"
 	"github.com/airbnb/rudolph/pkg/model/machineconfiguration"
@@ -86,7 +87,7 @@ type Options struct {
 	Client Client
 	// Table is the events table (EVENTS_DYNAMODB_NAME): unknown markers are read from it, the snapshot is written to it.
 	Table string
-	// StoreTable is the store table (DYNAMODB_NAME): Macs, configuration, groups and global rules.
+	// StoreTable is the store table (DYNAMODB_NAME): Macs, configuration, groups, global rules and the rules feed.
 	StoreTable string
 	// Now defaults to time.Now.
 	Now func() time.Time
@@ -204,9 +205,19 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	ids = nil
 
-	// Whether a Mac's rules hash is an outlier is only known once every Mac with the same rules has been seen.
+	// Whether a Mac's rules hash is an outlier is only known once every Mac with the same rules has been seen. The
+	// rule change is read after the walk, not before: a change made during the walk is then seen, and the Macs that
+	// synced before it are left out rather than judged against it.
+	ruleChange, judge, err := r.lastRuleChange(ctx)
+	if err != nil {
+		return err
+	}
+	var settled []outlier
+	if judge {
+		settled = settleOutliers(r.samples, ruleChange)
+	}
 	var outliers []types.WriteRequest
-	for _, o := range settleOutliers(r.samples) {
+	for _, o := range settled {
 		outliers = append(outliers, types.WriteRequest{PutRequest: &types.PutRequest{Item: r.outlierRow(o)}})
 		r.totals.health[categoryRules]++
 		if !o.attention {
@@ -272,6 +283,39 @@ func (r *run) getStoreItem(ctx context.Context, pk, sk string) (map[string]types
 		return nil, fmt.Errorf("fleet: %s / %s: %w", pk, sk, err)
 	}
 	return out.Item, nil
+}
+
+// lastRuleChange returns when a global rule was last added, changed or removed: the stamp of the newest row of the
+// rules feed, which every such write adds to. One Query for one row, never the whole feed. The time is zero when the
+// feed has no row (a fresh install, or no change in the 90 days a row lives).
+//
+// judge is false when the newest row's sort key holds no readable time, which only a row edited by hand does. The
+// outlier check is then skipped for this run. Reading it as "no change" instead would compare every Mac in the
+// window, and after a real change that most Macs have not synced since, that lists the Macs that are up to date;
+// listing nothing for a run cannot mislead, and the log says why.
+func (r *run) lastRuleChange(ctx context.Context) (at time.Time, judge bool, err error) {
+	out, err := r.opts.Client.Query(ctx, &dynamodb.QueryInput{
+		TableName:                 aws.String(r.opts.StoreTable),
+		KeyConditionExpression:    aws.String("PK = :pk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": str(feedrules.Partition)},
+		ProjectionExpression:      aws.String("SK"),
+		ScanIndexForward:          aws.Bool(false),
+		Limit:                     aws.Int32(1),
+	})
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("fleet: newest %s row: %w", feedrules.Partition, err)
+	}
+	if len(out.Items) == 0 {
+		return time.Time{}, true, nil
+	}
+	sk, _ := out.Items[0]["SK"].(*types.AttributeValueMemberS)
+	if sk != nil {
+		if at, err := feedrules.TimeOfSortKey(sk.Value); err == nil {
+			return at, true, nil
+		}
+	}
+	log.Printf("fleet: rules hash outliers not checked in this run: the newest %s row's sort key holds no time", feedrules.Partition)
+	return time.Time{}, false, nil
 }
 
 // machineIDs lists every Mac that has sensor data, Macs without a serial number or hostname included. It stops as

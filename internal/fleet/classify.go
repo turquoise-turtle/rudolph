@@ -52,7 +52,9 @@ const (
 	// postflightGrace is how long after its preflight a sync without a postflight is still simply in progress; the
 	// web view's machine page uses the same 30 minutes.
 	postflightGrace = 30 * time.Minute
-	// hashWindow limits the outlier check to Macs that completed a sync recently enough to have the current rules.
+	// hashWindow limits the outlier check to Macs that completed a sync recently: an older hash says little about the
+	// Mac now. It does not by itself mean the Mac has the current rules; the newest rules feed row decides that
+	// (settleOutliers).
 	hashWindow = 24 * time.Hour
 
 	orderLayout = "20060102T150405Z"
@@ -360,13 +362,27 @@ type outlier struct {
 }
 
 // settleOutliers finds the hash outliers. Macs with the same MachineRulesTracked digest are sent the same rules, so
-// after a completed sync they should report the same hash. In each group of at least three such Macs, the majority
-// hash is the one more than half report; a Mac is an outlier when its hash differs and its postflight is more than
-// syncstate.FeedSyncCursorOverlap after the earliest postflight that produced the majority hash, so a Mac that has
-// simply not synced since the rules last changed is not one. A Mac already listed under Rules is not listed twice.
-func settleOutliers(samples map[string][]hashSample) []outlier {
+// after a completed sync they should report the same hash. Only Macs whose postflight is more than
+// syncstate.FeedSyncCursorOverlap after ruleChange, the newest global rule change, take part, in the count and as
+// outliers alike: a Mac that has not synced since then reports the hash of the rules before the change, and when
+// such Macs are the majority (a rule changed late in the day, most laptops shut) counting them would make the stale
+// hash the expected one and list every Mac that is up to date. Within the overlap a sync may or may not have been
+// sent the change. A zero ruleChange means the feed holds no change, and every sample takes part.
+//
+// In each group of at least three Macs that take part, the majority hash is the one more than half report, and a Mac
+// reporting another is an outlier. A Mac already listed under Rules is not listed twice.
+func settleOutliers(samples map[string][]hashSample, ruleChange time.Time) []outlier {
 	var found []outlier
-	for _, group := range samples {
+	for _, all := range samples {
+		group := all
+		if !ruleChange.IsZero() {
+			group = nil
+			for _, s := range all {
+				if s.postflight.Sub(ruleChange) > syncstate.FeedSyncCursorOverlap {
+					group = append(group, s)
+				}
+			}
+		}
 		if len(group) < 3 {
 			continue
 		}
@@ -383,14 +399,8 @@ func settleOutliers(samples map[string][]hashSample) []outlier {
 		if majority == "" {
 			continue
 		}
-		var earliest time.Time
 		for _, s := range group {
-			if s.hash == majority && (earliest.IsZero() || s.postflight.Before(earliest)) {
-				earliest = s.postflight
-			}
-		}
-		for _, s := range group {
-			if s.hash != majority && !s.listed && s.postflight.Sub(earliest) > syncstate.FeedSyncCursorOverlap {
+			if s.hash != majority && !s.listed {
 				found = append(found, outlier{hashSample: s, expected: majority})
 			}
 		}

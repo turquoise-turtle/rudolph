@@ -38,13 +38,18 @@ Details that matter when reading a list:
 Rudolph does not compute the hash Santa should report, so the job compares Macs with each other. Macs whose sync state has the same digest of machine and group rules (`MachineRulesTracked`) are sent the same rules, so after a completed sync they should report the same hash.
 
 - Only Macs whose current sync completed in the last 24 hours and reported a hash are compared. Macs whose digest is empty or marked dirty are left out.
-- In each set of at least three such Macs, the majority hash is the one more than half of them report. A two-all split has no majority.
-- A Mac is an outlier when its hash differs and its postflight is more than 10 minutes after the earliest postflight that produced the majority hash. `ExpectedHash` is the majority's.
+- Only Macs that have synced since the last global rule change are compared. Every global rule that is added, changed or removed writes a row to the rules feed (the store table's `RulesFeed` partition), and the job reads the newest one, once a run. A Mac takes part when its sync completed more than 10 minutes after that row's time. A Mac that last synced before it has not had the change yet, and one that synced within the 10 minutes may or may not have been sent it, so neither is counted or listed.
+- When the rules feed has no row (a fresh install, or no global rule change in the 90 days a feed row lives), every Mac of the first bullet takes part.
+- In each set of at least three Macs that take part, the majority hash is the one more than half of them report. A two-all split has no majority.
+- A Mac that takes part is an outlier when its hash differs from the majority's. `ExpectedHash` is the majority's.
+- A Mac already listed as `NotApplied` is not listed a second time.
 
 Limits of this check, which make `Outlier` a prompt to look, not proof:
 
 - A Mac with rules nobody shares cannot be judged. `NotApplied` still covers it.
-- **A Mac that is ahead looks like one that is wrong.** If you change a global rule while most Macs with the same rules are asleep, the awake Macs that picked up the change report a new hash, the sleeping majority's last hash is the old one, and the awake Macs are listed until the others sync. Check `ExpectedHash` against a Mac you know is current before acting.
+- **After a global rule change the check starts again.** Until at least three Macs with the same rules have completed a sync more than 10 minutes after the change, none of them is judged, so on a fleet whose global rules change every day, the Macs that sync rarely are seldom compared. A Mac that is ahead is no longer listed as one that is wrong: Macs that have not synced since the change are not counted towards the majority.
+- **Only global rule changes are seen.** The rules feed records global rules. It does not need to record machine and group rules: `MachineRulesTracked` is a digest of the ones a Mac was sent, so a Mac that receives a change to those moves to another set rather than being compared with the Macs still waiting for it.
+- **A feed row edited by hand.** If the newest `RulesFeed` row's sort key does not start with a time, the job cannot tell when the rules last changed. It skips the outlier check for that run and logs `rules hash outliers not checked in this run`, rather than comparing every Mac and listing the ones that are up to date. `NotApplied` is unaffected.
 - Transitive rules, which Santa creates locally, may change a Mac's hash. This has not been tested on a real Mac.
 
 ## The stale threshold and holiday mode
@@ -157,7 +162,7 @@ The sync token is shared by the fleet, and whoever holds it can already write se
 2. It lists every Mac by paging the store table's `DataType_MachineID` index for sensor data rows. It never scans. Above `FLEET_MAX_MACS` it fails before writing anything.
 3. For each Mac, 32 at a time, it reads the Mac's configuration, sensor data, groups and sync state with one `Query` of the Mac's partition and, unless the Mac is Locked, its unknown markers with one `Query` limited to 1,001 rows. It then writes the Mac's rows with `BatchWriteItem`.
 4. The global rules' sort keys are read once, when the first Mac has an unknown binary to check. A fleet that is all in Lockdown never reads them.
-5. After the walk it settles the rules hash outliers and writes their rows.
+5. After the walk it reads the newest row of the rules feed (one `Query` of `RulesFeed`, newest first, limited to one row), settles the rules hash outliers among the Macs that synced since, and writes their rows.
 6. It writes the pointer, on the condition that the stored pointer is absent or names an older snapshot. Snapshot IDs sort by time.
 
 - **A reader never sees half a snapshot**: every row is written before the pointer.
@@ -176,7 +181,7 @@ The job has its own role, `PREFIX_rudolph_fleet_role`, with every statement limi
 | Resource | Actions | Partitions |
 |---|---|---|
 | store table index `DataType_MachineID` | `Query` | `SensorData` |
-| store table | `Query` | `Machine#*`, `GlobalRules` |
+| store table | `Query` | `Machine#*`, `GlobalRules`, `RulesFeed` |
 | store table | `GetItem` | `GroupRegistry`, `GlobalConfig`, `FleetHealth` |
 | events table | `Query` | `UnknownSeen#*` |
 | events table | `PutItem`, `BatchWriteItem` | `FleetSnapshot#*`, `FleetPointer` |
