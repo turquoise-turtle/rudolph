@@ -355,12 +355,14 @@ func nMarkers(first, n int) []marker {
 
 // call is one DynamoDB call the job made.
 type call struct {
-	seq        int
-	op         string
-	table      string
-	index      string
-	keys       []string // partition key values: Query's, GetItem's, or every written item's
-	limit      int32
+	seq   int
+	op    string
+	table string
+	index string
+	keys  []string // partition key values: Query's, GetItem's, or every written item's
+	limit int32
+	// backward is set on a Query that reads newest first (ScanIndexForward false).
+	backward   bool
 	started    int // number of calls finished when this one started
 	finishedAt int // number of calls finished when this one finished, itself included
 }
@@ -418,6 +420,7 @@ func (r *recorder) Query(ctx context.Context, in *dynamodb.QueryInput, optFns ..
 		}
 	}
 	c := r.begin("Query", aws.ToString(in.TableName), aws.ToString(in.IndexName), keys, aws.ToInt32(in.Limit))
+	c.backward = in.ScanIndexForward != nil && !*in.ScanIndexForward
 	defer r.end(c)
 	return r.raw.Query(ctx, in, optFns...)
 }
