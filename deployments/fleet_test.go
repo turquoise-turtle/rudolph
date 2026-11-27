@@ -147,9 +147,18 @@ type fleetStatement struct {
 	resource string // "store index DataType_MachineID", "store table" or "events table"
 	actions  string // sorted, comma separated
 	keys     string // sorted leading key values, comma separated
+	// attributes are the sorted dynamodb:Attributes a ForAllValues:StringEquals condition allows, comma separated;
+	// "" when the statement has no such condition.
+	attributes string
 }
 
-func (s fleetStatement) String() string { return s.resource + ": " + s.actions + " on " + s.keys }
+func (s fleetStatement) String() string {
+	text := s.resource + ": " + s.actions + " on " + s.keys
+	if s.attributes != "" {
+		text += " with attributes " + s.attributes
+	}
+	return text
+}
 
 func TestFleetIAM_LeastPrivilege(t *testing.T) {
 	module := santaAPIModule(t)
@@ -222,11 +231,26 @@ func TestFleetIAM_LeastPrivilege(t *testing.T) {
 				t.Errorf("fleet statement on unexpected resources %s", resources)
 				continue
 			}
-			var keys []string
+			var keys, attributes []string
 			var forAll, null bool
 			for _, cond := range nested(st, "condition") {
 				variable, _ := literal(cond.Body.Attributes["variable"])
 				test, _ := literal(cond.Body.Attributes["test"])
+				if variable == "dynamodb:Attributes" {
+					// The clean sync request may write only the attributes it needs on a Mac's config item.
+					if test != "ForAllValues:StringEquals" {
+						t.Errorf("dynamodb:Attributes condition test %q, want ForAllValues:StringEquals", test)
+					}
+					val, diags := cond.Body.Attributes["values"].Expr.Value(nil)
+					if diags.HasErrors() {
+						t.Fatalf("dynamodb:Attributes values are not literal: %s", diags.Error())
+					}
+					for it := val.ElementIterator(); it.Next(); {
+						_, e := it.Element()
+						attributes = append(attributes, e.AsString())
+					}
+					continue
+				}
 				if variable != "dynamodb:LeadingKeys" {
 					t.Errorf("fleet statement has a condition on %s", variable)
 					continue
@@ -252,17 +276,24 @@ func TestFleetIAM_LeastPrivilege(t *testing.T) {
 				t.Errorf("fleet statement %s: LeadingKeys condition %v, Null check %v; want both", text, forAll, null)
 			}
 			sort.Strings(keys)
-			got = append(got, fleetStatement{resource, strings.Join(names, ","), strings.Join(keys, ",")}.String())
+			sort.Strings(attributes)
+			got = append(got, fleetStatement{resource, strings.Join(names, ","), strings.Join(keys, ","), strings.Join(attributes, ",")}.String())
 		}
 	}
 	want := []string{
-		fleetStatement{"events table", "dynamodb:BatchWriteItem,dynamodb:PutItem", "FleetPointer,FleetSnapshot#*"}.String(),
-		fleetStatement{"events table", "dynamodb:Query", "UnknownSeen#*"}.String(),
-		fleetStatement{"store index DataType_MachineID", "dynamodb:Query", "SensorData"}.String(),
-		fleetStatement{"store table", "dynamodb:GetItem", "FleetHealth,GlobalConfig,GroupRegistry"}.String(),
+		fleetStatement{"events table", "dynamodb:BatchWriteItem,dynamodb:PutItem", "FleetPointer,FleetSnapshot#*", ""}.String(),
+		fleetStatement{"events table", "dynamodb:Query", "UnknownSeen#*", ""}.String(),
+		fleetStatement{"store index DataType_MachineID", "dynamodb:Query", "SensorData", ""}.String(),
+		fleetStatement{"store table", "dynamodb:GetItem", "FleetHealth,GlobalConfig,GroupRegistry", ""}.String(),
+		// The audit entry of a run that requested clean syncs for rules hash outliers.
+		fleetStatement{"store table", "dynamodb:PutItem", "Audit#*", ""}.String(),
 		// RulesFeed: the newest feed row, so Macs that have not synced since the last global rule change are not
 		// judged as rules hash outliers.
-		fleetStatement{"store table", "dynamodb:Query", "GlobalRules,Machine#*,RulesFeed"}.String(),
+		fleetStatement{"store table", "dynamodb:Query", "GlobalRules,Machine#*,RulesFeed", ""}.String(),
+		// A clean sync request for a rules hash outlier: the Mac's config item, created if absent, and only the
+		// attributes the request writes, so the job cannot change any other setting of a Mac.
+		fleetStatement{"store table", "dynamodb:UpdateItem", "Machine#*",
+			"AutoCleanSyncAt,AutoCleanSyncFor,AutoCleanSyncRequest,CleanSync,CleanSyncRequest,DataType,PK,SK"}.String(),
 	}
 	sort.Strings(got)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {

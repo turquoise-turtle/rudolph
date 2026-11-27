@@ -58,9 +58,12 @@ func (h *hashMacs) add(digest, hash string, postflight time.Time) mac {
 
 func (h *hashMacs) seed() { h.t.Helper(); seed(h.t, h.macs...) }
 
-// outliersOfRun runs the job and returns the Rules rows with Reason Outlier, by machine ID.
+// outliersOfRun runs the job and returns the Rules rows with Reason Outlier, by machine ID. Automatic clean syncs are
+// turned off first: these tests are about which Macs are outliers, and with them on a first run requests a clean sync
+// for an outlier instead of listing it (auto_clean_sync_integration_test.go).
 func outliersOfRun(t *testing.T) (map[string]map[string]any, *recorder) {
 	t.Helper()
+	autoCleanSyncOff(t)
 	rec := run(t)
 	out := map[string]map[string]any{}
 	for _, row := range rows(t, mustPointer(t), "Health#Rules") {

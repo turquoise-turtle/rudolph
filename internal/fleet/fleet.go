@@ -3,6 +3,9 @@
 // is for Lockdown, and writes a snapshot to the events table: list rows first, then one pointer holding every count. A
 // page view then reads the pointer and one bounded Query, never the fleet.
 //
+// Its only writes to the store table are the clean sync requests for rules hash outliers and their audit entry
+// (clean_sync.go).
+//
 // It publishes no metrics and sends no notifications. Its one alarm is built from Lambda's own Invocations and Errors,
 // so a run that cannot finish must return an error.
 package fleet
@@ -82,6 +85,8 @@ type Client interface {
 	Query(ctx context.Context, in *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 	BatchWriteItem(ctx context.Context, in *dynamodb.BatchWriteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.BatchWriteItemOutput, error)
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	// UpdateItem is used for one thing: a clean sync request on a Mac's config item (requestCleanSyncs).
+	UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 }
 
 type Options struct {
@@ -221,6 +226,20 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		settled = settleOutliers(r.samples, ruleChanges{feed: ruleChange, groups: groupChanges, unreadable: unreadable})
 	}
+	// Requests come before the rows and the pointer: a run that fails after them leaves Macs the next run reads as
+	// pending, never a Mac requested twice.
+	var requested []string
+	pending := 0
+	if health.AutoCleanSyncOn() {
+		var requestErr error
+		settled, requested, pending, requestErr = r.requestCleanSyncs(ctx, settled)
+		if err := errors.Join(requestErr, r.auditCleanSyncs(ctx, requested)); err != nil {
+			return err
+		}
+		log.Printf("fleet: clean syncs for rules hash outliers: requested=%d pending=%d", len(requested), pending)
+	} else {
+		log.Printf("fleet: clean syncs for rules hash outliers are turned off; every outlier is listed")
+	}
 	var outliers []types.WriteRequest
 	for _, o := range settled {
 		outliers = append(outliers, types.WriteRequest{PutRequest: &types.PutRequest{Item: r.outlierRow(o)}})
@@ -245,6 +264,9 @@ func Run(ctx context.Context, opts Options) error {
 		"StaleDays":       num(staleDays),
 		"Holiday":         &types.AttributeValueMemberBOOL{Value: holiday},
 		"Capped":          num(r.totals.capped),
+		// Outliers this run did not list: a clean sync was requested for them now, or is still to happen.
+		"CleanSyncsRequested": num(len(requested)),
+		"CleanSyncsPending":   num(pending),
 	}
 	if holiday {
 		pointer["HolidayUntil"] = str(health.HolidayUntil)
@@ -490,6 +512,7 @@ func (r *run) machine(ctx context.Context, id string) error {
 	if s, ok := rep.hashSample(m, r.settings.now); ok {
 		s.attention = len(listed) > 0
 		s.hash = r.intern(s.hash)
+		s.autoCleanSyncFor = r.intern(s.autoCleanSyncFor)
 		set := ruleSet{digest: r.intern(m.state.MachineRulesTracked), groups: r.intern(groupsKey(rep.groups))}
 		r.samples[set] = append(r.samples[set], s)
 	}

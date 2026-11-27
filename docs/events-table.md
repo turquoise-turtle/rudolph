@@ -194,6 +194,7 @@ Pointer, `FleetPointer` / `Current`:
 | `StaleDays`, `Holiday`, `HolidayUntil` | the stale threshold the run used, whether it was a holiday's, and the holiday's last day (only while one is on) |
 | `Readiness` | map of `All`, every registered group and `rudolph:ungrouped` to `Macs`, `Ready`, `Few`, `Many`, `Unmeasured` and `Locked` |
 | `Capped` | Macs with more than 1,000 unknown markers |
+| `CleanSyncsRequested`, `CleanSyncsPending` | rules hash outliers the run did not list: those it requested a clean sync for, and those still waiting for one (both 0 while automatic clean syncs are off) |
 
 Health list rows, `FleetSnapshot#<snapshot ID>#Health#<category>`. Every row has `MachineID`, `Hostname` and `SerialNum` (left out when the Mac reports none), `LastSeen` (the time of its last preflight), `LastCompleted` (its last completed sync; left out when there is none) and `ExpiresAfter`:
 
@@ -202,7 +203,7 @@ Health list rows, `FleetSnapshot#<snapshot ID>#Health#<category>`. Every row has
 | `Stale` | last completed sync as `20060102T150405Z` (`00000000T000000Z` when none), `#`, machine ID | `Never` (boolean) |
 | `Incomplete` | preflight time in the same form, `#`, machine ID | `SyncsWithoutPostflight`, `Never` |
 | `Mode` | machine ID | `Reported`, `Intended` (`MONITOR`, `LOCKDOWN`, `STANDALONE`), `Source` (`temporary`, `own`, `group:<name>`, `global`, `default`) |
-| `Rules` | machine ID | `Reason` (`NotApplied` or `Outlier`), `RulesReceived`, `RulesProcessed`, `Hash`, `ExpectedHash` (outliers only) |
+| `Rules` | machine ID | `Reason` (`NotApplied` or `Outlier`), `RulesReceived`, `RulesProcessed`, `Hash`, `ExpectedHash` (outliers only), `AfterCleanSync` (true on an outlier whose hash still differs after the clean sync the job requested; absent otherwise) |
 | `SIP` | machine ID | `Flags` (hex, `0x7f`) |
 | `Version` | release as `2026.08`, `#`, machine ID | `SantaVersion` |
 
