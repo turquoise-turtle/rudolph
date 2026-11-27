@@ -5,7 +5,7 @@ Once a day a Lambda of its own, the fleet job (`PREFIX_rudolph_fleet`, code in `
 - **Which Macs need attention?** Six health lists: Macs that have stopped syncing, that start syncs without finishing them, that are not in the client mode Rudolph intends, whose rules did not apply, that have SIP reduced, or that run an old Santa.
 - **Which Macs are ready for Lockdown?** For each Mac, how many unknown binaries it ran in the last 7 and 30 days, and how many of those no global rule covers yet; and per device group, how many Macs are ready, nearly ready, far off, not measurable or already locked.
 
-The job writes its answers to the events table as a snapshot. A page view reads one pointer item and one bounded `Query`, never the fleet. Rudolph's sync never reads any of it. The item layouts are in [Events table](events-table.md#fleet-health-and-readiness-rows).
+The job writes its answers to the events table as a snapshot. A page view reads one pointer item and one bounded `Query`, never the fleet. Rudolph's sync never reads any of it. The one thing the job changes outside the snapshot is a clean sync request for a Mac whose rules hash differs from its peers' (see [Automatic clean syncs](#automatic-clean-syncs-for-rules-hash-outliers)). The item layouts are in [Events table](events-table.md#fleet-health-and-readiness-rows).
 
 The figures are as old as the last run: up to a day with the default schedule. The pointer's `GeneratedAt` says when that was.
 
@@ -18,7 +18,7 @@ A Mac can be in several categories. The pointer's `Attention` counts the Macs in
 | `Stale` | its last completed sync is more than the stale threshold ago (10 days unless changed, see [Holiday mode](#the-stale-threshold-and-holiday-mode)), or there is none on record (`Never`). Exactly the threshold is not stale. | last completed sync, oldest first; Macs that never completed one before the others |
 | `Incomplete` | its current sync has no postflight, its preflight is at least 30 minutes old and not older than the stale threshold: the Mac reaches Rudolph but does not finish. | preflight time, oldest first |
 | `Mode` | the client mode the Mac last reported differs from the one Rudolph intends for it now, and the Mac is not `Stale`. | machine ID |
-| `Rules` | its last sync completed but applied fewer rules than it received (`Reason` `NotApplied`), or its rules hash differs from what most Macs with the same rules report (`Reason` `Outlier`). | machine ID |
+| `Rules` | its last sync completed but applied fewer rules than it received (`Reason` `NotApplied`), or its rules hash differs from what most Macs with the same rules report (`Reason` `Outlier`). An outlier is first given a clean sync and is listed only when its hash still differs afterwards (`AfterCleanSync`), unless automatic clean syncs are off. | machine ID |
 | `SIP` | it reports System Integrity Protection flags other than 0. `Flags` is the value in hex, for example `0x7f`. A Mac that reports none, or 0, has SIP fully on. | machine ID |
 | `Version` | its Santa release is below the minimum Santa version: `2026.9` unless changed with `rudolph fleet min-santa-version`, which can also turn the list `off` (see [The minimum Santa version](#the-minimum-santa-version)). Releases compare as numbers, so 2026.10 is newer than 2026.9. | release, oldest first |
 
@@ -46,6 +46,7 @@ Rudolph does not compute the hash Santa should report, so the job compares Macs 
 - When the rules feed has no row (a fresh install, or no global rule change in the 90 days a feed row lives) and none of the set's groups has a `RulesChangedAt`, every Mac of the first bullet in the set takes part.
 - In each set of at least three Macs that take part, the majority hash is the one more than half of them report. A two-all split has no majority.
 - A Mac that takes part is an outlier when its hash differs from the majority's. `ExpectedHash` is the majority's.
+- An outlier is not listed straight away: the job first requests a clean sync for it, and lists it when its hash still differs after that. See [Automatic clean syncs](#automatic-clean-syncs-for-rules-hash-outliers).
 - A Mac already listed as `NotApplied` is not listed a second time.
 
 Limits of this check, which make `Outlier` a prompt to look, not proof:
@@ -59,6 +60,44 @@ Limits of this check, which make `Outlier` a prompt to look, not proof:
 - **A feed row edited by hand.** If the newest `RulesFeed` row's sort key does not start with a time, the job cannot tell when the rules last changed. It skips the outlier check for that run and logs `rules hash outliers not checked in this run`, rather than comparing every Mac and listing the ones that are up to date. `NotApplied` is unaffected.
 - **A registry entry edited by hand.** If a group's `RulesChangedAt` is not a time, the job skips the sets that include that group for that run, for the same reason, and logs `rules hash outliers not checked in this run for Macs in group "<name>"`. Other sets are judged as usual. Changing one of the group's rules writes a good stamp again.
 - Transitive rules, which Santa creates locally, may change a Mac's hash. This has not been tested on a real Mac.
+
+### Automatic clean syncs for rules hash outliers
+
+Most outliers are not a fault. Santa (2026.8 to 2026.10) computes its rules hash over the rules as its database returns them, unsorted, so **the hash depends on insertion order**: the order in which the Mac wrote its rules. Macs holding exactly the same rules can therefore report different hashes. The order differs easily:
+
+- a rule that is sent again is written again, and moves to the end;
+- a clean sync writes the rules in the order Rudolph sends them, while a Mac that syncs incrementally appends each new rule at the end;
+- after a clean sync, Rudolph sends the rules of the last 10 minutes of the feed once more (the overlap that keeps a late feed row from being missed), which moves those to the end.
+
+Sorting the rules before hashing is proposed upstream as [northpolesec/santa#1272](https://github.com/northpolesec/santa/issues/1272). Until a Santa release has that, the fleet job works around it: a clean sync rewrites a Mac's rules in Rudolph's order, which brings a Mac that only differed in order back to the majority hash. So for each outlier the job decides, in this order:
+
+| The Mac | The job | Listed under `Rules` |
+|---|---|---|
+| already has a clean sync requested, by the job or by anyone (`CleanSync` on its configuration) | waits | no |
+| had the job's clean sync for the current rule change of its set, and no clean sync has completed since the request | waits | no |
+| had the job's clean sync for the current rule change, and a clean sync that started after the request has completed | lists it | yes, with `AfterCleanSync` true |
+| anything else | requests a clean sync | no |
+
+- **Once per rule change.** The rule change is the set's, as worked out above: the time of the newest global or group rule change that applies to the Mac, or `none` when no change is on record. The job stores it with the request, and does not request again for the same one. A later rule change is a new one, and a Mac that is an outlier again after it gets one more clean sync.
+- **`AfterCleanSync` is the row to act on.** The Mac's rules were rewritten in Rudolph's order and its hash still differs from its peers', so order is not the reason: look at that Mac (the limits listed above still apply, for example machine rules with different policies). A row without `AfterCleanSync` is an outlier that has not had its clean sync: the run was over its cap, or automatic clean syncs are off.
+- **At most 100 requests a run.** A clean sync sends a Mac every rule, and Santa uploads no events during one, so a bad day cannot put the whole fleet through one at once. The outliers beyond 100 are listed in that run without `AfterCleanSync`, and the next run requests theirs. Requests go out in machine ID order.
+- **What a request writes.** One `UpdateItem` of the Mac's own configuration item (`Machine#<machine ID>` / `Config`), which is created if the Mac has none: `CleanSync` true and a new `CleanSyncRequest`, exactly as `rudolph config update --machine <id> --clean-sync` writes them, and `AutoCleanSyncFor` (the rule change), `AutoCleanSyncAt` (the run's time, RFC 3339 UTC) and `AutoCleanSyncRequest` (the same identifier). No other setting is touched, and an item the request creates holds no setting, so the Mac keeps inheriting everything from the global configuration. The Mac's next sync is the clean sync, and the flag is cleared as for any requested clean sync (see [sync.md](sync.md#reconfiguring-the-sensor)); the three `AutoCleanSync` attributes stay as the record of it.
+- **Whose request it is.** `rudolph machine show` prints `requested by the fleet job (rules hash differed)` while the job's request is pending. A manual request made afterwards replaces the identifier and shows as plain `requested`. The job leaves alone a request that is pending when it reads the Mac; one made in the minutes between that read and the end of the walk is replaced by the job's, which asks for the same clean sync.
+- **A Mac whose clean sync is given up stays pending until the next rule change.** For a Mac whose postflights never arrive, Rudolph gives a requested clean sync up after three attempts that did not change its hash (see [sync.md](sync.md#reconfiguring-the-sensor)). The flag is then cleared with no completed clean sync on record, so the job keeps reading the Mac as waiting: it is neither listed as an outlier nor requested again until the rules of its set next change. Look for such a Mac under `Incomplete` or `Stale`. The same holds when a pending request is cancelled by hand (`config update --machine <id> --clean-sync=false`).
+- **The pointer counts them.** `CleanSyncsRequested` is the number of requests the run made, `CleanSyncsPending` the number of outliers it found waiting. Neither kind is in `Health.Rules` or `Attention` (unless the Mac is listed for another reason). The run logs both: `fleet: clean syncs for rules hash outliers: requested=<n> pending=<n>`.
+- **The audit trail.** A run that requested clean syncs records one entry: actor `job:fleet`, action `fleet.clean_sync`, target `fleet`, with the machine IDs in the summary. A run that requested none records nothing.
+- **A failed request fails the run**, like any other error: the pointer stays on the previous snapshot. The requests already made stand, are recorded in the audit trail, and are read as waiting by the next run.
+- **A request edited by hand.** An `AutoCleanSyncAt` that is not a time makes the job ignore the record and request again, which writes a readable one.
+
+To turn it off, so that every outlier is listed as before and the job writes nothing to any Mac's configuration:
+
+```sh
+./rudolph fleet auto-clean-sync off
+./rudolph fleet auto-clean-sync on
+./rudolph fleet show
+```
+
+`off` stores `AutoCleanSync` `off` on the fleet health item (`FleetHealth` / `Config`); `on` removes it. The job reads it on every run, so the change applies from the next run. Any other stored value reads as on. Requests already made are not withdrawn by turning it off: cancel one with `rudolph config update --machine <id> --clean-sync=false`. See [`rudolph fleet auto-clean-sync`](cli.md#fleet-auto-clean-sync).
 
 ## The stale threshold and holiday mode
 
@@ -166,15 +205,16 @@ The sync token is shared by the fleet, and whoever holds it can already write se
 
 ## How a run works
 
-1. It reads the stale threshold, the group registry and the global configuration (three `GetItem` on the store table).
+1. It reads the fleet health setting (the stale threshold, the minimum Santa version, whether automatic clean syncs are on), the group registry and the global configuration (three `GetItem` on the store table).
 2. It lists every Mac by paging the store table's `DataType_MachineID` index for sensor data rows. It never scans. Above `FLEET_MAX_MACS` it fails before writing anything.
 3. For each Mac, 32 at a time, it reads the Mac's configuration, sensor data, groups and sync state with one `Query` of the Mac's partition and, unless the Mac is Locked, its unknown markers with one `Query` limited to 1,001 rows. It then writes the Mac's rows with `BatchWriteItem`.
 4. The global rules' sort keys are read once, when the first Mac has an unknown binary to check. A fleet that is all in Lockdown never reads them.
-5. After the walk it reads the newest row of the rules feed (one `Query` of `RulesFeed`, newest first, limited to one row) and the group registry again (one `GetItem`, for each group's `RulesChangedAt`), settles the rules hash outliers among the Macs that synced since, and writes their rows.
-6. It writes the pointer, on the condition that the stored pointer is absent or names an older snapshot. Snapshot IDs sort by time.
+5. After the walk it reads the newest row of the rules feed (one `Query` of `RulesFeed`, newest first, limited to one row) and the group registry again (one `GetItem`, for each group's `RulesChangedAt`), and settles the rules hash outliers among the Macs that synced since.
+6. Unless automatic clean syncs are off, it requests a clean sync for the outliers that are due one (one `UpdateItem` of the Mac's configuration item each, at most 100 a run), and records one audit entry naming them (one `PutItem` on the store table). It then writes the rows of the outliers it lists.
+7. It writes the pointer, on the condition that the stored pointer is absent or names an older snapshot. Snapshot IDs sort by time.
 
 - **A reader never sees half a snapshot**: every row is written before the pointer.
-- **A failed run changes nothing**: the pointer stays on the previous snapshot, and the function returns the error, which Lambda counts in `Errors`. The next day's run starts again from scratch, so failed runs are not retried.
+- **A failed run leaves the lists as they were**: the pointer stays on the previous snapshot, and the function returns the error, which Lambda counts in `Errors`. The next day's run starts again from scratch, so failed runs are not retried.
 - **Overlapping runs** (a schedule delivered twice, or a run by hand) are harmless: the one that started earlier cannot move the pointer back.
 - **Rows expire 3 days after they are written.** A reader paging an older snapshot keeps finding its rows after a newer run. If the job stops, the pointer outlives its rows and the web view says the lists have not been computed since `GeneratedAt`.
 - **Rows enter no index.** They have no `TS`, `Fleet` or `Decision`, so each costs one write unit.
@@ -191,9 +231,13 @@ The job has its own role, `PREFIX_rudolph_fleet_role`, with every statement limi
 | store table index `DataType_MachineID` | `Query` | `SensorData` |
 | store table | `Query` | `Machine#*`, `GlobalRules`, `RulesFeed` |
 | store table | `GetItem` | `GroupRegistry`, `GlobalConfig`, `FleetHealth` |
+| store table | `UpdateItem` | `Machine#*`, and only the attributes `PK`, `SK`, `DataType`, `CleanSync`, `CleanSyncRequest`, `AutoCleanSyncFor`, `AutoCleanSyncAt` and `AutoCleanSyncRequest` (a `dynamodb:Attributes` condition): a clean sync request for a rules hash outlier |
+| store table | `PutItem` | `Audit#*`: the audit entry of a run that requested clean syncs |
 | events table | `Query` | `UnknownSeen#*` |
 | events table | `PutItem`, `BatchWriteItem` | `FleetSnapshot#*`, `FleetPointer` |
 | its own log group | `logs:CreateLogStream`, `logs:PutLogEvents` | |
+
+The `UpdateItem` statement is the only one that lets the job change what a Mac is sent, and the attribute condition keeps that to requesting a clean sync: it cannot change a client mode or any other setting, and cannot write a Mac's rules, sync state or sensor data, whose attributes are not in the list. The job cannot read, change or delete audit entries, only add one.
 
 It has no KMS statement: the store key's policy lets the account's principals use the key through DynamoDB, and names this role among Rudolph's Lambdas when `store_kms_key_user_arns` narrows it. The ranker's role is unchanged, and eventupload gains only `UnknownSeen#*`.
 
@@ -234,4 +278,5 @@ About US$0.75 a month for 1,000 Macs in monitor mode and about US$0.30 once most
 
 - The markers are most of it in monitor mode: one write unit per unknown binary per upload.
 - The job costs about 3.5 read units and 2.5 write units a Mac a run in monitor mode, and about half a read unit and the same writes for a Mac Rudolph intends to lock, because its markers are not read. Both the marker writes and the job's reads fall as Macs move to Lockdown.
+- A clean sync request is one write unit, and its run's audit entry a few: nothing next to the walk, with at most 100 requests a run.
 - The schedule is the lever for the job's share: hourly runs would cost 24 times as much for lists that change slowly.

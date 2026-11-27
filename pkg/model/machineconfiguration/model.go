@@ -40,8 +40,15 @@ type MachineConfiguration struct {
 	// CleanSyncRequest identifies the request, written with every CleanSync set to true, so that clearing the flag
 	// for a clean sync that started earlier does not cancel a request made in the meantime.
 	CleanSyncRequest string `dynamodbav:"CleanSyncRequest,omitempty"`
-	FullSyncInterval int    `dynamodbav:"FullSyncInterval,omitempty"`
-	UploadLogsURL    string `dynamodbav:"UploadLogsUrl,omitempty"`
+	// The fleet job's last clean sync request for this Mac (RequestFleetCleanSync), kept after the clean sync is
+	// performed as the record that the Mac has had its automatic clean sync for a rule change. AutoCleanSyncFor is
+	// the rule change it was made for, AutoCleanSyncAt when (RFC 3339, UTC), AutoCleanSyncRequest the
+	// CleanSyncRequest it wrote. Never taken from, or written to, the global config.
+	AutoCleanSyncFor     string `dynamodbav:"AutoCleanSyncFor,omitempty"`
+	AutoCleanSyncAt      string `dynamodbav:"AutoCleanSyncAt,omitempty"`
+	AutoCleanSyncRequest string `dynamodbav:"AutoCleanSyncRequest,omitempty"`
+	FullSyncInterval     int    `dynamodbav:"FullSyncInterval,omitempty"`
+	UploadLogsURL        string `dynamodbav:"UploadLogsUrl,omitempty"`
 	// SyncType                 types.SyncType   `dynamodbav:"SyncType,omitempty"`
 	DataType types.DataType `dynamodbav:"DataType,omitempty"`
 

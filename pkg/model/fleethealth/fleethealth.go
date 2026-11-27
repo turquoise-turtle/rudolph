@@ -1,14 +1,16 @@
 // Package fleethealth is the setting behind the fleet health lists (internal/fleet, docs/fleet-health.md): after how
 // many days without a completed sync a Mac counts as stale, holiday mode, which raises that threshold until a date
-// and then lapses by itself, and the minimum Santa version, below which a Mac is listed under Version. The CLI
-// (rudolph fleet holiday, rudolph fleet min-santa-version) and rudolph-web write it through this package; the fleet
-// job reads it on every run. It is one item of the store table:
+// and then lapses by itself, the minimum Santa version, below which a Mac is listed under Version, and whether the job
+// requests a clean sync for a rules hash outlier before listing it. The CLI (rudolph fleet holiday, rudolph fleet
+// min-santa-version, rudolph fleet auto-clean-sync) and rudolph-web write it through this package; the fleet job reads
+// it on every run. It is one item of the store table:
 //
 //	PK: FleetHealth, SK: Config
 //	StaleDays         the normal threshold in days; DefaultStaleDays when absent
 //	HolidayStaleDays  the threshold while the holiday lasts
 //	HolidayUntil      the holiday's last day, a UTC date (2006-01-02), inclusive
 //	MinSantaVersion   a release such as 2026.10, or "off"; DefaultMinSantaVersion when absent
+//	AutoCleanSync     "off" when automatic clean syncs for rules hash outliers are turned off; absent when on
 //
 // The two holiday attributes are absent when no holiday is set. Callers record their own audit entry.
 package fleethealth
@@ -48,6 +50,9 @@ const (
 	// MaxMinSantaVersionBytes bounds a stored release: it is copied to the fleet pointer and shown on every page view.
 	MaxMinSantaVersionBytes = 32
 
+	// AutoCleanSyncOff is the only value stored for AutoCleanSync: automatic clean syncs are on without it.
+	AutoCleanSyncOff = "off"
+
 	// A holiday is checked against the normal threshold it was read with; the write is tried again when that changed
 	// in between.
 	maxWriteAttempts = 3
@@ -71,6 +76,8 @@ type Config struct {
 	// MinSantaVersion is a release ("2026.10") or "off"; "" when absent or unusable. Read it through
 	// MinSantaVersionInForce, which applies the default.
 	MinSantaVersion string
+	// AutoCleanSync is AutoCleanSyncOff, or "" when absent or anything else. Read it through AutoCleanSyncOn.
+	AutoCleanSync string
 }
 
 // Reader and Writer are what reading and changing the setting need: Rudolph's DynamoDB client (pkg/dynamodb).
@@ -90,7 +97,7 @@ func Key() dynamodb.PrimaryKey {
 
 // FromItem decodes the item; a missing item is the zero Config. An attribute that cannot be used (not a number, days
 // outside MinStaleDays to MaxStaleDays, a date that is not one, a minimum Santa version ValidateMinSantaVersion
-// refuses) is dropped rather than refused, and a holiday needs both of its attributes: the fleet job runs unattended,
+// refuses, an AutoCleanSync that is not "off") is dropped rather than refused, and a holiday needs both of its attributes: the fleet job runs unattended,
 // and a hand-edited value must fall back to the default instead of stopping every run.
 func FromItem(item map[string]types.AttributeValue) Config {
 	config := Config{StaleDays: days(item["StaleDays"])}
@@ -103,6 +110,9 @@ func FromItem(item map[string]types.AttributeValue) Config {
 	}
 	if version, ok := item["MinSantaVersion"].(*types.AttributeValueMemberS); ok {
 		config.MinSantaVersion, _ = ValidateMinSantaVersion(version.Value)
+	}
+	if auto, ok := item["AutoCleanSync"].(*types.AttributeValueMemberS); ok && strings.EqualFold(strings.TrimSpace(auto.Value), AutoCleanSyncOff) {
+		config.AutoCleanSync = AutoCleanSyncOff
 	}
 	return config
 }
@@ -315,4 +325,36 @@ func ClearMinSantaVersion(client Writer) (Config, error) {
 		return Config{}, fmt.Errorf("failed to clear the minimum Santa version: %w", err)
 	}
 	return before, nil
+}
+
+// AutoCleanSyncOn reports whether the fleet job requests a clean sync for a rules hash outlier before listing it: yes,
+// unless turned off.
+func (c Config) AutoCleanSyncOn() bool {
+	return c.AutoCleanSync != AutoCleanSyncOff
+}
+
+// SetAutoCleanSync turns automatic clean syncs for rules hash outliers on or off. Off stores AutoCleanSyncOff, creating
+// the item when there is none; on removes the attribute, whatever it holds, and never creates an item. The rest of the
+// setting is left as it is. It returns the setting as stored.
+func SetAutoCleanSync(client Writer, on bool) (Config, error) {
+	_, config, err := get(client, true)
+	if err != nil {
+		return Config{}, err
+	}
+	if on {
+		// The condition keeps the update from creating an empty item.
+		_, err = client.UpdateItemExpression(Key(), "REMOVE AutoCleanSync", "attribute_exists(AutoCleanSync)", nil, nil)
+		if err != nil && !dynamodb.IsConditionalCheckFailed(err) {
+			return Config{}, fmt.Errorf("failed to turn automatic clean syncs on: %w", err)
+		}
+		config.AutoCleanSync = ""
+		return config, nil
+	}
+	_, err = client.UpdateItemExpression(Key(), "SET AutoCleanSync = :off", "", nil,
+		map[string]types.AttributeValue{":off": &types.AttributeValueMemberS{Value: AutoCleanSyncOff}})
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to turn automatic clean syncs off: %w", err)
+	}
+	config.AutoCleanSync = AutoCleanSyncOff
+	return config, nil
 }
