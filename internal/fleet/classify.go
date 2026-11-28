@@ -94,13 +94,6 @@ type report struct {
 	versionUnknown                                    bool
 	versionOrder                                      string
 
-	// cleanSyncRequested is the config's CleanSync: a clean sync is requested, by anyone, and not yet performed.
-	// autoCleanSyncFor and autoCleanSyncAt are the fleet job's last request for the Mac; both zero when there is
-	// none, or when its time cannot be read.
-	cleanSyncRequested bool
-	autoCleanSyncFor   string
-	autoCleanSyncAt    time.Time
-
 	intended     rudolphtypes.ClientMode
 	source       string
 	groups       []string
@@ -139,12 +132,6 @@ func classify(m *machine, s settings) report {
 	if err != nil {
 		// Only when the global config cannot be encoded again; the Mac then inherits nothing readable.
 		config = machineconfiguration.GetUniversalDefaultConfig()
-	}
-	r.cleanSyncRequested = config.CleanSync
-	// A request whose time cannot be read (edited by hand) counts as none: the next request writes a readable one,
-	// where keeping it would leave the Mac neither listed nor requested for as long as the rules do not change.
-	if at, err := clock.ParseRFC3339(config.AutoCleanSyncAt); err == nil {
-		r.autoCleanSyncFor, r.autoCleanSyncAt = config.AutoCleanSyncFor, at
 	}
 	groupMode, group, hasGroupMode := groups.MachineClientMode(s.registry, m.groups)
 	intended, source := machineconfiguration.IntendedClientMode(config, ownMode, s.global, groupMode, hasGroupMode, s.now)
@@ -345,10 +332,6 @@ type hashSample struct {
 	received, processed            int
 	// attention is set when the Mac is already in a health category; listed is set when that category is Rules.
 	attention, listed bool
-	// What requestCleanSyncs decides on, should the Mac be an outlier: whether a clean sync is requested for it now,
-	// the rule change the fleet job last requested one for, and whether a clean sync completed after that request.
-	cleanSyncRequested, cleanSyncSince bool
-	autoCleanSyncFor                   string
 }
 
 // hashSample returns the Mac's sample, and false when it cannot be judged: no completed sync in the last day, no
@@ -365,19 +348,10 @@ func (r report) hashSample(m *machine, now time.Time) (hashSample, bool) {
 	if err != nil || now.Sub(post) > hashWindow {
 		return hashSample{}, false
 	}
-	// LastCompletedCleanSync is the start of that clean sync, so one already under way when the request was made does
-	// not count: its hash would be read as "still differs" although the request may yet be performed.
-	cleanSyncSince := false
-	if r.autoCleanSyncFor != "" {
-		if last, err := clock.ParseRFC3339(m.state.LastCompletedCleanSync()); err == nil {
-			cleanSyncSince = last.After(r.autoCleanSyncAt)
-		}
-	}
 	return hashSample{
 		id: m.id, hostname: m.sensor.Hostname, serial: m.sensor.SerialNum, lastSeen: m.sensor.Time,
 		hash: m.state.RulesHashAfterSync, postflight: post,
 		received: m.state.RulesReceived, processed: m.state.RulesProcessed, listed: r.notApplied,
-		cleanSyncRequested: r.cleanSyncRequested, cleanSyncSince: cleanSyncSince, autoCleanSyncFor: r.autoCleanSyncFor,
 	}, true
 }
 
@@ -385,10 +359,6 @@ func (r report) hashSample(m *machine, now time.Time) (hashSample, bool) {
 type outlier struct {
 	hashSample
 	expected string
-	// ruleChange is the newest rule change of the Mac's set (ruleChanges.of); zero when none is on record.
-	ruleChange time.Time
-	// afterCleanSync is set by requestCleanSyncs: the hash still differs after the clean sync the job requested.
-	afterCleanSync bool
 }
 
 // ruleSet names the Macs whose hashes can be compared: those sent the same rules. The digest alone does not say that.
@@ -486,7 +456,7 @@ func settleOutliers(samples map[ruleSet][]hashSample, changes ruleChanges) []out
 		}
 		for _, s := range taking {
 			if s.hash != majority && !s.listed {
-				found = append(found, outlier{hashSample: s, expected: majority, ruleChange: ruleChange})
+				found = append(found, outlier{hashSample: s, expected: majority})
 			}
 		}
 	}
@@ -507,8 +477,5 @@ func (r *run) outlierRow(o outlier) map[string]types.AttributeValue {
 	item["RulesProcessed"] = num(o.processed)
 	item["Hash"] = str(o.hash)
 	item["ExpectedHash"] = str(o.expected)
-	if o.afterCleanSync {
-		item["AfterCleanSync"] = &types.AttributeValueMemberBOOL{Value: true}
-	}
 	return item
 }

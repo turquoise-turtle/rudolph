@@ -6,7 +6,7 @@ package fleet_test
 //
 //	fleet.Run(ctx, fleet.Options{Client, Table, StoreTable, Now, MaxMacs})
 //
-// where Client is the part of *dynamodb.Client it uses (GetItem, Query, BatchWriteItem, PutItem, UpdateItem: fleet.Client), Table
+// where Client is the part of *dynamodb.Client it uses (GetItem, Query, BatchWriteItem, PutItem: fleet.Client), Table
 // is the events table (EVENTS_DYNAMODB_NAME), StoreTable the store table (DYNAMODB_NAME), Now defaults to time.Now and
 // MaxMacs to fleet.DefaultMaxMacs (250,000). The minimum Santa version is not an option: it is FleetHealth / Config's
 // MinSantaVersion, else fleethealth.DefaultMinSantaVersion ("2026.9").
@@ -83,16 +83,12 @@ type mac struct {
 	rulesProcessed         int
 	rulesHash, digest      string
 	firstSeenDay           string // default 40 days ago; "-" stores none
-	// lastCleanSync is the sync state's LastCleanSync: the start of the last clean sync that completed.
-	lastCleanSync time.Time
 
 	// Machine config; absent when all are zero.
 	ownMode          int
 	temporaryMode    int
 	temporaryExpires time.Time
 	disableUpload    *bool
-	// config holds further attributes of the machine config item, stored as given (CleanSync, AutoCleanSyncFor...).
-	config map[string]any
 
 	assigned, reported []string
 }
@@ -182,9 +178,6 @@ func (m mac) seed(t *testing.T) {
 	if len(completed) > 0 {
 		state["CompletedSyncs"] = completed
 	}
-	if !m.lastCleanSync.IsZero() {
-		state["LastCleanSync"] = rfc(m.lastCleanSync)
-	}
 	switch m.firstSeenDay {
 	case "":
 		state["FirstSeenDay"] = daysAgo(40)
@@ -194,7 +187,7 @@ func (m mac) seed(t *testing.T) {
 	}
 	putStore(t, state)
 
-	if m.ownMode != 0 || m.temporaryMode != 0 || m.disableUpload != nil || len(m.config) > 0 {
+	if m.ownMode != 0 || m.temporaryMode != 0 || m.disableUpload != nil {
 		cfg := map[string]any{"PK": pk, "SK": "Config", "DataType": "MachineConfig"}
 		if m.ownMode != 0 {
 			cfg["ClientMode"] = m.ownMode
@@ -205,9 +198,6 @@ func (m mac) seed(t *testing.T) {
 		}
 		if m.disableUpload != nil {
 			cfg["DisableUnknownEventUpload"] = *m.disableUpload
-		}
-		for k, v := range m.config {
-			cfg[k] = v
 		}
 		putStore(t, cfg)
 	}
@@ -372,9 +362,7 @@ type call struct {
 	keys  []string // partition key values: Query's, GetItem's, or every written item's
 	limit int32
 	// backward is set on a Query that reads newest first (ScanIndexForward false).
-	backward bool
-	// sk is an UpdateItem's sort key.
-	sk         string
+	backward   bool
 	started    int // number of calls finished when this one started
 	finishedAt int // number of calls finished when this one finished, itself included
 }
@@ -467,14 +455,6 @@ func (r *recorder) PutItem(ctx context.Context, in *dynamodb.PutItemInput, optFn
 	c := r.begin("PutItem", aws.ToString(in.TableName), "", []string{stringOf(in.Item["PK"])}, 0)
 	defer r.end(c)
 	return r.raw.PutItem(ctx, in, optFns...)
-}
-
-// UpdateItem is how the job requests a clean sync for a rules hash outlier (machineconfiguration.RequestFleetCleanSync).
-func (r *recorder) UpdateItem(ctx context.Context, in *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-	c := r.begin("UpdateItem", aws.ToString(in.TableName), "", []string{stringOf(in.Key["PK"])}, 0)
-	c.sk = stringOf(in.Key["SK"])
-	defer r.end(c)
-	return r.raw.UpdateItem(ctx, in, optFns...)
 }
 
 var _ fleet.Client = (*recorder)(nil)

@@ -49,12 +49,11 @@ const MaxLookback = 400 * 24 * time.Hour
 // Entry is one change recorded in the audit trail
 type Entry struct {
 	Time time.Time `dynamodbav:"-"`
-	// Actor is who made the change: "cli:<OS user>@<host name>", "web:<Entra user>", or "job:fleet" for the clean
-	// syncs the fleet job requests
+	// Actor is who made the change: "cli:<OS user>@<host name>" or "web:<Entra user>"
 	Actor string `dynamodbav:"Actor"`
 	// Action is what was done, e.g. "rule.add" or "config.temporary-mode"
 	Action string `dynamodbav:"Action"`
-	// Target is what it was done to: "global", "machine:<machine ID>", "group:<name>", "ungrouped" or "fleet"
+	// Target is what it was done to: "global", "machine:<machine ID>", "group:<name>" or "ungrouped"
 	Target string `dynamodbav:"Target"`
 	// Summary describes the change for people
 	Summary string `dynamodbav:"Summary"`

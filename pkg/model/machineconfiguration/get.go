@@ -2,6 +2,7 @@ package machineconfiguration
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
@@ -119,7 +120,7 @@ func intendedFrom(globalConfig MachineConfiguration, machineItem map[string]awst
 func withoutCleanSyncRequest(global MachineConfiguration) MachineConfiguration {
 	global.CleanSync = false
 	global.CleanSyncRequest = ""
-	return withoutFleetCleanSync(global)
+	return global
 }
 
 // GetIntendedGlobalConfig returns the global configuration. It searches in the following order:
@@ -280,28 +281,35 @@ func (p ConcreteUniversalConfigurationProvider) GetUniversalDefaultConfig() Mach
 // PRIVATE AND DEPRECATED METHODS //
 // ============================== //
 
-// GetIntendedConfig returns the config intended for a machine, read without the service or its cache: the global
-// config (the universal default without one), overridden by each setting the machine's own row stores, as
-// ConcreteConfigurationFetcher resolves it. It used to return the machine's row alone when there was one, which
-// stopped being the intended config when rows began to hold only the settings they override.
-//
 // @deprecated
 func GetIntendedConfig(client dynamodb.GetItemAPI, machineID string) (intendedConfig MachineConfiguration, err error) {
-	machineItem, err := ConcreteMachineConfigurationFetcher{getter: client}.getMachineSpecificItem(machineID)
+	config, err := GetMachineSpecificConfig(client, machineID)
 	if err != nil {
 		err = fmt.Errorf("failed to get machine config: %w", err)
 		return
 	}
-	global, err := GetGlobalConfig(client)
-	if err != nil {
-		err = fmt.Errorf("failed to get global config: %w", err)
-		return
+
+	if config == nil {
+		log.Printf("no config items found for %s", machineID)
+		log.Printf("%s", "Retrieving global config")
+
+		config, err = GetGlobalConfig(client)
+		if err != nil {
+			err = fmt.Errorf("failed to get global config: %w", err)
+			return
+		}
 	}
-	if global == nil {
-		universal := GetUniversalDefaultConfig()
-		global = &universal
+
+	// Check if the result.Item is not nil. If this is nil, no valid global config exists within the DynamoDB and return a generic hardcoded value
+	if config == nil {
+		log.Printf("WARNING: GLOBAL CONFIG ITEM NOT FOUND; DEFAULTING TO HARDCODED DEFAULT CONFIG.")
+
+		intendedConfig = GetUniversalDefaultConfig()
+	} else {
+		intendedConfig = *config
 	}
-	return intendedFrom(*global, machineItem)
+
+	return
 }
 
 // @deprecated
