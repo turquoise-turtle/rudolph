@@ -164,10 +164,7 @@ func (s *Summary) Print(w io.Writer, now time.Time) {
 	} else {
 		fmt.Fprintln(w, "  Temporary mode:  none")
 	}
-	switch {
-	case s.Config.CleanSyncRequestedByFleet():
-		fmt.Fprintln(w, "  Clean sync:      requested by the fleet job (rules hash differed)")
-	case s.Config.CleanSync:
+	if s.Config.CleanSync {
 		fmt.Fprintln(w, "  Clean sync:      requested")
 	}
 

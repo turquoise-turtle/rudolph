@@ -7,7 +7,6 @@ import (
 
 	"github.com/airbnb/rudolph/internal/cli/flags"
 	"github.com/airbnb/rudolph/internal/cli/termsafe"
-	fleetjob "github.com/airbnb/rudolph/internal/fleet"
 	"github.com/airbnb/rudolph/pkg/clock"
 	"github.com/airbnb/rudolph/pkg/dynamodb"
 	"github.com/airbnb/rudolph/pkg/model/audit"
@@ -18,7 +17,6 @@ import (
 const (
 	auditAction           = "fleet.holiday"
 	minVersionAuditAction = "fleet.min-santa-version"
-	autoCleanSyncAction   = "fleet.auto-clean-sync"
 	auditTarget           = "fleet"
 )
 
@@ -28,8 +26,7 @@ var FleetCmd = &cobra.Command{
 	Short: "Settings of the fleet health lists the daily fleet job builds",
 	Long: `The fleet job lists, once a day, the Macs that need attention (docs/fleet-health.md). A Mac is stale when its last
 completed sync is older than the stale threshold, 10 days unless changed, and listed under Version when its Santa
-release is below the minimum Santa version, ` + fleethealth.DefaultMinSantaVersion + ` unless changed. A Mac whose rules hash differs from that of the Macs
-sent the same rules gets a clean sync requested, once per rule change, before it is listed, unless that is turned off.`,
+release is below the minimum Santa version, ` + fleethealth.DefaultMinSantaVersion + ` unless changed.`,
 }
 
 func init() {
@@ -219,56 +216,10 @@ setting from its next run.`,
 	FleetCmd.AddCommand(minVersionCmd)
 
 	FleetCmd.AddCommand(&cobra.Command{
-		Use:   "auto-clean-sync (on | off)",
-		Short: "Turn the fleet job's automatic clean syncs for rules hash outliers on or off",
-		Long: `Santa's rules hash depends on the order a Mac wrote its rules, so Macs holding the same rules can report different
-hashes, and a clean sync brings such a Mac back to the hash of the others. The fleet job therefore requests a clean
-sync for a Mac whose rules hash differs, once per rule change and at most ` + fmt.Sprint(fleetjob.MaxCleanSyncRequestsPerRun) + ` Macs a run, and lists the Mac only
-when its hash still differs afterwards. off makes the job list every such Mac straight away and request nothing; on is
-the default. The rest of the fleet health setting is left as it is. The fleet job uses the setting from its next run.`,
-		// Arguments are checked in RunE, so each refusal says what the command takes
-		Args: cobra.ArbitraryArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
-				return errors.New("pass on or off: `rudolph fleet auto-clean-sync on` or `rudolph fleet auto-clean-sync off`")
-			}
-			on := args[0] == "on"
-			client, err := writer(cmd)
-			if err != nil {
-				return err
-			}
-			current, err := fleethealth.Get(client, true)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Automatic clean syncs: %s\n", autoCleanSyncText(current))
-			if current.AutoCleanSyncOn() == on {
-				fmt.Printf("Automatic clean syncs are already %s; nothing changed.\n", args[0])
-				return nil
-			}
-			if on {
-				fmt.Printf("Turning automatic clean syncs on: the fleet job will request a clean sync for a Mac whose rules hash differs, at most %d a run\n", fleetjob.MaxCleanSyncRequestsPerRun)
-			} else {
-				fmt.Println("Turning automatic clean syncs off: the fleet job will list every Mac whose rules hash differs and request no clean sync")
-			}
-			if apply, err := flags.ApprovalOf(cmd).Confirm(); !apply {
-				return err
-			}
-			stored, err := fleethealth.SetAutoCleanSync(client, on)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Automatic clean syncs: %s, from the next fleet run\n", autoCleanSyncText(stored))
-			return flags.Record(client, autoCleanSyncAction, auditTarget, "turned automatic clean syncs for rules hash outliers "+args[0])
-		},
-	})
-
-	FleetCmd.AddCommand(&cobra.Command{
 		Use:   "show",
-		Short: "Show the fleet health setting in force: the stale threshold, any holiday, the minimum Santa version and automatic clean syncs",
-		Long: `Prints what the fleet job's next run will use: the stale threshold, with the holiday while one is on, the minimum
-Santa version, with whether it is stored or the default, and whether automatic clean syncs for rules hash outliers are
-on. Nothing is written.`,
+		Short: "Show the fleet health setting in force: the stale threshold, any holiday and the minimum Santa version",
+		Long: `Prints what the fleet job's next run will use: the stale threshold, with the holiday while one is on, and the minimum
+Santa version, with whether it is stored or the default. Nothing is written.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := writer(cmd)
@@ -290,18 +241,9 @@ on. Nothing is written.`,
 				source = "stored"
 			}
 			fmt.Printf("Minimum Santa version: %s (%s)\n", termsafe.String(version), source)
-			fmt.Printf("Automatic clean syncs: %s\n", autoCleanSyncText(current))
 			return nil
 		},
 	})
-}
-
-// autoCleanSyncText is the setting as the fleet job reads it: anything stored other than off is the default.
-func autoCleanSyncText(c fleethealth.Config) string {
-	if c.AutoCleanSyncOn() {
-		return "on (default)"
-	}
-	return "off (stored)"
 }
 
 // client is what the fleet commands need from DynamoDB

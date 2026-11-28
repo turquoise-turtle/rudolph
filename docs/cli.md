@@ -153,7 +153,7 @@ rudolph info
 - what it reported at its last preflight: hostname, serial number, primary user, model, macOS version and build, Santa version, the client mode it was in, and the number of rules it holds, in total and by type;
 - when it last synced (local time, then UTC in brackets, then how long ago), when a sync last completed (postflight) and when its last clean sync started;
 - a legacy client note when its Santa is older than 2026.8, the oldest release Rudolph fully supports (see [Supported Santa releases](sync.md#supported-santa-releases));
-- the configuration Rudolph sends it: the client mode in effect now (marked `(group <name>)` when it comes from a device group) and its temporary client mode with its end (local time, then UTC in brackets, then the time remaining or how long since it ended), if any, and whether a clean sync is requested: `Clean sync:      requested`, or `requested by the fleet job (rules hash differed)` when the pending request is the fleet job's (see [fleet-health.md](fleet-health.md#automatic-clean-syncs-for-rules-hash-outliers)); `config get --machine` shows every setting;
+- the configuration Rudolph sends it: the client mode in effect now (marked `(group <name>)` when it comes from a device group) and its temporary client mode with its end (local time, then UTC in brackets, then the time remaining or how long since it ended), if any, and whether a clean sync is requested (`config get --machine` shows every setting);
 - its assigned, reported and effective groups, as `group show` prints them.
 
 The machine ID is found in any case, as for `--machine` elsewhere (see [Conventions](#conventions)). A Mac that never synced, or whose data expired (90 days after its last sync), is an error: `no machine with ID … has synced`.
@@ -184,11 +184,10 @@ It first prints what it will delete, with the Mac's hostname and serial number a
 rudolph fleet holiday --stale-days <days> --until <YYYY-MM-DD> [--yes|--dry-run]
 rudolph fleet holiday --end [--yes|--dry-run]
 rudolph fleet min-santa-version (<version> | off | --default) [--yes|--dry-run]
-rudolph fleet auto-clean-sync (on | off) [--yes|--dry-run]
 rudolph fleet show
 ```
 
-The fleet job lists a Mac as stale when its last completed sync is older than the stale threshold, 10 days unless changed (see [fleet-health.md](fleet-health.md#the-stale-threshold-and-holiday-mode)). Over a holiday, when Macs are simply off, `fleet holiday` raises the threshold until a date. It lists a Mac under `Version` when its Santa release is below the minimum Santa version, which `fleet min-santa-version` changes. It requests a clean sync for a Mac whose rules hash differs from that of the Macs sent the same rules, which `fleet auto-clean-sync` turns off or on. `fleet show` prints all three settings.
+The fleet job lists a Mac as stale when its last completed sync is older than the stale threshold, 10 days unless changed (see [fleet-health.md](fleet-health.md#the-stale-threshold-and-holiday-mode)). Over a holiday, when Macs are simply off, `fleet holiday` raises the threshold until a date. It lists a Mac under `Version` when its Santa release is below the minimum Santa version, which `fleet min-santa-version` changes. `fleet show` prints both settings.
 
 ### `fleet holiday`
 
@@ -223,31 +222,13 @@ The fleet job lists a Mac as stale when its last completed sync is older than th
 ./rudolph fleet min-santa-version --default
 ```
 
-### `fleet auto-clean-sync`
-
-Santa's rules hash depends on the order in which a Mac wrote its rules, so Macs holding the same rules can report different hashes. The fleet job therefore requests a clean sync for a Mac whose hash differs, once per rule change and at most 100 Macs a run, and lists the Mac under `Rules` only when its hash still differs afterwards (see [fleet-health.md](fleet-health.md#automatic-clean-syncs-for-rules-hash-outliers)).
-
-- `off` turns that off: the job lists every such Mac straight away and writes nothing to any Mac's configuration. Clean syncs it has already requested stay requested.
-- `on` turns it back on. It is the default: with nothing stored, automatic clean syncs are on.
-- Refused, with nothing stored or recorded: no value, more than one, or anything other than `on` or `off`.
-- The command prints whether automatic clean syncs are on now and what it will change, and asks `Apply changes?` (`--yes` skips the question; `--dry-run` writes nothing). Asking for the state already in force changes nothing and says so.
-- The stale threshold, any holiday and the minimum Santa version are never changed by this command.
-- The fleet job uses the setting from its next run, once a day by default; no deploy is needed.
-- Each change is recorded in the audit trail with the action `fleet.auto-clean-sync` and the target `fleet`. The requests themselves are recorded by the fleet job, one entry a run, with the actor `job:fleet` and the action `fleet.clean_sync`.
-
-```sh
-./rudolph fleet auto-clean-sync off
-./rudolph fleet auto-clean-sync on
-```
-
 ### `fleet show`
 
-Prints the fleet health setting in force and changes nothing: the stale threshold, with the holiday while one is on, the minimum Santa version, with `(stored)` or `(default)`, and whether automatic clean syncs for rules hash outliers are on.
+Prints the fleet health setting in force and changes nothing: the stale threshold, with the holiday while one is on, and the minimum Santa version, with `(stored)` or `(default)`.
 
 ```
 Stale threshold: 14 days, holiday: 60 days until 2027-02-01
 Minimum Santa version: 2026.10 (stored)
-Automatic clean syncs: on (default)
 ```
 
 The setting is one item of the store table, `FleetHealth` / `Config`; credentials restricted by partition key need `dynamodb:GetItem` and `dynamodb:UpdateItem` on it (see [cli-iam.md](cli-iam.md#rule-administrator)).
@@ -258,7 +239,7 @@ The setting is one item of the store table, `FleetHealth` / `Config`; credential
 rudolph audit [--since <duration-or-time>] [--limit <n>]
 ```
 
-Every write the CLI makes also records an audit entry in the store table: the time, the actor, the action, the target and a summary. The CLI's actor is `cli:<OS user>@<host name>` (the user and host name of the computer running it; `$USER` or `unknown` when they cannot be read); rudolph-web will record its own changes with the actor `web:<Entra user>`, and the fleet job records the clean syncs it requests with the actor `job:fleet`. Entries are never overwritten and never expire. The layout is in [architecture.md](architecture.md#dynamodb).
+Every write the CLI makes also records an audit entry in the store table: the time, the actor, the action, the target and a summary. The CLI's actor is `cli:<OS user>@<host name>` (the user and host name of the computer running it; `$USER` or `unknown` when they cannot be read); rudolph-web will record its own changes with the actor `web:<Entra user>`. Entries are never overwritten and never expire. The layout is in [architecture.md](architecture.md#dynamodb).
 
 | Command | Action | Target |
 |---|---|---|

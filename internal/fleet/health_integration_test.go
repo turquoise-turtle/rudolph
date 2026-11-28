@@ -364,8 +364,6 @@ func TestFleet_RulesHashOutliers(t *testing.T) {
 		add(20+i, digest, hash, base.Add(time.Duration(i)*time.Hour/4))
 	}
 	seed(t, macs...)
-	// With automatic clean syncs on, the outlier would get a clean sync requested instead of being listed.
-	autoCleanSyncOff(t)
 	run(t)
 	listed := rows(t, mustPointer(t), "Health#Rules")
 	if len(listed) != 1 || s(listed[0], "MachineID") != outlier.id {
